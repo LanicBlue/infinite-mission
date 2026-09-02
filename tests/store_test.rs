@@ -23,7 +23,7 @@ fn schema_creates_all_domain_tables() {
         "agents",
         "messages",
         "operators",
-        "projects",
+        "workspace_meta",
         "works",
         "missions",
         "mission_events",
@@ -100,11 +100,10 @@ fn work_notes_are_consumed_only_by_the_bound_executor() {
     store.register_agent_unique("inspector", "inspector").unwrap();
     store.conn
         .execute_batch(
-            "INSERT INTO projects (id, name, description, retired, created_by, created_at) VALUES ('pj_x', 'x', '', 0, 'boss', 0);
-             INSERT INTO works (project_id, work_key, display_name, executor, prompt, lifecycle, created_at)
-                 VALUES ('pj_x', 'build', 'Build', 'worker', '', 'active', 0);
-             INSERT INTO work_notes (project_id, work_key, kind, mission_id, content, created_at, read)
-                 VALUES ('pj_x', 'build', 'arrival', 'ms_t', 'mission arrived', 1000, 0);",
+            "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)
+                 VALUES ('build', 'Build', 'worker', '', 'active', 0);
+             INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
+                 VALUES ('build', 'arrival', 'ms_t', 'mission arrived', 1000, 0);",
         )
         .unwrap();
 
@@ -126,23 +125,23 @@ fn mission_rows_enforce_check_constraints() {
     let (_tmp, store) = open();
     // revision must be >= 1.
     let bad_revision = store.conn.execute(
-        "INSERT INTO missions (mission_id, project_id, name, objective, contract_json, at, status, revision, created_at, created_by)
-         VALUES ('ms_a', 'pj_x', 'a', '', '{}', 'build', 'active', 0, 0, 'boss')",
+        "INSERT INTO missions (mission_id, name, objective, contract_json, at, status, revision, created_at, created_by)
+         VALUES ('ms_a', 'a', '', '{}', 'build', 'active', 0, 0, 'boss')",
         [],
     );
     assert!(bad_revision.is_err());
     // contract_json must be valid JSON.
     let bad_json = store.conn.execute(
-        "INSERT INTO missions (mission_id, project_id, name, objective, contract_json, at, status, revision, created_at, created_by)
-         VALUES ('ms_a', 'pj_x', 'a', '', 'not json', 'build', 'active', 1, 0, 'boss')",
+        "INSERT INTO missions (mission_id, name, objective, contract_json, at, status, revision, created_at, created_by)
+         VALUES ('ms_a', 'a', '', 'not json', 'build', 'active', 1, 0, 'boss')",
         [],
     );
     assert!(bad_json.is_err());
     // mission_events kinds are a closed set.
     store.conn
         .execute(
-            "INSERT INTO missions (mission_id, project_id, name, objective, contract_json, at, status, revision, created_at, created_by)
-             VALUES ('ms_a', 'pj_x', 'a', '', '{}', 'build', 'active', 1, 0, 'boss')",
+            "INSERT INTO missions (mission_id, name, objective, contract_json, at, status, revision, created_at, created_by)
+             VALUES ('ms_a', 'a', '', '{}', 'build', 'active', 1, 0, 'boss')",
             [],
         )
         .unwrap();
@@ -159,8 +158,8 @@ fn revision_cas_guard_rejects_stale_writes() {
     let (_tmp, store) = open();
     store.conn
         .execute(
-            "INSERT INTO missions (mission_id, project_id, name, objective, contract_json, at, status, revision, created_at, created_by)
-             VALUES ('ms_a', 'pj_x', 'a', '', '{}', 'build', 'active', 1, 0, 'boss')",
+            "INSERT INTO missions (mission_id, name, objective, contract_json, at, status, revision, created_at, created_by)
+             VALUES ('ms_a', 'a', '', '{}', 'build', 'active', 1, 0, 'boss')",
             [],
         )
         .unwrap();

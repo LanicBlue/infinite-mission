@@ -5,7 +5,7 @@ name: example
 objective: "Two-station build-and-review loop"
 
 # The station where the mission starts. Every referenced station must exist
-# in the project (`im work create`) and be active when the mission is created.
+# in the workspace (`im work create`) and be active when the mission is created.
 entry: build
 
 # Per-station discipline. The same station can carry different disciplines

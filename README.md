@@ -14,16 +14,19 @@ cargo install --path .   # binary: im
 ## The model in one screen
 
 - **Workspace** = a directory tree with `.im/` at the root (found by walking
-  up, like git). Everything lives in `.im/im.db` + `.im/mission-documents/`.
+  up, like git). The workspace is the single project: everything lives in
+  `.im/im.db` + `.im/mission-documents/`.
 - **Agents** self-register with `im join <id> --role <role>`. A taken id
   auto-suffixes (`alice` → `alice-2`) — identities are never impersonated.
   Agents are stateless: all durable state lives in missions.
 - **Operators** are humans you trust: `im grant <id>`. Operators create
-  projects, stations, and missions.
-- **Projects** contain **stations** (`build`, `review`, `approve`, …). A
-  station has an executor binding (rebindable at any time,
+  stations and missions.
+- **The workspace IS the project**: one directory tree, one mission space.
+  **Stations** (`build`, `review`, `approve`, …) hang directly off the
+  workspace. A station has an executor binding (rebindable at any time,
   last-write-wins) — or **no executor**, which makes it a *user station*,
-  the human's inbox.
+  the human's inbox. Mission ids are namespaced by a per-workspace uuid
+  generated at init.
 - **Missions** are created from YAML templates. The template compiles into
   an immutable contract: entry station, per-station outcome vocabularies,
   routing paths (`from`/`when`/`to`, optional `iterationPolicy`), document
@@ -54,11 +57,10 @@ im join worker --role worker
 im grant boss                 # a human runs this: boss is now an operator
 
 # as boss:
-im project create boss demo
-im work create boss demo build --executor worker
-im work create boss demo review --executor reviewer
-im work create boss demo approve          # user station — no executor
-im mission create boss --project demo --template example --key v1
+im work create boss build --executor worker
+im work create boss review --executor reviewer
+im work create boss approve          # user station — no executor
+im mission create boss --template example --key v1
 
 # as worker:
 im receive worker             # arrival note: a mission landed at your station
@@ -83,7 +85,6 @@ role loop to the hosting agent.
 Workspace   im init | agents | leave | roles | setup | doctor | clean | ui
 Messaging   im send <from> <to|@all> <text> | receive <id> [--wait] | pending | history
 Operators   im grant|revoke <agent> | operators
-Projects    im project create|list|retire
 Stations    im work create|list|set-executor|set-prompt|retire
 Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|end

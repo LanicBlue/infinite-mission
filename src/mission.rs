@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::contract::{self, MissionContract, RouteRow};
 use crate::records::{
-    DocumentReceiptRecord, MissionEventRecord, MissionRecord, ProjectRecord, WorkNoteRecord,
+    DocumentReceiptRecord, MissionEventRecord, MissionRecord, WorkNoteRecord,
     WorkRecord,
 };
 use crate::store::Store;
@@ -39,140 +39,60 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-// --- Projects ---
-
-impl Store {
-    pub fn create_project(&self, operator: &str, name: &str, description: &str) -> Result<String> {
-        self.require_operator(operator)?;
-        let id = format!("pj_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-        let inserted = self.conn.execute(
-            "INSERT INTO projects (id, name, description, retired, created_by, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4, ?5)",
-            params![id, name, description, operator, now()],
-        );
-        match inserted {
-            Ok(_) => Ok(id),
-            Err(_) => bail!("project name '{name}' is already taken"),
-        }
-    }
-
-    pub fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, retired, created_by, created_at
-             FROM projects ORDER BY created_at",
-        )?;
-        let projects = stmt
-            .query_map([], |row| {
-                Ok(ProjectRecord {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    retired: row.get::<_, i64>(3)? != 0,
-                    created_by: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(projects)
-    }
-
-    pub fn resolve_project(&self, id_or_name: &str) -> Result<ProjectRecord> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, retired, created_by, created_at
-             FROM projects WHERE id = ?1 OR name = ?1",
-        )?;
-        let project = stmt
-            .query_map([id_or_name], |row| {
-                Ok(ProjectRecord {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    retired: row.get::<_, i64>(3)? != 0,
-                    created_by: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        match project.into_iter().next() {
-            Some(project) => Ok(project),
-            None => bail!("project '{id_or_name}' does not exist"),
-        }
-    }
-
-    pub fn retire_project(&self, operator: &str, project_id_or_name: &str) -> Result<()> {
-        self.require_operator(operator)?;
-        let project = self.resolve_project(project_id_or_name)?;
-        let active: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM missions WHERE project_id = ?1 AND status = 'active'",
-            [&project.id],
-            |row| row.get(0),
-        )?;
-        if active > 0 {
-            bail!("project {} still has {active} active missions", project.id);
-        }
-        self.conn.execute(
-            "UPDATE projects SET retired = 1 WHERE id = ?1",
-            [&project.id],
-        )?;
-        Ok(())
-    }
-}
-
 // --- Works (stations) ---
+// The workspace IS the project: stations hang directly off the workspace,
+// so there is no project layer anywhere in the domain.
 
 impl Store {
     pub fn create_work(
         &self,
         operator: &str,
-        project_id_or_name: &str,
         work_key: &str,
         display_name: &str,
         executor: Option<&str>,
         prompt: &str,
-    ) -> Result<(String, String)> {
+    ) -> Result<String> {
         self.require_operator(operator)?;
         if !contract_work_key(work_key) {
             bail!("work key {work_key:?} must be lowercase kebab-case");
         }
-        let project = self.resolve_project(project_id_or_name)?;
         if let Some(executor_id) = executor {
             self.require_active_agent(executor_id)?;
         }
         let inserted = self.conn.execute(
-            "INSERT INTO works (project_id, work_key, display_name, executor, prompt, lifecycle, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6)",
-            params![project.id, work_key, display_name, executor, prompt, now()],
+            "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            params![work_key, display_name, executor, prompt, now()],
         );
         if let Err(_) = inserted {
-            bail!("work '{work_key}' already exists in project {}", project.id);
+            bail!("work '{work_key}' already exists in this workspace");
         }
-        Ok((project.id, work_key.to_string()))
+        Ok(work_key.to_string())
     }
 
-    pub fn get_work(&self, project_id: &str, work_key: &str) -> Result<WorkRecord> {
+    pub fn get_work(&self, work_key: &str) -> Result<WorkRecord> {
         let work = self
             .conn
             .query_row(
-                "SELECT project_id, work_key, display_name, executor, prompt, lifecycle
-                 FROM works WHERE project_id = ?1 AND work_key = ?2",
-                params![project_id, work_key],
+                "SELECT work_key, display_name, executor, prompt, lifecycle
+                 FROM works WHERE work_key = ?1",
+                [work_key],
                 map_work_row,
             )
             .optional()?;
         match work {
             Some(work) => Ok(work),
-            None => bail!("work '{work_key}' does not exist in project {project_id}"),
+            None => bail!("work '{work_key}' does not exist in this workspace"),
         }
     }
 
-    pub fn list_works(&self, project_id: Option<&str>) -> Result<Vec<WorkRecord>> {
+    pub fn list_works(&self) -> Result<Vec<WorkRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT project_id, work_key, display_name, executor, prompt, lifecycle
-             FROM works WHERE (?1 IS NULL OR project_id = ?1)
-             ORDER BY project_id, work_key",
+            "SELECT work_key, display_name, executor, prompt, lifecycle
+             FROM works ORDER BY work_key",
         )?;
         let works = stmt
-            .query_map(params![project_id], map_work_row)?
+            .query_map([], map_work_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(works)
     }
@@ -183,36 +103,27 @@ impl Store {
     pub fn set_work_executor(
         &self,
         operator: &str,
-        project_id_or_name: &str,
         work_key: &str,
         executor: Option<&str>,
     ) -> Result<()> {
         self.require_operator(operator)?;
-        let project = self.resolve_project(project_id_or_name)?;
-        self.get_work(&project.id, work_key)?;
+        self.get_work(work_key)?;
         if let Some(executor_id) = executor {
             self.require_active_agent(executor_id)?;
         }
         self.conn.execute(
-            "UPDATE works SET executor = ?1 WHERE project_id = ?2 AND work_key = ?3",
-            params![executor, project.id, work_key],
+            "UPDATE works SET executor = ?1 WHERE work_key = ?2",
+            params![executor, work_key],
         )?;
         Ok(())
     }
 
-    pub fn set_work_prompt(
-        &self,
-        operator: &str,
-        project_id_or_name: &str,
-        work_key: &str,
-        prompt: &str,
-    ) -> Result<()> {
+    pub fn set_work_prompt(&self, operator: &str, work_key: &str, prompt: &str) -> Result<()> {
         self.require_operator(operator)?;
-        let project = self.resolve_project(project_id_or_name)?;
-        self.get_work(&project.id, work_key)?;
+        self.get_work(work_key)?;
         self.conn.execute(
-            "UPDATE works SET prompt = ?1 WHERE project_id = ?2 AND work_key = ?3",
-            params![prompt, project.id, work_key],
+            "UPDATE works SET prompt = ?1 WHERE work_key = ?2",
+            params![prompt, work_key],
         )?;
         Ok(())
     }
@@ -220,16 +131,15 @@ impl Store {
     /// A station referenced by any ACTIVE mission contract is editable but
     /// not deletable. The reference set is entry ∪ at ∪ works keys ∪ path
     /// endpoints.
-    pub fn retire_work(&self, operator: &str, project_id_or_name: &str, work_key: &str) -> Result<()> {
+    pub fn retire_work(&self, operator: &str, work_key: &str) -> Result<()> {
         self.require_operator(operator)?;
-        let project = self.resolve_project(project_id_or_name)?;
-        let work = self.get_work(&project.id, work_key)?;
+        let work = self.get_work(work_key)?;
         if work.lifecycle == "retired" {
             bail!("work '{work_key}' is already retired");
         }
         let holding: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM missions WHERE project_id = ?1 AND status = 'active' AND at = ?2",
-            params![project.id, work_key],
+            "SELECT COUNT(*) FROM missions WHERE status = 'active' AND at = ?1",
+            [work_key],
             |row| row.get(0),
         )?;
         if holding > 0 {
@@ -239,8 +149,8 @@ impl Store {
             );
         }
         self.conn.execute(
-            "UPDATE works SET lifecycle = 'retired' WHERE project_id = ?1 AND work_key = ?2",
-            params![project.id, work_key],
+            "UPDATE works SET lifecycle = 'retired' WHERE work_key = ?1",
+            [work_key],
         )?;
         Ok(())
     }
@@ -248,7 +158,7 @@ impl Store {
     /// Works whose executor is this agent — the agent's duty stations.
     pub fn works_for_executor(&self, agent_id: &str) -> Result<Vec<WorkRecord>> {
         Ok(self
-            .list_works(None)?
+            .list_works()?
             .into_iter()
             .filter(|work| work.executor.as_deref() == Some(agent_id))
             .collect())
@@ -266,12 +176,11 @@ fn contract_work_key(key: &str) -> bool {
 
 fn map_work_row(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
     Ok(WorkRecord {
-        project_id: row.get(0)?,
-        work_key: row.get(1)?,
-        display_name: row.get(2)?,
-        executor: row.get(3)?,
-        prompt: row.get(4)?,
-        lifecycle: row.get(5)?,
+        work_key: row.get(0)?,
+        display_name: row.get(1)?,
+        executor: row.get(2)?,
+        prompt: row.get(3)?,
+        lifecycle: row.get(4)?,
     })
 }
 
@@ -284,12 +193,12 @@ pub struct MissionCreateOutcome {
 }
 
 impl Store {
-    /// Mission id is derived from the idempotency key: the same key always
-    /// lands on the same mission. Creation only walks templates.
+    /// Mission id is derived from the idempotency key namespaced by the
+    /// workspace uuid: the same key always lands on the same mission.
+    /// Creation only walks templates.
     pub fn create_mission(
         &self,
         operator: &str,
-        project_id_or_name: &str,
         template: &contract::MissionTemplate,
         template_path: &str,
         template_bytes: &[u8],
@@ -298,10 +207,6 @@ impl Store {
         objective_override: Option<&str>,
     ) -> Result<MissionCreateOutcome> {
         self.require_operator(operator)?;
-        let project = self.resolve_project(project_id_or_name)?;
-        if project.retired {
-            bail!("project {} is retired", project.id);
-        }
         let contract = contract::compile(template, template_path, template_bytes)?;
 
         // Station reference validation: every referenced station must exist
@@ -318,7 +223,7 @@ impl Store {
         }
         let mut unknown = Vec::new();
         for key in &referenced {
-            match self.get_work(&project.id, key) {
+            match self.get_work(key) {
                 Ok(work) if work.lifecycle == "active" => {}
                 Ok(_) => bail!("station '{key}' is retired; missions cannot reference it"),
                 Err(_) => unknown.push(key.clone()),
@@ -326,14 +231,13 @@ impl Store {
         }
         if !unknown.is_empty() {
             let known: Vec<String> = self
-                .list_works(Some(&project.id))?
+                .list_works()?
                 .into_iter()
                 .map(|work| work.work_key)
                 .collect();
             bail!(
-                "template references unknown stations: {} — known in {}: {}",
+                "template references unknown stations: {} — known in this workspace: {}",
                 unknown.join(", "),
-                project.id,
                 known.join(", ")
             );
         }
@@ -344,18 +248,18 @@ impl Store {
         let objective = objective_override
             .or(template.objective.as_deref())
             .unwrap_or("");
-        let mission_id = format!("ms_{}", &sha256_hex(&[&project.id, idempotency_key])[..32]);
+        let workspace_id = self.workspace_id()?;
+        let mission_id = format!("ms_{}", &sha256_hex(&[&workspace_id, idempotency_key])[..32]);
         let created = now();
 
         let tx = self.conn.unchecked_transaction()?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO missions (
-                mission_id, project_id, name, objective, contract_json,
+                mission_id, name, objective, contract_json,
                 at, status, revision, created_at, created_by
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 1, ?7, ?8)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7)",
             params![
                 mission_id,
-                project.id,
                 name,
                 objective,
                 serde_json::to_string(&contract)?,
@@ -383,7 +287,7 @@ impl Store {
             }),
             created,
         )?;
-        insert_arrival_note(&tx, &project.id, &contract.entry, &mission_id, &format!("[{mission_id}] {name}"), created)?;
+        insert_arrival_note(&tx, &contract.entry, &mission_id, &format!("[{mission_id}] {name}"), created)?;
         tx.commit()?;
         Ok(MissionCreateOutcome {
             mission_id,
@@ -395,7 +299,7 @@ impl Store {
         let mission = self
             .conn
             .query_row(
-                "SELECT mission_id, project_id, name, objective, contract_json, at, status,
+                "SELECT mission_id, name, objective, contract_json, at, status,
                         revision, ended_disposition, ended_by_work, ended_by_iteration,
                         ended_at, created_at, created_by
                  FROM missions WHERE mission_id = ?1",
@@ -452,7 +356,7 @@ impl Store {
     pub fn list_stranded_missions(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT m.mission_id FROM missions m
-             JOIN works w ON w.project_id = m.project_id AND w.work_key = m.at
+             JOIN works w ON w.work_key = m.at
              WHERE m.status = 'active' AND w.lifecycle = 'retired'",
         )?;
         let ids = stmt
@@ -467,15 +371,15 @@ impl Store {
         let mut missions = Vec::new();
         for work in &works {
             let mut stmt = self.conn.prepare(
-                "SELECT mission_id, project_id, name, objective, contract_json, at, status,
+                "SELECT mission_id, name, objective, contract_json, at, status,
                         revision, ended_disposition, ended_by_work, ended_by_iteration,
                         ended_at, created_at, created_by
                  FROM missions
-                 WHERE project_id = ?1 AND at = ?2 AND status = 'active'
+                 WHERE at = ?1 AND status = 'active'
                  ORDER BY created_at",
             )?;
             let rows = stmt
-                .query_map(params![work.project_id, work.work_key], map_mission_row)?
+                .query_map(params![work.work_key], map_mission_row)?
                 .collect::<Result<Vec<_>, _>>()?;
             missions.extend(rows);
         }
@@ -485,11 +389,11 @@ impl Store {
     /// The human attention plane: missions currently parked at user stations.
     pub fn inbox_missions(&self) -> Result<Vec<(MissionRecord, WorkRecord)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT m.mission_id, m.project_id, m.name, m.objective, m.contract_json, m.at, m.status,
+            "SELECT m.mission_id, m.name, m.objective, m.contract_json, m.at, m.status,
                     m.revision, m.ended_disposition, m.ended_by_work, m.ended_by_iteration,
                     m.ended_at, m.created_at, m.created_by, w.executor
              FROM missions m
-             JOIN works w ON w.project_id = m.project_id AND w.work_key = m.at
+             JOIN works w ON w.work_key = m.at
              WHERE m.status = 'active' AND w.executor IS NULL
              ORDER BY m.created_at",
         )?;
@@ -531,7 +435,7 @@ impl Store {
                 mission.revision
             );
         }
-        let work = self.get_work(&mission.project_id, &at)?;
+        let work = self.get_work(&at)?;
         let user_station = work.executor.is_none();
         if user_station {
             // A user station is the human's mailbox: an operator resolves it.
@@ -665,7 +569,7 @@ impl Store {
         }
 
         // A hop onto a user station requires a reason for the human.
-        let destination = self.get_work(&mission.project_id, &chosen.to)?;
+        let destination = self.get_work(&chosen.to)?;
         if destination.executor.is_none() && reason.map(|r| r.trim().is_empty()).unwrap_or(true) {
             bail!("routing to user station '{}' requires a non-empty --reason", chosen.to);
         }
@@ -711,7 +615,6 @@ impl Store {
         )?;
         insert_arrival_note(
             &tx,
-            &mission.project_id,
             &chosen.to,
             &mission.mission_id,
             &format!("[{}] {} → {} (round: {})", mission.mission_id, at, chosen.to, outcome),
@@ -886,7 +789,7 @@ impl Store {
         let has: bool = self.conn.query_row(
             "SELECT COUNT(*) > 0
              FROM work_notes n
-             JOIN works w ON w.project_id = n.project_id AND w.work_key = n.work_key
+             JOIN works w ON w.work_key = n.work_key
              WHERE w.executor = ?1 AND n.read = 0",
             [agent_id],
             |row| row.get(0),
@@ -898,9 +801,9 @@ impl Store {
         self.require_active_agent(agent_id)?;
         let tx = self.conn.unchecked_transaction()?;
         let mut stmt = tx.prepare(
-            "SELECT n.id, n.project_id, n.work_key, n.kind, n.mission_id, n.content, n.created_at
+            "SELECT n.id, n.work_key, n.kind, n.mission_id, n.content, n.created_at
              FROM work_notes n
-             JOIN works w ON w.project_id = n.project_id AND w.work_key = n.work_key
+             JOIN works w ON w.work_key = n.work_key
              WHERE w.executor = ?1 AND n.read = 0
              ORDER BY n.created_at, n.id",
         )?;
@@ -908,12 +811,11 @@ impl Store {
             .query_map([agent_id], |row| {
                 Ok(WorkNoteRecord {
                     id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    work_key: row.get(2)?,
-                    kind: row.get(3)?,
-                    mission_id: row.get(4)?,
-                    content: row.get(5)?,
-                    created_at: row.get(6)?,
+                    work_key: row.get(1)?,
+                    kind: row.get(2)?,
+                    mission_id: row.get(3)?,
+                    content: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -923,8 +825,7 @@ impl Store {
             tx.execute(
                 "UPDATE work_notes SET read = 1 WHERE read = 0 AND id <= ?1 AND EXISTS (
                      SELECT 1 FROM works w
-                     WHERE w.project_id = work_notes.project_id
-                       AND w.work_key = work_notes.work_key
+                     WHERE w.work_key = work_notes.work_key
                        AND w.executor = ?2)",
                 params![max_id, agent_id],
             )?;
@@ -954,30 +855,28 @@ pub struct SubmitOutcome {
 fn map_mission_row(row: &rusqlite::Row) -> rusqlite::Result<MissionRecord> {
     Ok(MissionRecord {
         mission_id: row.get(0)?,
-        project_id: row.get(1)?,
-        name: row.get(2)?,
-        objective: row.get(3)?,
-        contract_json: row.get(4)?,
-        at: row.get(5)?,
-        status: row.get(6)?,
-        revision: row.get(7)?,
-        ended_disposition: row.get(8)?,
-        ended_by_work: row.get(9)?,
-        ended_by_iteration: row.get(10)?,
-        ended_at: row.get(11)?,
-        created_at: row.get(12)?,
-        created_by: row.get(13)?,
+        name: row.get(1)?,
+        objective: row.get(2)?,
+        contract_json: row.get(3)?,
+        at: row.get(4)?,
+        status: row.get(5)?,
+        revision: row.get(6)?,
+        ended_disposition: row.get(7)?,
+        ended_by_work: row.get(8)?,
+        ended_by_iteration: row.get(9)?,
+        ended_at: row.get(10)?,
+        created_at: row.get(11)?,
+        created_by: row.get(12)?,
     })
 }
 
 fn map_work_row_by_prefix(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
-    // Row layout: mission columns 0..13, then works executor(14). Only the
+    // Row layout: mission columns 0..12, then works executor(13). Only the
     // executor is needed here; other station facts are re-read by callers.
     Ok(WorkRecord {
-        project_id: row.get(1)?,
-        work_key: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        work_key: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
         display_name: String::new(),
-        executor: row.get(14)?,
+        executor: row.get(13)?,
         prompt: String::new(),
         lifecycle: "active".to_string(),
     })
@@ -1009,16 +908,15 @@ fn append_event(
 
 fn insert_arrival_note(
     tx: &rusqlite::Transaction,
-    project_id: &str,
     work_key: &str,
     mission_id: &str,
     content: &str,
     created: i64,
 ) -> Result<()> {
     tx.execute(
-        "INSERT INTO work_notes (project_id, work_key, kind, mission_id, content, created_at, read)
-         VALUES (?1, ?2, 'mission_arrived', ?3, ?4, ?5, 0)",
-        params![project_id, work_key, mission_id, content, created],
+        "INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
+         VALUES (?1, 'mission_arrived', ?2, ?3, ?4, 0)",
+        params![work_key, mission_id, content, created],
     )?;
     Ok(())
 }
@@ -1059,7 +957,7 @@ impl Store {
                 declaration.id
             );
         }
-        let work = self.get_work(&mission.project_id, &at)?;
+        let work = self.get_work(&at)?;
         if work.executor.as_deref() != Some(agent_id) {
             bail!("Document writes belong to the station's on-duty executor");
         }
@@ -1118,7 +1016,7 @@ impl Store {
                 declaration.id
             );
         }
-        let work = self.get_work(&mission.project_id, &at)?;
+        let work = self.get_work(&at)?;
         if work.executor.as_deref() != Some(agent_id) {
             bail!("Document reads belong to the station's on-duty executor");
         }
@@ -1157,7 +1055,6 @@ impl Store {
 #[derive(Debug, Serialize)]
 pub struct RunView {
     pub mission_id: String,
-    pub project_id: String,
     pub name: String,
     pub objective: String,
     pub at: Option<String>,
@@ -1189,7 +1086,7 @@ impl Store {
         let contract = parse_contract(&mission.contract_json)?;
         let (station_prompt, on_duty, discipline, iteration, routes) = match &mission.at {
             Some(at) => {
-                let work = self.get_work(&mission.project_id, at)?;
+                let work = self.get_work(at)?;
                 let discipline = contract.works.get(at);
                 let iteration = self.standing_iteration(&mission, at)?;
                 let reason = self.last_round_reason(&mission.mission_id)?;
@@ -1263,7 +1160,6 @@ impl Store {
 
         Ok(RunView {
             mission_id: mission.mission_id,
-            project_id: mission.project_id,
             name: mission.name,
             objective: mission.objective,
             at: mission.at,

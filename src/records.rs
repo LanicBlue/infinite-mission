@@ -22,22 +22,11 @@ pub struct MessageRecord {
     pub reply_to: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ProjectRecord {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub retired: bool,
-    pub created_by: String,
-    pub created_at: i64,
-}
-
 /// A station: an addressable executor slot. All discipline (completion
 /// vocabulary, document rights) is mission-contract-owned; the station keeps
 /// identity, the on-duty executor, and a standing prompt.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorkRecord {
-    pub project_id: String,
     pub work_key: String,
     pub display_name: String,
     /// Current on-duty executor agent id; NULL means a user station.
@@ -49,7 +38,6 @@ pub struct WorkRecord {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MissionRecord {
     pub mission_id: String,
-    pub project_id: String,
     pub name: String,
     pub objective: String,
     /// Immutable compiled contract (contract::MissionContract as JSON).
@@ -93,7 +81,6 @@ pub struct DocumentReceiptRecord {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorkNoteRecord {
     pub id: i64,
-    pub project_id: String,
     pub work_key: String,
     pub kind: String,
     pub mission_id: Option<String>,

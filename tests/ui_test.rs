@@ -19,16 +19,15 @@ fn state_json_exposes_the_console_data_contract() {
         im(ws).args(["join", id, "--role", role]).assert().success();
     }
     im(ws).args(["grant", "boss"]).assert().success();
-    im(ws).args(["project", "create", "boss", "demo"]).assert().success();
-    im(ws).args(["work", "create", "boss", "demo", "build", "--executor", "worker"]).assert().success();
-    im(ws).args(["work", "create", "boss", "demo", "approve"]).assert().success();
+    im(ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();
+    im(ws).args(["work", "create", "boss", "approve"]).assert().success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: build\nworks:\n  build:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  approve:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: build, when: done, to: approve}\n",
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "t", "--key", "k1"])
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
         .assert()
         .success();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
@@ -59,7 +58,7 @@ fn state_json_exposes_the_console_data_contract() {
     let state = im::ui::state_json(&store, &ws.to_str().unwrap(), &templates).unwrap();
 
     // Top-level sections the page renders.
-    for key in ["workspace", "agents", "operators", "projects", "works", "missions", "inbox", "events", "templates"] {
+    for key in ["workspace", "agents", "operators", "works", "missions", "inbox", "events", "templates"] {
         assert!(state.get(key).is_some(), "state_json missing {key}");
     }
     assert_eq!(state["operators"].as_array().unwrap().len(), 1);

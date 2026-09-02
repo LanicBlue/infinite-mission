@@ -221,24 +221,24 @@ fn operator_commands_are_gated_by_grant() {
     im(tmp.path()).args(["join", "boss", "--role", "manager"]).assert().success();
     im(tmp.path()).args(["join", "rando", "--role", "worker"]).assert().success();
 
-    // Before any grant: nobody may create projects.
+    // Before any grant: nobody may create stations.
     im(tmp.path())
-        .args(["project", "create", "boss", "demo"])
+        .args(["work", "create", "boss", "build"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("operator"));
 
     im(tmp.path()).args(["grant", "boss"]).assert().success();
     im(tmp.path())
-        .args(["project", "create", "boss", "demo"])
+        .args(["work", "create", "boss", "build"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created project pj_"));
+        .stdout(predicate::str::contains("Created station build"));
 
     // Grant revoked → the gate closes again.
     im(tmp.path()).args(["revoke", "boss"]).assert().success();
     im(tmp.path())
-        .args(["project", "create", "boss", "demo2"])
+        .args(["work", "create", "boss", "review"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("operator"));
@@ -252,16 +252,15 @@ fn mission_end_fans_out_to_past_participants() {
         im(ws).args(["join", id, "--role", role]).assert().success();
     }
     im(ws).args(["grant", "boss"]).assert().success();
-    im(ws).args(["project", "create", "boss", "demo"]).assert().success();
-    im(ws).args(["work", "create", "boss", "demo", "build", "--executor", "worker"]).assert().success();
-    im(ws).args(["work", "create", "boss", "demo", "review", "--executor", "inspector"]).assert().success();
+    im(ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();
+    im(ws).args(["work", "create", "boss", "review", "--executor", "inspector"]).assert().success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: build\nworks:\n  build:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  review:\n    completion: {outcomes: [pass, fail], terminal: [pass], feedbackRequiredOn: [fail]}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: build, when: done, to: review}\n  - {from: review, when: fail, to: build}\n",
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "t", "--key", "k1"])
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
         .assert()
         .success();
     let ms = {

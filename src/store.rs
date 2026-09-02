@@ -37,29 +37,24 @@ fn schema() -> String {
         granted_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE,
-        description TEXT NOT NULL DEFAULT '',
-        retired INTEGER NOT NULL DEFAULT 0,
-        created_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+    -- The workspace IS the project: works and missions hang directly off it.
+    -- A stable workspace uuid namespaces mission ids (sha256(ws\0key)).
+    CREATE TABLE IF NOT EXISTS workspace_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS works (
-        project_id TEXT NOT NULL,
-        work_key TEXT NOT NULL,
+        work_key TEXT PRIMARY KEY,
         display_name TEXT NOT NULL DEFAULT '',
         executor TEXT,
         prompt TEXT NOT NULL DEFAULT '',
         lifecycle TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, work_key)
+        created_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS missions (
         mission_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
         name TEXT NOT NULL,
         objective TEXT NOT NULL,
         contract_json TEXT NOT NULL CHECK (json_valid(contract_json)),
@@ -97,7 +92,6 @@ fn schema() -> String {
 
     CREATE TABLE IF NOT EXISTS work_notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id TEXT NOT NULL,
         work_key TEXT NOT NULL,
         kind TEXT NOT NULL,
         mission_id TEXT,
@@ -111,6 +105,30 @@ fn schema() -> String {
 
 pub struct Store {
     pub conn: Connection,
+}
+
+impl Store {
+    /// The stable workspace uuid (created on first open). It namespaces
+    /// mission ids the same way PS namespaces them by project id.
+    pub fn workspace_id(&self) -> Result<String> {
+        if let Some(id) = self
+            .conn
+            .query_row(
+                "SELECT value FROM workspace_meta WHERE key = 'workspace_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(id);
+        }
+        let id = format!("ws_{}", uuid::Uuid::new_v4().simple());
+        self.conn.execute(
+            "INSERT OR IGNORE INTO workspace_meta (key, value) VALUES ('workspace_id', ?1)",
+            [&id],
+        )?;
+        Ok(id)
+    }
 }
 
 impl Store {

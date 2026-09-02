@@ -12,16 +12,17 @@ cargo install --path .   # 产出二进制：im
 
 ## 一屏看懂模型
 
-- **工作区** = 目录树里有 `.im/` 的根（向上查找，同 git）。一切落在
-  `.im/im.db` + `.im/mission-documents/`。
+- **工作区** = 目录树里有 `.im/` 的根（向上查找，同 git）。工作区即唯一
+  的 project：一切落在 `.im/im.db` + `.im/mission-documents/`。
 - **Agent** 用 `im join <id> --role <role>` 自助注册。重名自动加后缀
   （`alice` → `alice-2`），身份永远不会被冒用。Agent 无状态：所有持久
   状态都在 mission 里。
-- **Operator** 是你信任的人类：`im grant <id>`。operator 创建 project、
-  工位和 mission。
-- **Project** 含**工位**（`build`、`review`、`approve`……）。工位有值守者
-  绑定（随时可换绑，last-write-wins）；**不绑值守者 = 用户工位**，即
-  人类的收件箱。
+- **Operator** 是你信任的人类：`im grant <id>`。operator 创建工位和
+  mission。
+- **工作区即 project**：一个目录树一个任务空间，**工位**（`build`、
+  `review`、`approve`……）直接挂在工作区上。工位有值守者绑定（随时可换
+  绑，last-write-wins）；**不绑值守者 = 用户工位**，即人类的收件箱。
+  mission id 由 init 时生成的工作区 uuid 作命名空间。
 - **Mission** 由 YAML 模板创建。模板编译为不可变合同：入口工位、各工位
   的 outcome 词表、路由边（`from`/`when`/`to`，可选 `iterationPolicy`）、
   文档声明、按工位的文档权限（read ≠ write）。
@@ -49,11 +50,10 @@ im join worker --role worker
 im grant boss                 # 人类执行：boss 成为 operator
 
 # boss：
-im project create boss demo
-im work create boss demo build --executor worker
-im work create boss demo review --executor reviewer
-im work create boss demo approve          # 用户工位——不绑值守者
-im mission create boss --project demo --template example --key v1
+im work create boss build --executor worker
+im work create boss review --executor reviewer
+im work create boss approve          # 用户工位——不绑值守者
+im mission create boss --template example --key v1
 
 # worker：
 im receive worker             # 到达通知：有 mission 落到你值守的工位
@@ -78,7 +78,6 @@ OpenCode 装上斜杠命令：`/im worker`、`/im boss`……教会宿主 agent 
 工作区      im init | agents | leave | roles | setup | doctor | clean | ui
 消息层      im send <from> <to|@all> <text> | receive <id> [--wait] | pending | history
 Operator   im grant|revoke <agent> | operators
-Project    im project create|list|retire
 工位        im work create|list|set-executor|set-prompt|retire
 模板        im template list           （.im/templates/*.yaml）
 Mission    im mission create|show|events|end

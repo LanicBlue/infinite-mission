@@ -48,19 +48,18 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
         .collect();
 
     let works: Vec<Value> = store
-        .list_works(None)?
+        .list_works()?
         .into_iter()
         .map(|work| {
             let holding: i64 = store
                 .conn
                 .query_row(
-                    "SELECT COUNT(*) FROM missions WHERE project_id = ?1 AND at = ?2 AND status = 'active'",
-                    rusqlite::params![work.project_id, work.work_key],
+                    "SELECT COUNT(*) FROM missions WHERE at = ?1 AND status = 'active'",
+                    rusqlite::params![work.work_key],
                     |row| row.get(0),
                 )
                 .unwrap_or(0);
             json!({
-                "project_id": work.project_id,
                 "work_key": work.work_key,
                 "display_name": work.display_name,
                 "executor": work.executor,
@@ -74,22 +73,21 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
     let missions: Vec<Value> = store
         .conn
         .prepare(
-            "SELECT mission_id, project_id, name, objective, at, status, revision,
+            "SELECT mission_id, name, objective, at, status, revision,
                     ended_disposition, created_at, created_by
              FROM missions ORDER BY created_at DESC",
         )?
         .query_map([], |row| {
             Ok(json!({
                 "mission_id": row.get::<_, String>(0)?,
-                "project_id": row.get::<_, String>(1)?,
-                "name": row.get::<_, String>(2)?,
-                "objective": row.get::<_, String>(3)?,
-                "at": row.get::<_, Option<String>>(4)?,
-                "status": row.get::<_, String>(5)?,
-                "revision": row.get::<_, i64>(6)?,
-                "ended_disposition": row.get::<_, Option<String>>(7)?,
-                "created_at": row.get::<_, i64>(8)?,
-                "created_by": row.get::<_, String>(9)?,
+                "name": row.get::<_, String>(1)?,
+                "objective": row.get::<_, String>(2)?,
+                "at": row.get::<_, Option<String>>(3)?,
+                "status": row.get::<_, String>(4)?,
+                "revision": row.get::<_, i64>(5)?,
+                "ended_disposition": row.get::<_, Option<String>>(6)?,
+                "created_at": row.get::<_, i64>(7)?,
+                "created_by": row.get::<_, String>(8)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -145,7 +143,6 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
                 "at": mission.at,
                 "name": mission.name,
                 "objective": mission.objective,
-                "project_id": mission.project_id,
                 "reason": reason,
                 "arrived_at": arrived_at,
                 "revision": mission.revision,
@@ -177,7 +174,6 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
         "operators": operators,
         "templates": templates,
         "agents": agents,
-        "projects": store.list_projects()?,
         "works": works,
         "missions": missions,
         "inbox": inbox,
@@ -213,16 +209,14 @@ fn apply_action(
             }
         }
         "set_executor" => {
-            let project = action["project"].as_str().context("`project` required")?;
             let work = action["work"].as_str().context("`work` required")?;
             let executor = action["executor"].as_str().context("`executor` required")?;
             let executor = if executor == "-" { None } else { Some(executor) };
             let acting = acting_operator(store)?;
-            store.set_work_executor(&acting, project, work, executor)?;
-            Ok(format!("station {project}/{work} executor → {}", executor.unwrap_or("(user station)")))
+            store.set_work_executor(&acting, work, executor)?;
+            Ok(format!("station {work} executor → {}", executor.unwrap_or("(user station)")))
         }
         "mission_create" => {
-            let project = action["project"].as_str().context("`project` required")?;
             let template = action["template"].as_str().context("`template` required")?;
             let key = action["key"].as_str().context("`key` required")?;
             let template_path = workspace.join(".im").join("templates").join(format!("{template}.yaml"));
@@ -232,7 +226,6 @@ fn apply_action(
             let acting = acting_operator(store)?;
             let outcome = store.create_mission(
                 &acting,
-                project,
                 &parsed,
                 &format!(".im/templates/{template}.yaml"),
                 &bytes,
@@ -286,39 +279,24 @@ fn apply_action(
             }
         }
         "work_create" => {
-            let project = action["project"].as_str().context("`project` required")?;
             let work = action["work"].as_str().context("`work` required")?;
             let executor = action["executor"].as_str().context("`executor` required (\"-\" for a user station)")?;
             let executor = if executor == "-" { None } else { Some(executor) };
             let acting = acting_operator(store)?;
             store.create_work(
                 &acting,
-                project,
                 work,
                 action["display_name"].as_str().unwrap_or(""),
                 executor,
                 action["prompt"].as_str().unwrap_or(""),
             )?;
-            Ok(format!("station {project}/{work} created"))
+            Ok(format!("station {work} created"))
         }
         "work_retire" => {
-            let project = action["project"].as_str().context("`project` required")?;
             let work = action["work"].as_str().context("`work` required")?;
             let acting = acting_operator(store)?;
-            store.retire_work(&acting, project, work)?;
-            Ok(format!("station {project}/{work} retired"))
-        }
-        "project_retire" => {
-            let project = action["project"].as_str().context("`project` required")?;
-            let acting = acting_operator(store)?;
-            store.retire_project(&acting, project)?;
-            Ok(format!("project {project} retired"))
-        }
-        "project_create" => {
-            let name = action["name"].as_str().context("`name` required")?;
-            let acting = acting_operator(store)?;
-            let id = store.create_project(&acting, name, action["description"].as_str().unwrap_or(""))?;
-            Ok(format!("project {name} created ({id})"))
+            store.retire_work(&acting, work)?;
+            Ok(format!("station {work} retired"))
         }
         other => bail!("unknown action type: {other}"),
     }

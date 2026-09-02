@@ -48,7 +48,6 @@ fn main() -> Result<()> {
             cmd_grant(&command, &id)
         }
         "operators" => cmd_operators(),
-        "project" => cmd_project(args.collect()),
         "work" => cmd_work(args.collect()),
         "template" => cmd_template(args.collect()),
         "mission" => cmd_mission(args.collect()),
@@ -175,11 +174,11 @@ fn cmd_leave(id: &str) -> Result<()> {
     if !stations.is_empty() {
         let listing: Vec<String> = stations
             .iter()
-            .map(|work| format!("{}/{}", work.project_id, work.work_key))
+            .map(|work| work.work_key.clone())
             .collect();
         println!(
             "Note: {id} still guards {} station(s): {}. An operator should rebind them with \
-             `im work set-executor <op> <project> <work-key> <agent>` — missions stay put.",
+             `im work set-executor <op> <work-key> <agent>` — missions stay put.",
             listing.len(),
             listing.join(", ")
         );
@@ -410,7 +409,7 @@ fn print_messages(messages: &[im::records::MessageRecord], receiver: &str) {
 
 fn print_notes(notes: &[im::records::WorkNoteRecord], receiver: &str) {
     for note in notes {
-        println!("[station {}/{}] {}", note.project_id, note.work_key, note.content);
+        println!("[station {}] {}", note.work_key, note.content);
         if let Some(mission_id) = &note.mission_id {
             println!(
                 "  → Run: im mission show {mission_id} --for {receiver} (then im missions {receiver})"
@@ -451,7 +450,7 @@ fn cmd_history(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-// --- Operators / projects / works / templates ---
+// --- Operators / works / templates ---
 
 fn cmd_grant(command: &str, id: &str) -> Result<()> {
     let workspace = find_workspace()?;
@@ -478,48 +477,6 @@ fn cmd_operators() -> Result<()> {
     Ok(())
 }
 
-fn cmd_project(args: Vec<String>) -> Result<()> {
-    match args.first().map(String::as_str) {
-        Some("create") if args.len() >= 3 => {
-            let operator = &args[1];
-            let name = &args[2];
-            let desc = flag_value(&args[3..], "--desc")?.unwrap_or_default();
-            let workspace = find_workspace()?;
-            let store = open_store(&workspace)?;
-            ensure_agent(&store, operator)?;
-            check_session(&workspace, &store, operator)?;
-            let id = store.create_project(operator, name, &desc)?;
-            println!("Created project {id}: {name}");
-            Ok(())
-        }
-        Some("list") => {
-            let workspace = find_workspace()?;
-            let store = open_store(&workspace)?;
-            let projects = store.list_projects()?;
-            if projects.is_empty() {
-                println!("No projects found.");
-                return Ok(());
-            }
-            for project in projects {
-                let retired = if project.retired { " (retired)" } else { "" };
-                println!("[project {}] {}{retired}", project.id, project.name);
-                if !project.description.is_empty() {
-                    println!("  {}", project.description);
-                }
-            }
-            Ok(())
-        }
-        Some("retire") if args.len() == 3 => {
-            let workspace = find_workspace()?;
-            let store = open_store(&workspace)?;
-            store.retire_project(&args[1], &args[2])?;
-            println!("Retired project {}.", args[2]);
-            Ok(())
-        }
-        _ => bail!("Usage: im project <create <op> <name> [--desc <text>]> | list | retire <op> <id-or-name>>"),
-    }
-}
-
 fn flag_value(args: &[String], flag: &str) -> Result<Option<String>> {
     let mut i = 0;
     while i < args.len() {
@@ -537,26 +494,24 @@ fn flag_value(args: &[String], flag: &str) -> Result<Option<String>> {
 
 fn cmd_work(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
-        Some("create") if args.len() >= 4 => {
+        Some("create") if args.len() >= 3 => {
             let operator = &args[1];
-            let project = &args[2];
-            let work_key = &args[3];
-            let display_name = flag_value(&args[4..], "--display-name")?;
-            let executor = flag_value(&args[4..], "--executor")?;
-            let prompt = flag_value(&args[4..], "--prompt")?;
+            let work_key = &args[2];
+            let display_name = flag_value(&args[3..], "--display-name")?;
+            let executor = flag_value(&args[3..], "--executor")?;
+            let prompt = flag_value(&args[3..], "--prompt")?;
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
             ensure_agent(&store, operator)?;
             check_session(&workspace, &store, operator)?;
-            let (project_id, key) = store.create_work(
+            let key = store.create_work(
                 operator,
-                project,
                 work_key,
                 &display_name.unwrap_or_default(),
                 executor.as_deref(),
                 &prompt.unwrap_or_default(),
             )?;
-            println!("Created station {project_id}/{key}");
+            println!("Created station {key}");
             if executor.is_none() {
                 println!("  (user station — bind an executor with im work set-executor)");
             }
@@ -565,50 +520,49 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
         Some("list") => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
-            for work in store.list_works(None)? {
+            for work in store.list_works()? {
                 let executor = work.executor.as_deref().unwrap_or("(user)");
                 let lifecycle = if work.lifecycle == "retired" { " [retired]" } else { "" };
                 let holding: i64 = store.conn.query_row(
-                    "SELECT COUNT(*) FROM missions WHERE project_id = ?1 AND at = ?2 AND status = 'active'",
-                    rusqlite::params![work.project_id, work.work_key],
+                    "SELECT COUNT(*) FROM missions WHERE at = ?1 AND status = 'active'",
+                    rusqlite::params![work.work_key],
                     |row| row.get(0),
                 )?;
                 println!(
-                    "  {}/{} — executor: {}, holding: {holding}{lifecycle}",
-                    work.project_id, work.work_key, executor
+                    "  {} — executor: {}, holding: {holding}{lifecycle}",
+                    work.work_key, executor
                 );
             }
             Ok(())
         }
-        Some("set-executor") if args.len() == 5 => {
-            let executor_arg = if args[4] == "-" { None } else { Some(args[4].as_str()) };
+        Some("set-executor") if args.len() == 4 => {
+            let executor_arg = if args[3] == "-" { None } else { Some(args[3].as_str()) };
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
-            store.set_work_executor(&args[1], &args[2], &args[3], executor_arg)?;
+            store.set_work_executor(&args[1], &args[2], executor_arg)?;
             println!(
-                "Station {}/{} executor → {}",
+                "Station {} executor → {}",
                 args[2],
-                args[3],
                 executor_arg.unwrap_or("(user station)")
             );
             Ok(())
         }
-        Some("set-prompt") if args.len() >= 5 => {
+        Some("set-prompt") if args.len() >= 4 => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
-            store.set_work_prompt(&args[1], &args[2], &args[3], &args[4..].join(" "))?;
+            store.set_work_prompt(&args[1], &args[2], &args[3..].join(" "))?;
             println!("Station prompt updated.");
             Ok(())
         }
-        Some("retire") if args.len() == 4 => {
+        Some("retire") if args.len() == 3 => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
-            store.retire_work(&args[1], &args[2], &args[3])?;
-            println!("Retired station {}.", args[3]);
+            store.retire_work(&args[1], &args[2])?;
+            println!("Retired station {}.", args[2]);
             Ok(())
         }
         _ => bail!(
-            "Usage: im work <create <op> <project> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]\n             | list | set-executor <op> <project> <work> <agent-or->\n             | set-prompt <op> <project> <work> <text...> | retire <op> <project> <work>>"
+            "Usage: im work <create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | retire <op> <work>>"
         ),
     }
 }
@@ -655,7 +609,7 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
         Some("end") if args.len() >= 3 => cmd_mission_end(&args[1], &args[2], flag_value(&args[3..], "--reason")?),
         Some("doc") => cmd_mission_doc(&args[1..]),
         _ => bail!(
-            "Usage: im mission <create <op> --project <p> --template <name> --key <unique-key> [--name <n>] [--objective <o>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->>"
+            "Usage: im mission <create <op> --template <name> --key <unique-key> [--name <n>] [--objective <o>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->>"
         ),
     }
 }
@@ -663,8 +617,7 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
 fn cmd_mission_create(args: &[String]) -> Result<()> {
     let operator = args
         .first()
-        .context("Usage: im mission create <op> --project <p> --template <name> --key <unique-key>")?;
-    let project = flag_value(&args[1..], "--project")?.context("--project is required")?;
+        .context("Usage: im mission create <op> --template <name> --key <unique-key>")?;
     let template_name = flag_value(&args[1..], "--template")?.context("--template is required")?;
     let idem_key = flag_value(&args[1..], "--key")?.context("--key (idempotency key) is required")?;
     let name = flag_value(&args[1..], "--name")?;
@@ -682,7 +635,6 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
 
     let outcome = store.create_mission(
         operator,
-        &project,
         &template,
         &format!(".im/templates/{template_name}.yaml"),
         &bytes,
@@ -712,7 +664,6 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
     }
     let view = store.run_view(mission_id, for_agent)?;
     println!("[mission {}] {} — {}", view.mission_id, view.name, view.status);
-    println!("  project: {}", view.project_id);
     if !view.objective.is_empty() {
         println!("  objective: {}", view.objective);
     }
@@ -962,7 +913,7 @@ fn cmd_doctor() -> Result<()> {
     }
 
     // Archived agents still guarding stations.
-    let stations = store.list_works(None)?;
+    let stations = store.list_works()?;
     let archived: std::collections::BTreeSet<String> = store
         .list_agents(true)?
         .into_iter()
@@ -972,7 +923,7 @@ fn cmd_doctor() -> Result<()> {
     let orphaned: Vec<String> = stations
         .iter()
         .filter(|work| work.executor.as_ref().map(|e| archived.contains(e)).unwrap_or(false))
-        .map(|work| format!("{}/{} (held by {})", work.project_id, work.work_key, work.executor.clone().unwrap_or_default()))
+        .map(|work| format!("{} (held by {})", work.work_key, work.executor.clone().unwrap_or_default()))
         .collect();
     if orphaned.is_empty() {
         println!("OK: no archived agents guarding stations");
@@ -986,7 +937,7 @@ fn cmd_doctor() -> Result<()> {
     let retired: std::collections::BTreeSet<String> = stations
         .iter()
         .filter(|work| work.lifecycle == "retired")
-        .map(|work| format!("{}/{}", work.project_id, work.work_key))
+        .map(|work| work.work_key.clone())
         .collect();
     let stranded = store.list_stranded_missions()?;
     if stranded.is_empty() {
@@ -1061,13 +1012,12 @@ COMMANDS
 
 Operators (humans run `im grant <agent-id>` once)
   im grant|revoke <agent> / im operators
-  im project create <op> <name> [--desc <t>] / list / retire <op> <id>
-  im work create <op> <project> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]
-  im work list / set-executor <op> <p> <work> <agent-or-> / set-prompt / retire
+  im work create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]
+  im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text> / retire <op> <work>
   im template list                          Mission templates in .im/templates/
 
 Missions (PS semantics)
-  im mission create <op> --project <p> --template <name> --key <unique-key> [--name] [--objective]
+  im mission create <op> --template <name> --key <unique-key> [--name] [--objective]
   im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
   im missions <agent>                       Active missions at your stations
   im mission submit <agent> <ms> --revision N --outcome <o>
@@ -1084,11 +1034,10 @@ Maintenance
 
 QUICK START
   1. im init && im join boss --role manager && im grant boss   (human grants once)
-  2. im project create boss website
-  3. im work create boss website build --executor worker
-     im work create boss website review --executor inspector
-  4. Write .im/templates/website.yaml, then:
-     im mission create boss --project website --template website --key v1
+  2. im work create boss build --executor worker
+     im work create boss review --executor inspector
+  3. Write .im/templates/example-like.yaml, then:
+     im mission create boss --template example-like --key v1
   5. Worker: im missions worker → im mission show <ms> --for worker
      → im mission doc write worker <ms> --id impl --file -
      → im mission submit worker <ms> --revision 1 --outcome done

@@ -78,20 +78,16 @@ fn setup() -> (Fixture, String) {
     }
     im(&workspace).args(["grant", "boss"]).assert().success();
     im(&workspace)
-        .args(["project", "create", "boss", "demo"])
+        .args(["work", "create", "boss", "build", "--executor", "worker"])
         .assert()
         .success();
     im(&workspace)
-        .args(["work", "create", "boss", "demo", "build", "--executor", "worker"])
-        .assert()
-        .success();
-    im(&workspace)
-        .args(["work", "create", "boss", "demo", "review", "--executor", "inspector"])
+        .args(["work", "create", "boss", "review", "--executor", "inspector"])
         .assert()
         .success();
     // approval is a user station (no executor) the review template routes into.
     im(&workspace)
-        .args(["work", "create", "boss", "demo", "approval"])
+        .args(["work", "create", "boss", "approval"])
         .assert()
         .success();
     std::fs::write(
@@ -100,7 +96,7 @@ fn setup() -> (Fixture, String) {
     )
     .unwrap();
     im(&workspace)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "review", "--key", "v1"])
+        .args(["mission", "create", "boss", "--template", "review", "--key", "v1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created mission ms_"));
@@ -121,7 +117,7 @@ fn mission_create_is_idempotent_by_key() {
     let ws = fixture.workspace;
     // Same key → same mission, no duplicate.
     im(&ws)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "review", "--key", "v1"])
+        .args(["mission", "create", "boss", "--template", "review", "--key", "v1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("already exists"));
@@ -280,7 +276,7 @@ fn abandon_and_operator_delete_endings() {
 
     // Second mission: operator delete path.
     im(&ws)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "review", "--key", "v2"])
+        .args(["mission", "create", "boss", "--template", "review", "--key", "v2"])
         .assert()
         .success();
     let ms2 = {
@@ -388,7 +384,7 @@ fn rebind_is_a_pointer_move_not_a_migration() {
     // worker-2 joins; operator rebinds the build station.
     im(&ws).args(["join", "worker-2", "--role", "worker"]).assert().success();
     im(&ws)
-        .args(["work", "set-executor", "boss", "demo", "build", "worker-2"])
+        .args(["work", "set-executor", "boss", "build", "worker-2"])
         .assert()
         .success();
 
@@ -426,10 +422,9 @@ fn user_stations_need_a_reason_and_surface_in_inbox() {
     im(&ws).args(["join", "boss", "--role", "manager"]).assert().success();
     im(&ws).args(["join", "worker", "--role", "worker"]).assert().success();
     im(&ws).args(["grant", "boss"]).assert().success();
-    im(&ws).args(["project", "create", "boss", "demo"]).assert().success();
     // build has an executor; approve is a USER station (no executor).
-    im(&ws).args(["work", "create", "boss", "demo", "build", "--executor", "worker"]).assert().success();
-    im(&ws).args(["work", "create", "boss", "demo", "approve"]).assert().success();
+    im(&ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();
+    im(&ws).args(["work", "create", "boss", "approve"]).assert().success();
 
     std::fs::write(
         ws.join(".im").join("templates").join("handoff.yaml"),
@@ -449,7 +444,7 @@ paths:
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "handoff", "--key", "h1"])
+        .args(["mission", "create", "boss", "--template", "handoff", "--key", "h1"])
         .assert()
         .success();
     let ms = first_mission_id(&ws);

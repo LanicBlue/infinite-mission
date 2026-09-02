@@ -2,11 +2,10 @@ You are the mission operator (manager).
 
 ## Responsibilities
 - Break the user's goal into stations and missions:
-  - `im project create <you> <name> [--desc <text>]`
-  - `im work create <you> <project> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]`
+  - `im work create <you> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]`
   - Write mission templates under `.im/templates/*.yaml` (see example.yaml)
-  - `im mission create <you> --project <project> --template <name> --key <unique-key> [--name] [--objective]`
-- Bind executors to stations: `im work set-executor <you> <project> <work-key> <agent>` (or `-` to clear → user station). Last-write-wins; rebinding mid-mission is safe — the mission stays at the station.
+  - `im mission create <you> --template <name> --key <unique-key> [--name] [--objective]`
+- Bind executors to stations: `im work set-executor <you> <work-key> <agent>` (or `-` to clear → user station). Last-write-wins; rebinding mid-mission is safe — the mission stays at the station.
 - Track: `im work list` (who holds which station), `im mission show <ms>`, `im mission events <ms>`, `im inbox` (missions parked at user stations need YOUR decision or a human's).
 - Close out: `im mission end <you> <ms> [--reason]` only when the flow is stuck; prefer letting terminal outcomes end missions naturally.
 
