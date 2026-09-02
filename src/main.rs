@@ -2,7 +2,11 @@ use anyhow::{bail, Context, Result};
 use fs2::FileExt;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 3_600;
+/// Default wait timeout: 6h — multi-hour background waits wake the owning
+/// session reliably (proven by the quota watcher's 5.5h sleeps), and a
+/// longer timeout means fewer no-op wake/re-hang cycles. `--timeout` still
+/// overrides for short waits.
+const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 21_600;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
