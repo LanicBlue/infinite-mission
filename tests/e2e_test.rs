@@ -22,18 +22,18 @@ fn setup_workspace() -> TempDir {
 fn join_collision_appends_suffix() {
     let tmp = setup_workspace();
     im(tmp.path())
-        .args(["join", "alice", "--role", "worker"])
+        .args(["join", "alice"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Joined as alice (role: worker)"));
+        .stdout(predicate::str::contains("Joined as alice"));
 
     // Same ID again → auto-suffix, never impersonation.
     im(tmp.path())
-        .args(["join", "alice", "--role", "worker"])
+        .args(["join", "alice"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Id 'alice' was taken. Joined as alice-2 (role: worker).",
+            "Id 'alice' was taken. Joined as alice-2.",
         ));
 
     im(tmp.path())
@@ -45,77 +45,29 @@ fn join_collision_appends_suffix() {
 }
 
 #[test]
-fn send_receive_reply_roundtrip() {
+fn peer_send_is_rejected() {
     let tmp = setup_workspace();
     for id in ["alice", "bob"] {
-        im(tmp.path()).args(["join", id, "--role", "worker"]).assert().success();
+        im(tmp.path()).args(["join", id]).assert().success();
     }
 
     im(tmp.path())
         .args(["send", "alice", "bob", "implement the auth module"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Sent to bob."));
+        .failure()
+        .stderr(predicate::str::contains("no peer messaging"));
 
-    let received = String::from_utf8(
-        im(tmp.path())
-            .args(["receive", "bob"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .unwrap();
-    assert!(received.contains("[from alice] implement the auth module"));
-    assert!(received.contains("Reply: im send bob alice"));
-
-    // Consumed: a second receive is empty, pending stays empty.
-    im(tmp.path())
-        .args(["receive", "bob"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No new messages"));
-    im(tmp.path())
-        .args(["pending", "bob"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No pending messages"));
-
-    // History still shows the roundtrip.
-    im(tmp.path())
-        .args(["history", "bob"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("alice -> bob"))
-        .stdout(predicate::str::contains("implement the auth module"));
-}
-
-#[test]
-fn broadcast_reaches_every_joined_agent() {
-    let tmp = setup_workspace();
-    for id in ["alice", "bob", "carol"] {
-        im(tmp.path()).args(["join", id, "--role", "worker"]).assert().success();
-    }
     im(tmp.path())
         .args(["send", "alice", "@all", "all hands at noon"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Broadcast to 2 agents"))
-        .stdout(predicate::str::contains("bob"))
-        .stdout(predicate::str::contains("carol"));
-
-    im(tmp.path())
-        .args(["receive", "carol"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("all hands at noon"));
+        .failure()
+        .stderr(predicate::str::contains("no peer messaging"));
 }
 
 #[test]
 fn receive_wait_times_out_and_lock_is_exclusive() {
     let tmp = setup_workspace();
-    im(tmp.path()).args(["join", "alice", "--role", "worker"]).assert().success();
+    im(tmp.path()).args(["join", "alice"]).assert().success();
 
     let ws = tmp.path().to_path_buf();
     let waiter = std::thread::spawn(move || {
@@ -140,37 +92,48 @@ fn receive_wait_times_out_and_lock_is_exclusive() {
 }
 
 #[test]
-fn receive_wait_wakes_on_arrival() {
+fn receive_wait_wakes_on_station_arrival() {
     let tmp = setup_workspace();
-    for id in ["alice", "bob"] {
-        im(tmp.path()).args(["join", id, "--role", "worker"]).assert().success();
+    let ws = tmp.path();
+    for id in ["boss", "worker"] {
+        im(ws).args(["join", id]).assert().success();
     }
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "build", "--executor", "worker"])
+        .assert()
+        .success();
+    std::fs::write(
+        ws.join(".im").join("templates").join("t.yaml"),
+        "schemaVersion: 4\nname: t\nentry: build\nworks:\n  build:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
 
-    let ws = tmp.path().to_path_buf();
+    let waiter_ws = ws.to_path_buf();
     let waiter = std::thread::spawn(move || {
         let out = StdCommand::new(env!("CARGO_BIN_EXE_im"))
-            .current_dir(&ws)
-            .args(["receive", "bob", "--wait", "--timeout", "10"])
+            .current_dir(&waiter_ws)
+            .args(["receive", "worker", "--wait", "--timeout", "10"])
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).into_owned()
     });
 
     sleep(Duration::from_millis(900));
-    im(tmp.path())
-        .args(["send", "alice", "bob", "wake up"])
+    im(ws)
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
         .assert()
         .success();
 
     let out = waiter.join().unwrap();
-    assert!(out.contains("wake up"), "got: {out}");
+    assert!(out.contains("[station build]"), "got: {out}");
     assert!(!out.contains("timed out"), "waiter should return early: {out}");
 }
 
 #[test]
 fn membership_changes_notify_the_member() {
     let tmp = setup_workspace();
-    im(tmp.path()).args(["join", "alice", "--role", "worker"]).assert().success();
+    im(tmp.path()).args(["join", "alice"]).assert().success();
 
     im(tmp.path())
         .args(["grant", "alice"])
@@ -198,7 +161,7 @@ fn membership_changes_notify_the_member() {
 #[test]
 fn receive_wait_farewells_when_membership_ends() {
     let tmp = setup_workspace();
-    im(tmp.path()).args(["join", "alice", "--role", "worker"]).assert().success();
+    im(tmp.path()).args(["join", "alice"]).assert().success();
 
     let ws = tmp.path().to_path_buf();
     let waiter = std::thread::spawn(move || {
@@ -228,13 +191,10 @@ fn receive_wait_farewells_when_membership_ends() {
 fn leave_archives_identity_and_join_reactivates_with_new_session() {
     let tmp = setup_workspace();
     let ws = tmp.path();
-    im(ws).args(["join", "alice", "--role", "worker"]).assert().success();
-    im(ws).args(["join", "bob", "--role", "worker"]).assert().success();
+    im(ws).args(["join", "alice"]).assert().success();
+    im(ws).args(["join", "bob"]).assert().success();
 
-    im(ws)
-        .args(["send", "bob", "alice", "read me when you're back"])
-        .assert()
-        .success();
+    im(ws).args(["grant", "alice"]).assert().success();
     im(ws).args(["leave", "alice"]).assert().success();
 
     // Archived: gone from the active roster, still visible with --all.
@@ -252,16 +212,16 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
 
     // Joining the same id reactivates it (comeback), with a fresh session token.
     im(ws)
-        .args(["join", "alice", "--role", "worker"])
+        .args(["join", "alice"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Joined as alice"));
-    // The unread message from the archived period survived.
+    // The unread membership notice from the archived period survived.
     im(ws)
         .args(["receive", "alice"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("read me when you're back"));
+        .stdout(predicate::str::contains("granted manager permission"));
 
     // A stale terminal (old session file) is displaced by the new join.
     std::fs::write(ws.join(".im").join("sessions").join("alice"), "stale-token").unwrap();
@@ -275,8 +235,8 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
 #[test]
 fn manager_commands_are_gated_by_grant() {
     let tmp = setup_workspace();
-    im(tmp.path()).args(["join", "boss", "--role", "manager"]).assert().success();
-    im(tmp.path()).args(["join", "rando", "--role", "worker"]).assert().success();
+    im(tmp.path()).args(["join", "boss"]).assert().success();
+    im(tmp.path()).args(["join", "rando"]).assert().success();
 
     // Before any grant: nobody may create stations.
     im(tmp.path())
@@ -305,8 +265,8 @@ fn manager_commands_are_gated_by_grant() {
 fn mission_end_fans_out_to_past_participants() {
     let tmp = setup_workspace();
     let ws = tmp.path();
-    for (id, role) in [("boss", "manager"), ("worker", "worker"), ("inspector", "inspector")] {
-        im(ws).args(["join", id, "--role", role]).assert().success();
+    for id in ["boss", "worker", "inspector"] {
+        im(ws).args(["join", id]).assert().success();
     }
     im(ws).args(["grant", "boss"]).assert().success();
     im(ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();

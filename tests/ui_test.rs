@@ -15,8 +15,8 @@ fn state_json_exposes_the_console_data_contract() {
     let tmp = TempDir::new().unwrap();
     let ws = tmp.path();
     im(ws).arg("init").assert().success();
-    for (id, role) in [("boss", "manager"), ("worker", "worker")] {
-        im(ws).args(["join", id, "--role", role]).assert().success();
+    for id in ["boss", "worker"] {
+        im(ws).args(["join", id]).assert().success();
     }
     im(ws).args(["grant", "boss"]).assert().success();
     im(ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();
@@ -89,4 +89,39 @@ fn state_json_exposes_the_console_data_contract() {
     // Events feed the delivery-history timeline.
     let events = state["events"].as_array().unwrap();
     assert!(events.len() >= 2, "expected created+routed events, got {events:?}");
+}
+
+#[test]
+fn console_can_grant_the_first_manager() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_path_buf();
+    im(&ws).arg("init").assert().success();
+    im(&ws).args(["join", "cursor"]).assert().success();
+
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+    assert!(store.list_managers().unwrap().is_empty());
+
+    let message = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "grant", "agent": "cursor" }),
+        &ws,
+    )
+    .unwrap();
+    assert!(message.contains("granted manager to cursor"), "got: {message}");
+    assert_eq!(store.list_managers().unwrap(), vec!["cursor".to_string()]);
+
+    // Bootstrap grant is enough for the rest of the console (create a station).
+    let created = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "work_create",
+            "work": "build",
+            "display_name": "Build",
+            "executor": "cursor",
+            "prompt": ""
+        }),
+        &ws,
+    )
+    .unwrap();
+    assert!(created.contains("station build created"), "got: {created}");
 }

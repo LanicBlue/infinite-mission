@@ -14,11 +14,12 @@ cargo install --path .   # 产出二进制：im
 
 - **工作区** = 目录树里有 `.im/` 的根（向上查找，同 git）。工作区即唯一
   的 project：一切落在 `.im/im.db` + `.im/mission-documents/`。
-- **Agent** 用 `im join <id> --role <role>` 自助注册。重名自动加后缀
-  （`alice` → `alice-2`），身份永远不会被冒用。Agent 无状态：所有持久
-  状态都在 mission 里。
-- **Manager** 是你信任的人类：`im grant <id>`。manager 创建工位和
-  mission。
+- **Agent** 用 `im join <id>` 自助注册。重名自动加后缀
+  （`alice` → `alice-2`），身份永远不会被冒用。Agent 无状态、无剧本：
+  所有持久状态都在 mission 里，作业内容随工位 prompt 与 mission 一起到达。
+- **Manager** 是你信任的人类：终端 `im grant <id>`，或 `im ui` 成员页
+  （零 manager 时也可以点「设为 manager」——控制台就是人）。manager 创建
+  工位和 mission。
 - **工作区即 project**：一个目录树一个任务空间，**工位**（`build`、
   `review`、`approve`……）直接挂在工作区上。工位有值守者绑定（随时可换
   绑，last-write-wins）；**不绑值守者 = 用户工位**，即人类的收件箱。
@@ -28,6 +29,10 @@ cargo install --path .   # 产出二进制：im
   文档声明、按工位的文档权限（read ≠ write）。
 - **所有权在工位，不在 agent。** mission 停驻在工位上；只有该工位值守者
   能 submit。换绑只是移动指针——mission、历史、文档都不动。
+- **成员之间没有直连。** 没有 `im send`。Agent 互不相连；唯一的邮件是停
+  在工位上的 mission。`im receive` 只投递工位到达通知和成员资格通知
+  （授权 / 收回 / 删除）。反馈走 round（`--feedback`、`--reason`、文档），
+  不是聊天。
 - **提交**（`im mission submit`）在单事务里走完整裁决：ended → revision
   CAS → 归属 → 词表 → feedback 必填 → 回执 → 路由（0/1/2+ 边）→ 跳用户
   工位必须给 reason → 落 `round.completed` + `routed` 事件、revision +1。
@@ -43,15 +48,15 @@ cargo install --path .   # 产出二进制：im
 
 ```bash
 mkdir my-project && cd my-project
-im init                       # 工作区、角色、示例模板、/im 装机
+im init                       # 工作区 + 示例模板
 
-im join boss --role manager   # 各 agent 的终端里
-im join worker --role worker
+im join boss                  # 各 agent 的终端里——不需要任何剧本
+im join worker
 im grant boss                 # 人类执行：boss 成为 manager
 
-# boss：
-im work create boss build --executor worker
-im work create boss review --executor reviewer
+# boss——工位 prompt 就是值守者将看到的作业内容：
+im work create boss build --executor worker --prompt "实现 {mission.objective}，并附设计说明。"
+im work create boss review --executor reviewer --prompt "评审 {mission.name} 的第 {mission.iteration} 轮。"
 im work create boss approve          # 用户工位——不绑值守者
 im mission create boss --template example --key v1
 
@@ -68,16 +73,16 @@ im inbox
 im mission submit boss <ms> --revision 2 --outcome ok
 ```
 
-`im setup`（`im init` 已顺带执行）为 Claude Code / Gemini CLI / Codex /
-OpenCode 装上斜杠命令：`/im worker`、`/im boss`……教会宿主 agent 该角色的
-动词环。
+工位 prompt 可插值 `{mission.name}`、`{mission.objective}`、
+`{mission.from}`、`{mission.iteration}`、`{mission.reason}`（未知槽位保留
+字面）。没有角色剧本：外部注册的 agent 只从 mission 简报获得指令。
 
 ## 命令面
 
 ```
-工作区      im init | agents | leave | roles | setup | doctor | clean | ui
-消息层      im send <from> <to|@all> <text> | receive <id> [--wait] | pending | history
-Manager   im grant|revoke <agent> | im managers
+工作区      im init | agents | leave | doctor | clean | ui
+收件        im receive <id> [--wait] | pending | history   # 到达通知 + 成员资格，不是聊天
+Manager   im grant|revoke <agent> | im managers           # 也可在控制台「成员」页授予
 工位        im work create|list|set-executor|set-prompt|retire
 模板        im template list           （.im/templates/*.yaml）
 Mission    im mission create|show|events|end
@@ -133,11 +138,11 @@ CLI 调用的单个 SQLite 事务里。agent 来来去去、终端死掉、身�
 
 `im ui` 启动临时 localhost 控制台（固定默认端口 4600、自动开浏览器、闲置 5 分钟自退；`--port N`
 可换）：工位板（含换绑）、mission 视图（revision/at/disposition）、用户
-inbox（带跳转 reason）、投递历史时间线、manager 动作（授权、从模板建
-mission、终结）。
+inbox（带跳转 reason）、投递历史时间线、成员管理（授权/收回 manager、删除
+——零 manager 时也可用，控制台即人类）、任务动作（从模板创建、终结）。
 
 ## 出处
 
-无守护底座（工作区发现、agent 注册、会话令牌、消息锁/等待循环、斜杠命令
-装机、临时 UI 服务器）派生自 [squad](https://github.com/mco-org/squad)
+无守护底座（工作区发现、agent 注册、会话令牌、通知锁/等待循环、临时 UI
+服务器）派生自 [squad](https://github.com/mco-org/squad)
 （MIT）。mission 语义遵循 work-mission 信箱模型。MIT 许可。

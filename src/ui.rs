@@ -43,7 +43,6 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
             };
             json!({
                 "id": agent.id,
-                "role": agent.role,
                 "status": status,
                 "manager": managers.contains(&agent.id),
             })
@@ -194,7 +193,7 @@ fn acting_manager(store: &crate::store::Store) -> Result<String> {
     }
 }
 
-fn apply_action(
+pub fn apply_action(
     store: &crate::store::Store,
     action: &Value,
     workspace: &PathBuf,
@@ -203,12 +202,15 @@ fn apply_action(
     match kind {
         "grant" | "revoke" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
-            let acting = acting_manager(store)?;
+            // The console is the human operator, same trust as `im grant` in a
+            // terminal. It must work with zero managers (bootstrap) and after
+            // the last manager is removed (recovery) — do not require an
+            // acting manager identity.
             if kind == "grant" {
-                store.grant_manager(&acting, agent)?;
+                store.grant_manager("workspace", agent)?;
                 Ok(format!("granted manager to {agent}"))
             } else {
-                store.revoke_manager(&acting, agent)?;
+                store.revoke_manager("workspace", agent)?;
                 Ok(format!("revoked manager from {agent}"))
             }
         }

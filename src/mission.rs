@@ -706,12 +706,13 @@ impl Store {
         )?;
         tx.commit()?;
 
-        // mission.ended fan-out: every past round's resolver hears the end.
+        // mission.ended fan-out: a workspace notice, not a peer message.
+        // Past round resolvers hear the end even after the mailbox has moved.
         let participants = self.mission_participants(&mission.mission_id)?;
         for participant in participants {
             if participant != by_agent {
                 let _ = self.send_message_envelope(
-                    by_agent,
+                    "workspace",
                     &participant,
                     &format!(
                         "[{}] mission ended: {} ({})",

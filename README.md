@@ -16,11 +16,13 @@ cargo install --path .   # binary: im
 - **Workspace** = a directory tree with `.im/` at the root (found by walking
   up, like git). The workspace is the single project: everything lives in
   `.im/im.db` + `.im/mission-documents/`.
-- **Agents** self-register with `im join <id> --role <role>`. A taken id
+- **Agents** self-register with `im join <id>`. A taken id
   auto-suffixes (`alice` → `alice-2`) — identities are never impersonated.
-  Agents are stateless: all durable state lives in missions.
-- **Managers** are humans you trust: `im grant <id>`. Managers create
-  stations and missions.
+  Agents are stateless and persona-free: all durable state lives in missions,
+  and work content arrives with each mission's station prompt.
+- **Managers** are humans you trust: `im grant <id>` in a terminal, or the
+  Members page in `im ui` (works with zero managers — the console *is* the
+  human). Managers create stations and missions.
 - **The workspace IS the project**: one directory tree, one mission space.
   **Stations** (`build`, `review`, `approve`, …) hang directly off the
   workspace. A station has an executor binding (rebindable at any time,
@@ -34,6 +36,11 @@ cargo install --path .   # binary: im
 - **Ownership is the station's, not the agent's.** A mission sits *at* a
   station; only that station's on-duty executor may submit. Rebinding the
   station moves the pointer — the mission, its history and documents stay.
+- **Members have no peer channel.** There is no `im send`. Agents are not
+  connected to each other; the only mail is a mission sitting at a station.
+  `im receive` delivers station arrival notes and membership notices
+  (grant / revoke / removed). Feedback travels in the round (`--feedback`,
+  `--reason`, documents), not as chat.
 - **Submitting** (`im mission submit`) runs full adjudication in one
   transaction: ended → revision CAS → attribution → vocabulary →
   feedback-required → receipts → routing (0/1/2+ edges) → user-station hop
@@ -44,28 +51,28 @@ cargo install --path .   # binary: im
 - **Events are the history.** `created`, `round.completed`, `routed`,
   `ended` — iteration counts are derived, never stored.
 - **Inbox**: missions parked at user stations, with the reason the sender
-  had to give. An manager resolves them.
+  had to give. A manager resolves them.
 
 ## Quick start
 
 ```bash
 mkdir my-project && cd my-project
-im init                       # workspace, roles, example template, /im setup
+im init                       # workspace + example template
 
-im join boss --role manager   # in each agent's terminal
-im join worker --role worker
-im grant boss                 # a human runs this: boss is now an manager
+im join boss                  # in each agent's terminal — no persona needed
+im join worker
+im grant boss                 # a human runs this: boss is now a manager
 
-# as boss:
-im work create boss build --executor worker
-im work create boss review --executor reviewer
+# as boss — the station prompt IS the work content the executor will see:
+im work create boss build --executor worker --prompt "Implement {mission.objective}. Attach the design notes."
+im work create boss review --executor reviewer --prompt "Review iteration {mission.iteration} for {mission.name}."
 im work create boss approve          # user station — no executor
 im mission create boss --template example --key v1
 
 # as worker:
 im receive worker             # arrival note: a mission landed at your station
 im missions worker            # everything active at your stations
-im mission show <ms> --for worker   # prompt, document rights, vocabulary, routes, revision
+im mission show <ms> --for worker   # interpolated prompt, document rights, vocabulary, routes, revision
 im mission doc write worker <ms> --id impl --file src/impl.md   # → receipt
 im mission submit worker <ms> --revision 1 --outcome done \
     --receipts document:<hash>
@@ -75,16 +82,17 @@ im inbox
 im mission submit boss <ms> --revision 2 --outcome ok
 ```
 
-Slash commands install for Claude Code, Gemini CLI, Codex and OpenCode via
-`im setup` (already run by `im init`): `/im worker`, `/im boss`, … teach the
-role loop to the hosting agent.
+Station prompts interpolate `{mission.name}`, `{mission.objective}`,
+`{mission.from}`, `{mission.iteration}` and `{mission.reason}` (unknown slots
+stay literal). There are no persona playbooks: externally registered agents
+get their instructions from the mission brief alone.
 
 ## Commands
 
 ```
-Workspace   im init | agents | leave | roles | setup | doctor | clean | ui
-Messaging   im send <from> <to|@all> <text> | receive <id> [--wait] | pending | history
-Managers   im grant|revoke <agent> | im managers
+Workspace   im init | agents | leave | doctor | clean | ui
+Inbox       im receive <id> [--wait] | pending | history   # arrivals + membership notices, no chat
+Managers   im grant|revoke <agent> | im managers           # also: console Members page
 Stations    im work create|list|set-executor|set-prompt|retire
 Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|end
@@ -94,7 +102,7 @@ Missions    im mission create|show|events|end
             im mission doc read <agent> <ms> <path>
             im mission doc write <agent> <ms> --id <docId> --file <path|->
             im missions <agent>        # active missions at your stations
-Inbox       im inbox                   # missions waiting at user stations
+Attention   im inbox                   # missions waiting at user stations
 Console     im ui                      # browser console at http://127.0.0.1:4600 (localhost only)
 ```
 
@@ -140,15 +148,16 @@ the world from it. Missions survive everything except `im clean`.
 
 ## Console
 
-`im ui` starts an ephemeral localhost console (random port, opens the
-browser, exits after 5 idle minutes): stations board with rebind, missions
+`im ui` starts an ephemeral localhost console (fixed port 4600, `--port` to
+override, exits after 5 idle minutes): stations board with rebind, missions
 with revision/at/disposition, the user inbox with hop reasons, delivery
-history timeline, and manager actions (grant/revoke, create mission from
-template, end mission).
+history timeline, member management (grant/revoke manager, delete — works
+with zero managers, the console is the human), and mission actions (create
+from template, end).
 
 ## Attribution
 
 The no-daemon substrate (workspace discovery, agent registry, session
-tokens, message lock/wait loop, slash-command installation, ephemeral UI
-server) is derived from [squad](https://github.com/mco-org/squad) (MIT).
+tokens, notice lock/wait loop, ephemeral UI server) is derived from
+[squad](https://github.com/mco-org/squad) (MIT).
 The mission semantics follow the work-mission mailbox model. MIT license.

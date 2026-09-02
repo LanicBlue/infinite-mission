@@ -73,8 +73,8 @@ fn setup() -> (Fixture, String) {
     let workspace = tmp.path().to_path_buf();
 
     im(&workspace).arg("init").assert().success();
-    for (id, role) in [("boss", "manager"), ("worker", "worker"), ("inspector", "inspector")] {
-        im(&workspace).args(["join", id, "--role", role]).assert().success();
+    for id in ["boss", "worker", "inspector"] {
+        im(&workspace).args(["join", id]).assert().success();
     }
     im(&workspace).args(["grant", "boss"]).assert().success();
     im(&workspace)
@@ -382,7 +382,7 @@ fn rebind_is_a_pointer_move_not_a_migration() {
     let ws = fixture.workspace;
 
     // worker-2 joins; manager rebinds the build station.
-    im(&ws).args(["join", "worker-2", "--role", "worker"]).assert().success();
+    im(&ws).args(["join", "worker-2"]).assert().success();
     im(&ws)
         .args(["work", "set-executor", "boss", "build", "worker-2"])
         .assert()
@@ -419,8 +419,8 @@ fn user_stations_need_a_reason_and_surface_in_inbox() {
     let tmp = TempDir::new().unwrap();
     let ws = tmp.path().to_path_buf();
     im(&ws).arg("init").assert().success();
-    im(&ws).args(["join", "boss", "--role", "manager"]).assert().success();
-    im(&ws).args(["join", "worker", "--role", "worker"]).assert().success();
+    im(&ws).args(["join", "boss"]).assert().success();
+    im(&ws).args(["join", "worker"]).assert().success();
     im(&ws).args(["grant", "boss"]).assert().success();
     // build has an executor; approve is a USER station (no executor).
     im(&ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();

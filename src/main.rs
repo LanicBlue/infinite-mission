@@ -13,16 +13,9 @@ fn main() -> Result<()> {
         "join" => {
             let id = args.next().unwrap_or_default();
             if id.is_empty() {
-                bail!("Usage: im join <id> [--role <role>]");
+                bail!("Usage: im join <id>");
             }
-            let role = match args.next().as_deref() {
-                Some("--role") => args
-                    .next()
-                    .context("--role requires a value")?,
-                None => id.clone(),
-                Some(other) => bail!("unknown join flag: {other}"),
-            };
-            cmd_join(&id, &role)
+            cmd_join(&id)
         }
         "leave" => {
             let id = args.next().unwrap_or_default();
@@ -35,8 +28,7 @@ fn main() -> Result<()> {
             let show_all = args.next().as_deref() == Some("--all");
             cmd_agents(show_all)
         }
-        "roles" => cmd_roles(),
-        "send" => cmd_send(args.collect()),
+        "send" => cmd_send_removed(),
         "receive" => cmd_receive(args.collect()),
         "pending" => cmd_pending(),
         "history" => cmd_history(args.collect()),
@@ -60,7 +52,6 @@ fn main() -> Result<()> {
         }
         "inbox" => cmd_inbox(),
         "doctor" => cmd_doctor(),
-        "setup" => im::setup::cmd(args.next().as_deref()),
         "clean" => cmd_clean(),
         "ui" => cmd_ui(args.collect()),
         "help" | "--help" | "-h" => {
@@ -71,8 +62,7 @@ fn main() -> Result<()> {
             println!("im {} (infinite-mission)", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        // Unknown commands are treated as role-based joins: `im cto` = `im join cto --role cto`
-        other => cmd_join(other, other),
+        other => bail!("unknown command: {other} — run `im` for the guide"),
     }
 }
 
@@ -124,7 +114,7 @@ fn check_session(workspace: &Path, store: &im::store::Store, agent_id: &str) -> 
         if expected != current {
             bail!(
                 "Session replaced. Another terminal joined as {agent_id}. \
-                 Re-join with a different id (e.g. im join {agent_id}-2 --role <role>)."
+                 Re-join with a different id (e.g. im join {agent_id}-2)."
             );
         }
     }
@@ -134,32 +124,28 @@ fn check_session(workspace: &Path, store: &im::store::Store, agent_id: &str) -> 
 // --- Basics ---
 
 fn cmd_init(args: Vec<String>) -> Result<()> {
-    let refresh = matches!(args.first().map(String::as_str), Some("--refresh-roles"));
-    if !args.is_empty() && !refresh {
-        bail!("Usage: im init [--refresh-roles]");
+    if !args.is_empty() {
+        bail!("Usage: im init");
     }
-    im::init::run(refresh)
+    im::init::run()
 }
 
-fn cmd_join(id: &str, role: &str) -> Result<()> {
+fn cmd_join(id: &str) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    let (actual_id, token) = store.register_agent_unique(id, role)?;
+    let (actual_id, token) = store.register_agent_unique(id)?;
     store.touch_agent(&actual_id)?;
     std::fs::create_dir_all(sessions_dir(&workspace))?;
     std::fs::write(sessions_dir(&workspace).join(&actual_id), &token)?;
     if actual_id != id {
-        println!("Id '{id}' was taken. Joined as {actual_id} (role: {role}).");
+        println!("Id '{id}' was taken. Joined as {actual_id}.");
     } else {
-        println!("Joined as {actual_id} (role: {role}).");
+        println!("Joined as {actual_id}.");
     }
-    match im::roles::load_role(&workspace, role) {
-        Ok(prompt) => println!("\n=== Role Instructions ===\n{prompt}"),
-        Err(_) => {
-            println!("\nNo role file for \"{role}\". Interpret the role autonomously.");
-            println!("Known roles: {}", im::roles::list_roles(&workspace).join(", "));
-        }
-    }
+    println!(
+        "Work content arrives with each mission (station prompt + mission fields) — \
+         check `im missions {actual_id}`."
+    );
     Ok(())
 }
 
@@ -216,99 +202,20 @@ fn cmd_agents(show_all: bool) -> Result<()> {
             }
         };
         let manager_tag = if managers.contains(&agent.id) { " [manager]" } else { "" };
-        println!("  {} (role: {}) — {status}{manager_tag}", agent.id, agent.role);
+        println!("  {} — {status}{manager_tag}", agent.id);
     }
     Ok(())
 }
 
-fn cmd_roles() -> Result<()> {
-    let workspace = find_workspace()?;
-    let roles = im::roles::list_roles(&workspace);
-    if roles.is_empty() {
-        println!("No roles found. Built-ins land via `im init [--refresh-roles]`.");
-    } else {
-        println!("{}", roles.join(", "));
-    }
-    Ok(())
-}
+// --- Inbox (system notices + station arrivals; no peer chat) ---
 
-// --- Messaging ---
-
-struct SendOptions {
-    from: String,
-    to: String,
-    message: String,
-    reply_to: Option<i64>,
-}
-
-fn cmd_send(args: Vec<String>) -> Result<()> {
-    let mut reply_to = None;
-    let mut file_path = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--reply-to" => {
-                let value = args.get(i + 1).context("--reply-to requires a message id")?;
-                reply_to = Some(
-                    value
-                        .parse()
-                        .with_context(|| format!("invalid --reply-to value: {value}"))?,
-                );
-                i += 2;
-            }
-            "--file" => {
-                file_path = Some(args.get(i + 1).context("--file requires a path or -")?.clone());
-                i += 2;
-            }
-            _ => break,
-        }
-    }
-    let remaining = &args[i..];
-    let usage = "Usage: im send [--reply-to <message-id>] [--file <path-or->] <from> <to> <message>";
-    let message = if let Some(path) = file_path {
-        if remaining.len() != 2 {
-            bail!("{usage}");
-        }
-        if path == "-" {
-            use std::io::Read;
-            let mut content = String::new();
-            std::io::stdin().read_to_string(&mut content)?;
-            content
-        } else {
-            std::fs::read_to_string(&path).with_context(|| format!("failed to read {path}"))?
-        }
-    } else {
-        if remaining.len() < 3 {
-            bail!("{usage}");
-        }
-        remaining[2..].join(" ")
-    };
-    if message.trim().is_empty() {
-        bail!("message content is empty");
-    }
-    let options = SendOptions {
-        from: remaining[0].clone(),
-        to: remaining[1].clone(),
-        message,
-        reply_to,
-    };
-
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    ensure_agent(&store, &options.from)?;
-    check_session(&workspace, &store, &options.from)?;
-    store.touch_agent(&options.from)?;
-    if options.to == "@all" {
-        if options.reply_to.is_some() {
-            bail!("reply metadata is only supported for direct messages");
-        }
-        let recipients = store.broadcast_message(&options.from, &options.message)?;
-        println!("Broadcast to {} agents: {}", recipients.len(), recipients.join(", "));
-    } else {
-        store.send_message_checked(&options.from, &options.to, &options.message)?;
-        println!("Sent to {}.", options.to);
-    }
-    Ok(())
+fn cmd_send_removed() -> Result<()> {
+    bail!(
+        "InfiniteMission has no peer messaging. Members are not connected to each other; \
+         work travels as missions between stations. Create or submit a mission instead \
+         (`im mission create` / `im mission submit`). `im receive` delivers station \
+         arrival notes and membership notices only."
+    );
 }
 
 fn cmd_receive(args: Vec<String>) -> Result<()> {
@@ -375,7 +282,7 @@ fn cmd_receive(args: Vec<String>) -> Result<()> {
                 let messages = store.receive_messages(&id)?;
                 let notes = store.receive_work_notes(&id)?;
                 if !messages.is_empty() || !notes.is_empty() {
-                    print_messages(&messages, &id);
+                    print_messages(&messages);
                     print_notes(&notes, &id);
                     return Ok(());
                 }
@@ -394,13 +301,13 @@ fn cmd_receive(args: Vec<String>) -> Result<()> {
     if messages.is_empty() && notes.is_empty() {
         println!("No new messages. Run `im receive {id} --wait` to keep listening.");
     } else {
-        print_messages(&messages, &id);
+        print_messages(&messages);
         print_notes(&notes, &id);
     }
     Ok(())
 }
 
-fn print_messages(messages: &[im::records::MessageRecord], receiver: &str) {
+fn print_messages(messages: &[im::records::MessageRecord]) {
     for msg in messages {
         println!("[from {}] {}", msg.from_agent, msg.content);
         if msg.kind == "mission_ended" {
@@ -410,7 +317,6 @@ fn print_messages(messages: &[im::records::MessageRecord], receiver: &str) {
                 }
             }
         }
-        println!("  → Reply: im send {receiver} {} \"<your response>\"", msg.from_agent);
     }
 }
 
@@ -914,11 +820,6 @@ fn cmd_inbox() -> Result<()> {
 fn cmd_doctor() -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    let home = PathBuf::from(std::env::var("HOME").context("HOME not set")?);
-    for line in im::setup::diagnose(&home)? {
-        println!("{line}");
-    }
-
     // Archived agents still guarding stations.
     let stations = store.list_works()?;
     let archived: std::collections::BTreeSet<String> = store
@@ -1007,19 +908,18 @@ A mission is one-shot mail — it carries its own contract, travels between
 stations, and records its own delivery history.
 
 COMMANDS
-  im init [--refresh-roles]                 Initialize workspace (.im/)
-  im join <id> [--role <role>]              Join as agent (role defaults to id)
+  im init                                   Initialize workspace (.im/)
+  im join <id>                              Join as agent (id self-reported, auto-suffixed on conflict)
   im leave <id>                             Archive agent
   im agents [--all]                         List agents ([manager] tags)
-  im roles                                  List role files
-  im send [--reply-to <id>] [--file <p-or->] <from> <to> <message>
-                                             Send a note (@all broadcasts)
-  im receive <id> [--wait] [--timeout N]    Check inbox + station arrival notes
-  im pending / im history [agent]           Unread / full message views
+  im receive <id> [--wait] [--timeout N]    Station arrival notes + membership notices
+  im pending / im history [agent]           Unread / full system-notice views
 
-Managers (humans run `im grant <agent-id>` once)
+Managers (human grants via `im grant` or the console Members page)
   im grant|revoke <agent> / im managers
   im work create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]
+                                             The prompt IS the work content — it travels
+                                             with every mission stopping at the station.
   im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text> / retire <op> <work>
   im template list                          Mission templates in .im/templates/
 
@@ -1040,9 +940,9 @@ Maintenance
   im ui [--port N] [--no-open]              Console at http://127.0.0.1:4600 by default
 
 QUICK START
-  1. im init && im join boss --role manager && im grant boss   (human grants once)
-  2. im work create boss build --executor worker
-     im work create boss review --executor inspector
+  1. im init && im join boss && im grant boss               (human grants once)
+  2. im work create boss build --executor worker --prompt "implement X: ..."
+     im work create boss review --executor inspector --prompt "review against Y: ..."
   3. Write .im/templates/example-like.yaml, then:
      im mission create boss --template example-like --key v1
   5. Worker: im missions worker → im mission show <ms> --for worker

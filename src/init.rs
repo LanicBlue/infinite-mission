@@ -1,36 +1,15 @@
 use anyhow::Result;
 use std::path::Path;
 
-pub const BUILTIN_ROLES: &[&str] = &["manager", "worker", "inspector"];
-
-pub fn role_prompt(role: &str) -> Option<String> {
-    match role {
-        "manager" => Some(include_str!("roles/manager.md").to_string()),
-        "worker" => Some(include_str!("roles/worker.md").to_string()),
-        "inspector" => Some(include_str!("roles/inspector.md").to_string()),
-        _ => None,
-    }
-}
-
 pub const EXAMPLE_TEMPLATE: &str = include_str!("templates/example.yaml");
 
-pub fn run(refresh_roles: bool) -> Result<()> {
+pub fn run() -> Result<()> {
     let workspace = std::env::current_dir()?;
     let dot = workspace.join(".im");
 
-    std::fs::create_dir_all(dot.join("roles"))?;
     std::fs::create_dir_all(dot.join("sessions"))?;
     std::fs::create_dir_all(dot.join("templates"))?;
     std::fs::create_dir_all(dot.join("mission-documents"))?;
-
-    for role in BUILTIN_ROLES {
-        let path = dot.join("roles").join(format!("{role}.md"));
-        if refresh_roles || !path.exists() {
-            if let Some(prompt) = role_prompt(role) {
-                std::fs::write(&path, prompt)?;
-            }
-        }
-    }
 
     let example = dot.join("templates").join("example.yaml");
     if !example.exists() {
@@ -45,10 +24,8 @@ pub fn run(refresh_roles: bool) -> Result<()> {
         )?;
     }
     println!("Initialized InfiniteMission workspace at {}", dot.display());
-    println!("  - roles:        .im/roles/ (manager / worker / inspector)");
     println!("  - templates:    .im/templates/ (example.yaml is a starter mission template)");
     println!("  - documents:    .im/mission-documents/");
-    println!("Next: `im setup` installs the /im slash command for your AI tools.");
     Ok(())
 }
 

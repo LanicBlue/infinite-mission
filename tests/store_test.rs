@@ -37,8 +37,8 @@ fn schema_creates_all_domain_tables() {
 #[test]
 fn register_agent_unique_never_overwrites() {
     let (_tmp, store) = open();
-    let (first, token_a) = store.register_agent_unique("alice", "worker").unwrap();
-    let (second, _token_b) = store.register_agent_unique("alice", "worker").unwrap();
+    let (first, token_a) = store.register_agent_unique("alice").unwrap();
+    let (second, _token_b) = store.register_agent_unique("alice").unwrap();
     assert_eq!(first, "alice");
     assert_eq!(second, "alice-2");
     // Distinct session tokens per join.
@@ -49,13 +49,17 @@ fn register_agent_unique_never_overwrites() {
 }
 
 #[test]
-fn receive_consumes_messages_exactly_once() {
+fn receive_consumes_system_notices_exactly_once() {
     let (_tmp, store) = open();
-    store.register_agent_unique("alice", "worker").unwrap();
-    store.register_agent_unique("bob", "worker").unwrap();
+    store.register_agent_unique("alice").unwrap();
+    store.register_agent_unique("bob").unwrap();
 
-    store.send_message("alice", "bob", "one").unwrap();
-    store.send_message("alice", "bob", "two").unwrap();
+    store
+        .send_message_envelope("workspace", "bob", "granted", "membership", None)
+        .unwrap();
+    store
+        .send_message_envelope("workspace", "bob", "revoked", "membership", None)
+        .unwrap();
     let batch = store.receive_messages("bob").unwrap();
     assert_eq!(batch.len(), 2);
     let again = store.receive_messages("bob").unwrap();
@@ -64,25 +68,36 @@ fn receive_consumes_messages_exactly_once() {
 }
 
 #[test]
-fn messages_to_archived_identities_are_preserved() {
+fn peer_notes_are_rejected() {
     let (_tmp, store) = open();
-    store.register_agent_unique("alice", "worker").unwrap();
-    store.register_agent_unique("bob", "worker").unwrap();
-    store.send_message("alice", "bob", "keep me").unwrap();
+    store.register_agent_unique("alice").unwrap();
+    store.register_agent_unique("bob").unwrap();
+    let err = store
+        .send_message_envelope("alice", "bob", "hello", "note", None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no peer channel"), "got: {err}");
+}
+
+#[test]
+fn notices_to_archived_identities_are_preserved() {
+    let (_tmp, store) = open();
+    store.register_agent_unique("bob").unwrap();
+    store.grant_manager("workspace", "bob").unwrap();
 
     store.unregister_agent("bob").unwrap();
     // The row survives; has_unread still reports it for history consumers.
     let all = store.all_messages(Some("bob")).unwrap();
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].content, "keep me");
+    assert!(all[0].content.contains("granted manager"));
     assert_eq!(all[0].read, false);
 }
 
 #[test]
 fn manager_gate_is_a_table_not_a_role() {
     let (_tmp, store) = open();
-    store.register_agent_unique("boss", "manager").unwrap();
-    store.register_agent_unique("worker", "worker").unwrap();
+    store.register_agent_unique("boss").unwrap();
+    store.register_agent_unique("worker").unwrap();
 
     assert!(store.require_manager("boss").is_err());
     store.grant_manager("workspace", "boss").unwrap();
@@ -96,7 +111,7 @@ fn manager_gate_is_a_table_not_a_role() {
 #[test]
 fn membership_actions_deliver_inbox_notices() {
     let (_tmp, store) = open();
-    store.register_agent_unique("worker", "worker").unwrap();
+    store.register_agent_unique("worker").unwrap();
 
     store.grant_manager("workspace", "worker").unwrap();
     store.revoke_manager("workspace", "worker").unwrap();
@@ -136,8 +151,8 @@ fn membership_actions_deliver_inbox_notices() {
 #[test]
 fn work_notes_are_consumed_only_by_the_bound_executor() {
     let (_tmp, store) = open();
-    store.register_agent_unique("worker", "worker").unwrap();
-    store.register_agent_unique("inspector", "inspector").unwrap();
+    store.register_agent_unique("worker").unwrap();
+    store.register_agent_unique("inspector").unwrap();
     store.conn
         .execute_batch(
             "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)

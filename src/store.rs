@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::path::Path;
 
@@ -13,7 +13,7 @@ fn schema() -> String {
 
     CREATE TABLE IF NOT EXISTS agents (
         id TEXT PRIMARY KEY,
-        role TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT '',
         joined_at INTEGER NOT NULL,
         session_token TEXT,
         last_seen INTEGER,
@@ -21,6 +21,8 @@ fn schema() -> String {
         archived_at INTEGER
     );
 
+    -- System notices only (membership, mission_ended). Members have no
+    -- peer channel: work travels as missions between stations.
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         from_agent TEXT NOT NULL,
@@ -28,7 +30,7 @@ fn schema() -> String {
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         read INTEGER NOT NULL DEFAULT 0,
-        kind TEXT NOT NULL DEFAULT 'note',
+        kind TEXT NOT NULL DEFAULT 'membership',
         reply_to INTEGER
     );
 
@@ -149,7 +151,10 @@ impl Store {
 
     // --- Agents ---
 
-    pub fn register_agent_unique(&self, requested_id: &str, role: &str) -> Result<(String, String)> {
+    /// Externally registered agents carry no persona playbook — their work
+    /// content travels with each mission's station prompt. The `role` column
+    /// stays (DEFAULT '') reserved for built-in agents.
+    pub fn register_agent_unique(&self, requested_id: &str) -> Result<(String, String)> {
         let now = chrono::Utc::now().timestamp();
         let candidates = std::iter::once(requested_id.to_string()).chain(
             (2..=99).map(|i| format!("{}-{}", requested_id, i)),
@@ -158,17 +163,17 @@ impl Store {
             let token = uuid::Uuid::new_v4().to_string();
             let reactivated = self.conn.execute(
                 "UPDATE agents
-                 SET role = ?2, joined_at = ?3, session_token = ?4, status = 'active', archived_at = NULL
+                 SET role = '', joined_at = ?2, session_token = ?3, status = 'active', archived_at = NULL
                  WHERE id = ?1 AND status = 'archived'",
-                rusqlite::params![candidate, role, now, token],
+                rusqlite::params![candidate, now, token],
             )?;
             if reactivated > 0 {
                 return Ok((candidate, token));
             }
             let inserted = self.conn.execute(
                 "INSERT OR IGNORE INTO agents (id, role, joined_at, session_token, status)
-                 VALUES (?1, ?2, ?3, ?4, 'active')",
-                rusqlite::params![candidate, role, now, token],
+                 VALUES (?1, '', ?2, ?3, 'active')",
+                rusqlite::params![candidate, now, token],
             )?;
             if inserted > 0 {
                 return Ok((candidate, token));
@@ -312,11 +317,14 @@ impl Store {
         Ok(agents)
     }
 
-    // --- Messages (freeform layer) ---
+    // --- System notices (not a peer chat) ---
+    //
+    // Members are not connected to each other. The only durable mail is a
+    // mission sitting at a station. This table carries control-plane notices
+    // from the workspace: membership changes, and mission-ended fan-out to
+    // past participants. Kind is a closed set.
 
-    pub fn send_message(&self, from: &str, to: &str, content: &str) -> Result<()> {
-        self.send_message_envelope(from, to, content, "note", None)
-    }
+    const SYSTEM_MESSAGE_KINDS: &'static [&'static str] = &["membership", "mission_ended"];
 
     pub fn send_message_envelope(
         &self,
@@ -326,6 +334,12 @@ impl Store {
         kind: &str,
         reply_to: Option<i64>,
     ) -> Result<()> {
+        if !Self::SYSTEM_MESSAGE_KINDS.contains(&kind) {
+            bail!(
+                "message kind '{kind}' is not a system notice — members have no peer channel; \
+                 work travels as missions between stations"
+            );
+        }
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
             "INSERT INTO messages (from_agent, to_agent, content, created_at, read, kind, reply_to)
@@ -333,20 +347,6 @@ impl Store {
             params![from, to, content, now, kind, reply_to],
         )?;
         Ok(())
-    }
-
-    pub fn send_message_checked(&self, from: &str, to: &str, content: &str) -> Result<()> {
-        self.require_active_agent(to)?;
-        self.send_message(from, to, content)
-    }
-
-    pub fn broadcast_message(&self, from: &str, content: &str) -> Result<Vec<String>> {
-        let agents = self.agent_names()?;
-        let recipients: Vec<_> = agents.into_iter().filter(|a| a != from).collect();
-        for to in &recipients {
-            self.send_message(from, to, content)?;
-        }
-        Ok(recipients)
     }
 
     const MESSAGE_COLUMNS: &'static str =
