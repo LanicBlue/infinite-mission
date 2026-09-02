@@ -306,9 +306,9 @@ function missionsPane() {
 
 function membersPane() {
 	const agents = state.agents || [];
-	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；manager 由人授予，删除需先退出其值守工位</p></div></header>
+	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；角色 = join 时载入的行为说明书，与权限无关；manager 权限由人授予；在册与归档成员都可删除，值守工位须先换绑</p></div></header>
 	<div class="card"><table>
-		<thead><tr><th>身份</th><th>角色</th><th>状态</th><th>manager</th><th></th></tr></thead>
+		<thead><tr><th>身份</th><th>角色</th><th>状态</th><th>manager 权限</th><th></th></tr></thead>
 		<tbody>${agents.map(a => `<tr>
 			<td class="mono">${esc(a.id)}</td>
 			<td>${esc(a.role)}</td>
@@ -318,7 +318,8 @@ function membersPane() {
 				${a.manager
 					? `<button class="btn small" data-act="revoke" data-agent="${esc(a.id)}">收回 manager</button>`
 					: `<button class="btn small" data-act="grant" data-agent="${esc(a.id)}">设为 manager</button>`}
-				<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该身份（值守工位会拒绝）">删除</button>` : ""}
+				<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该身份（值守工位会拒绝）">删除</button>`
+			: `<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该归档身份（值守工位会拒绝）">删除</button>`}
 			</td></tr>`).join("")}</tbody>
 	</table></div>`;
 }
