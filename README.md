@@ -139,7 +139,9 @@ The four agent charters ship as **work presets**
 (`im work create <op> <key> --preset design|plan|build|review`, also offered
 in the console's station-create modal), so a deleted station can be recreated
 with its charter. Seeded stations are ordinary stations: rebind, re-prompt,
-retire (`im work unretire` reopens a retired key) or delete as you like.
+or delete as you like — deletion is PS-style station locking: a station
+referenced by any active mission contract (entry, works, or path endpoints)
+is locked until those missions end; unreferenced stations are deleted outright.
 
 ## Commands
 
@@ -147,7 +149,7 @@ retire (`im work unretire` reopens a retired key) or delete as you like.
 Workspace   im init | agents | leave | doctor | clean | ui
 Inbox       im receive <id> [--wait] | pending | history   # arrivals + membership notices, no chat
 Managers   im grant|revoke <agent> | im managers           # also: console Members page
-Stations    im work create|list|set-executor|set-prompt|retire|unretire
+Stations    im work create|list|set-executor|set-prompt|delete
             im work create <op> <key> --preset design|plan|build|review
             im work set-prompt <op> <work> --preset <name>
 Templates   im template list           (.im/templates/*.yaml)

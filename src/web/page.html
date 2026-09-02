@@ -212,7 +212,7 @@ function closeModal() { $("#modal-root").innerHTML = ""; }
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
 /* ---------------- state derivation ---------------- */
-const liveWorks = () => (state.works || []).filter(w => w.lifecycle !== "retired");
+const liveWorks = () => state.works || [];
 const eventsOf = mid => (state.events || []).filter(e => e.mission_id === mid).sort((a,b) => a.seq - b.seq);
 
 function eventSummary(ev) {
@@ -293,7 +293,7 @@ function worksPane() {
 			<span class="spacer"></span>
 			<button class="btn small" data-act="work-detail" data-work="${esc(w.work_key)}">详情</button>
 			<label class="hint">换绑 <select data-act="rebind" data-work="${esc(w.work_key)}">${options(w.executor)}</select></label>
-			<button class="btn small danger" data-act="work-retire" data-work="${esc(w.work_key)}">退役</button>
+				<button class="btn small danger" data-act="work-delete" data-work="${esc(w.work_key)}">删除</button>
 		</div>
 	</article>`).join("");
 }
@@ -324,15 +324,14 @@ function resolveModal(mission, revision, outcome, prefill) {
 
 function workDetailModal(key) {
 	const w = (state.works || []).find(x => x.work_key === key);
-	if (!w) { toast("工位不存在（可能刚被退役）", false); return; }
+		if (!w) { toast("工位不存在（可能刚被删除）", false); return; }
 	openModal(`
 		<div class="modal-head"><h3>${esc(w.display_name || w.work_key)} <span class="chip mono">${esc(w.work_key)}</span></h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
 		<dl class="kv">
 			<dt>key</dt><dd class="mono">${esc(w.work_key)}</dd>
 			<dt>名称</dt><dd>${esc(w.display_name || "—")}</dd>
-			<dt>值守者</dt><dd>${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位（人类信箱）</span>`}</dd>
-			<dt>生命周期</dt><dd>${w.lifecycle === "retired" ? "已退役" : `<span class="chip ok">在役</span>`}</dd>
-			<dt>在位任务</dt><dd>${w.holding ? `${w.holding} 个 active mission 停驻` : "无"}</dd>
+				<dt>值守者</dt><dd>${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位（人类信箱）</span>`}</dd>
+				<dt>在位任务</dt><dd>${w.holding ? `${w.holding} 个 active mission 停驻` : "无"}</dd>
 		</dl>
 		<div class="hint">常驻 prompt（读取时按停驻 mission 的字段插值）</div>
 		<div class="prompt-box">${w.prompt ? esc(w.prompt) : `<span class="hint">（未设置 —— 工位没有作业说明，建议补上）</span>`}</div>
@@ -440,7 +439,7 @@ document.addEventListener("click", async e => {
 			if (await act({ type: "work_create", work, display_name: field("display"), executor: field("executor") || "-", prompt: field("prompt") })) closeModal();
 			break;
 		}
-		case "work-retire": if (confirm(`退役工位 ${d.work}？（在位任务会阻止退役）`)) await act({ type: "work_retire", work: d.work }); break;
+		case "work-delete": if (confirm(`删除工位 ${d.work}？物理删除；被活跃 mission 合同引用的工位会被锁定拒删。`)) await act({ type: "work_delete", work: d.work }); break;
 		case "mission-create": {
 			const key = field("key");
 			if (!key) { toast("幂等 key 必填", false); break; }

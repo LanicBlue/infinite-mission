@@ -32,7 +32,6 @@ pub struct WorkRecord {
     /// Current on-duty executor agent id; NULL means a user station.
     pub executor: Option<String>,
     pub prompt: String,
-    pub lifecycle: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

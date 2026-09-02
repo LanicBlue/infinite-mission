@@ -300,11 +300,11 @@ fn mission_end_fans_out_to_past_participants() {
 }
 
 #[test]
-fn init_seeds_pipeline_stations_and_reactivates_retired_ones() {
+fn init_seeds_pipeline_stations_and_reseeds_deleted_ones() {
     let tmp = setup_workspace();
     let ws = tmp.path();
 
-    // Four stations out of the box, all active, plus the template.
+    // Four stations out of the box, plus the template.
     let list = String::from_utf8(
         im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
     )
@@ -312,7 +312,6 @@ fn init_seeds_pipeline_stations_and_reactivates_retired_ones() {
     for key in ["design", "plan", "build", "review"] {
         assert!(list.contains(key), "seeded station {key} missing: {list}");
     }
-    assert!(!list.contains("[retired]"), "fresh seeds must be active: {list}");
     assert!(ws.join(".im").join("templates").join("pipeline.yaml").exists());
 
     // Seeded stations carry their preset charters.
@@ -325,25 +324,26 @@ fn init_seeds_pipeline_stations_and_reactivates_retired_ones() {
 
     // Re-init is a no-op for existing stations.
     im(ws).arg("init").assert().success();
-
-    // A retired pipeline key would break every pipeline mission create
-    // (retired stations cannot be referenced) — re-init reactivates it.
-    im(ws).args(["join", "boss"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
-    im(ws).args(["work", "retire", "boss", "design"]).assert().success();
-    im(ws).arg("init").assert().success();
     let relist = String::from_utf8(
         im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
     )
     .unwrap();
-    assert!(
-        !relist.contains("[retired]"),
-        "retired pipeline key should have been reactivated: {relist}"
-    );
+    assert!(relist.contains("design"));
+
+    // A deleted pipeline station is re-seeded on the next init.
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws).args(["work", "delete", "boss", "design"]).assert().success();
+    im(ws).arg("init").assert().success();
+    let reseeded = String::from_utf8(
+        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(reseeded.contains("design"), "deleted pipeline key should have been re-seeded: {reseeded}");
 }
 
 #[test]
-fn work_presets_fill_charters_and_unretire_reopens_a_key() {
+fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
     let tmp = setup_workspace();
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
@@ -375,6 +375,7 @@ fn work_presets_fill_charters_and_unretire_reopens_a_key() {
     assert!(qa_prompt.contains("verify the implementation"), "qa: {qa_prompt}");
     assert_eq!(qa_name, "Review");
     assert_eq!(hotfix_prompt, "just ship it");
+    drop(db);
 
     // set-prompt --preset re-applies a charter on an existing station.
     im(ws)
@@ -383,8 +384,8 @@ fn work_presets_fill_charters_and_unretire_reopens_a_key() {
         .success()
         .stdout(predicate::str::contains("preset 'design'"));
 
-    // retire → the key is dead for mission creates → unretire reopens it.
-    im(ws).args(["work", "retire", "boss", "qa"]).assert().success();
+    // Station lock (PS semantics): an active mission referencing qa — even
+    // parked elsewhere on a return edge — blocks deletion.
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: qa\nworks:\n  qa:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
@@ -393,23 +394,30 @@ fn work_presets_fill_charters_and_unretire_reopens_a_key() {
     im(ws)
         .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("retired"));
-    im(ws).args(["work", "unretire", "boss", "qa"]).assert().success();
+        .success();
+    let ms = {
+        let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
+            .unwrap()
+    };
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args(["work", "delete", "boss", "qa"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("locked by active missions"))
+        .stderr(predicate::str::contains(&ms[..12]));
+
+    // End the mission → the lock lifts → delete succeeds and frees the key.
+    im(ws)
+        .args(["mission", "abandon", "boss", &ms, "--revision", "1", "--reason", "done testing"])
         .assert()
         .success();
-    // unretire on an active station fails closed.
-    im(ws)
-        .args(["work", "unretire", "boss", "qa"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("not retired"));
+    im(ws).args(["work", "delete", "boss", "qa"]).assert().success();
+    im(ws).args(["work", "create", "boss", "qa", "--preset", "review"]).assert().success();
 }
 
 #[test]
-fn retiring_a_station_releases_its_executor() {
+fn deleting_an_unlocked_station_frees_its_executor() {
     let tmp = setup_workspace();
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
@@ -420,18 +428,10 @@ fn retiring_a_station_releases_its_executor() {
         .assert()
         .success();
 
-    // Retire releases the guard: the executor binding goes with it, so
-    // member leave/delete can never dangle off a dead station.
-    im(ws).args(["work", "retire", "boss", "lab"]).assert().success();
+    // Hard delete of an unlocked station: the row goes, so the member's
+    // duty guard can never dangle off it.
+    im(ws).args(["work", "delete", "boss", "lab"]).assert().success();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
-    let work = store.get_work("lab").unwrap();
-    assert_eq!(work.lifecycle, "retired");
-    assert!(work.executor.is_none(), "retire must release the executor");
+    assert!(store.get_work("lab").is_err(), "station row must be gone");
     store.delete_agent("workspace", "temp").unwrap();
-    drop(store);
-
-    // Unretire brings the station back as a user station.
-    im(ws).args(["work", "unretire", "boss", "lab"]).assert().success();
-    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
-    assert!(store.get_work("lab").unwrap().executor.is_none());
 }

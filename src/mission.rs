@@ -60,12 +60,21 @@ impl Store {
             self.require_active_agent(executor_id)?;
         }
         let inserted = self.conn.execute(
-            "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'active', ?5)",
+            "INSERT INTO works (work_key, display_name, executor, prompt, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![work_key, display_name, executor, prompt, now()],
         );
-        if let Err(_) = inserted {
-            bail!("work '{work_key}' already exists in this workspace");
+        match inserted {
+            Ok(_) => {}
+            // Only a PK violation means the key is taken; anything else is a
+            // real error and must surface as itself (a masked SQL failure
+            // here once misreported as "already exists").
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                bail!("work '{work_key}' already exists in this workspace")
+            }
+            Err(err) => return Err(err.into()),
         }
         Ok(work_key.to_string())
     }
@@ -74,7 +83,7 @@ impl Store {
         let work = self
             .conn
             .query_row(
-                "SELECT work_key, display_name, executor, prompt, lifecycle
+                "SELECT work_key, display_name, executor, prompt
                  FROM works WHERE work_key = ?1",
                 [work_key],
                 map_work_row,
@@ -88,7 +97,7 @@ impl Store {
 
     pub fn list_works(&self) -> Result<Vec<WorkRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT work_key, display_name, executor, prompt, lifecycle
+            "SELECT work_key, display_name, executor, prompt
              FROM works ORDER BY work_key",
         )?;
         let works = stmt
@@ -128,50 +137,56 @@ impl Store {
         Ok(())
     }
 
-    /// A station referenced by any ACTIVE mission contract is editable but
-    /// not deletable. The reference set is entry ∪ at ∪ works keys ∪ path
-    /// endpoints. Retiring also releases the executor: a retired station
-    /// cannot hold missions, so the binding is dead weight — and without the
-    /// release it would block member leave/delete guards forever.
-    pub fn retire_work(&self, manager: &str, work_key: &str) -> Result<()> {
+    /// Hard delete (PS station-lock semantics): a station referenced by ANY
+    /// active mission contract is locked — the reference set is
+    /// entry ∪ works keys ∪ path endpoints (a mission's `at` always sits
+    /// inside that set, so a live mission can never have its station pulled
+    /// out from under it). With the lock in place no soft-delete lifecycle
+    /// is needed: un-referenced stations are simply gone, key freed.
+    pub fn delete_work(&self, manager: &str, work_key: &str) -> Result<()> {
         self.require_manager(manager)?;
-        let work = self.get_work(work_key)?;
-        if work.lifecycle == "retired" {
-            bail!("work '{work_key}' is already retired");
-        }
-        let holding: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM missions WHERE status = 'active' AND at = ?1",
-            [work_key],
-            |row| row.get(0),
-        )?;
-        if holding > 0 {
+        self.get_work(work_key)?; // bails "does not exist" for unknown keys
+        let offenders = self.stations_active_missions(work_key)?;
+        if !offenders.is_empty() {
             bail!(
-                "work '{work_key}' currently holds {holding} active mission(s); \
-                 move or end them before retiring the station"
+                "work '{work_key}' is locked by active missions {} — a station \
+                 referenced by a live contract (entry, works, or path endpoints) \
+                 cannot be deleted; end or move those missions first",
+                offenders.join(", ")
             );
         }
-        self.conn.execute(
-            "UPDATE works SET lifecycle = 'retired', executor = NULL WHERE work_key = ?1",
-            [work_key],
-        )?;
+        let deleted = self
+            .conn
+            .execute("DELETE FROM works WHERE work_key = ?1", [work_key])?;
+        if deleted == 0 {
+            bail!("work '{work_key}' does not exist in this workspace");
+        }
         Ok(())
     }
 
-    /// retire's mirror: without it a retired station key is a dead end (no
-    /// station may be created under that key, and templates referencing it
-    /// fail mission create). The station comes back as a USER station —
-    /// rebind an executor if it should return to duty.
-    pub fn unretire_work(&self, manager: &str, work_key: &str) -> Result<()> {
-        self.require_manager(manager)?;
-        let work = self.get_work(work_key)?;
-        if work.lifecycle != "retired" {
-            bail!("work '{work_key}' is not retired");
-        }
-        self.conn.execute(
-            "UPDATE works SET lifecycle = 'active' WHERE work_key = ?1",
-            [work_key],
+    /// Active missions whose contract references this station (the lock set).
+    fn stations_active_missions(&self, work_key: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT mission_id, contract_json FROM missions WHERE status = 'active'",
         )?;
-        Ok(())
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut offenders = Vec::new();
+        for (mission_id, contract_json) in rows {
+            let contract = parse_contract(&contract_json)?;
+            let referenced = contract.entry == work_key
+                || contract.works.contains_key(work_key)
+                || contract
+                    .paths
+                    .iter()
+                    .any(|edge| edge.from == work_key || edge.to == work_key);
+            if referenced {
+                offenders.push(mission_id);
+            }
+        }
+        offenders.sort();
+        Ok(offenders)
     }
 
     /// Works whose executor is this agent — the agent's duty stations.
@@ -199,7 +214,6 @@ fn map_work_row(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
         display_name: row.get(1)?,
         executor: row.get(2)?,
         prompt: row.get(3)?,
-        lifecycle: row.get(4)?,
     })
 }
 
@@ -243,8 +257,7 @@ impl Store {
         let mut unknown = Vec::new();
         for key in &referenced {
             match self.get_work(key) {
-                Ok(work) if work.lifecycle == "active" => {}
-                Ok(_) => bail!("station '{key}' is retired; missions cannot reference it"),
+                Ok(_) => {}
                 Err(_) => unknown.push(key.clone()),
             }
         }
@@ -369,19 +382,6 @@ impl Store {
         } else {
             Ok(None)
         }
-    }
-
-    /// Active missions sitting at retired stations (doctor warning).
-    pub fn list_stranded_missions(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT m.mission_id FROM missions m
-             JOIN works w ON w.work_key = m.at
-             WHERE m.status = 'active' AND w.lifecycle = 'retired'",
-        )?;
-        let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ids)
     }
 
     /// Missions at any station this agent currently guards (listMyRuns).
@@ -898,7 +898,6 @@ fn map_work_row_by_prefix(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
         display_name: String::new(),
         executor: row.get(13)?,
         prompt: String::new(),
-        lifecycle: "active".to_string(),
     })
 }
 

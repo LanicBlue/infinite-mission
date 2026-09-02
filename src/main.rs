@@ -447,14 +447,13 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let store = open_store(&workspace)?;
             for work in store.list_works()? {
                 let executor = work.executor.as_deref().unwrap_or("(user)");
-                let lifecycle = if work.lifecycle == "retired" { " [retired]" } else { "" };
                 let holding: i64 = store.conn.query_row(
                     "SELECT COUNT(*) FROM missions WHERE at = ?1 AND status = 'active'",
                     rusqlite::params![work.work_key],
                     |row| row.get(0),
                 )?;
                 println!(
-                    "  {} — executor: {}, holding: {holding}{lifecycle}",
+                    "  {} — executor: {}, holding: {holding}",
                     work.work_key, executor
                 );
             }
@@ -489,22 +488,15 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             println!("Station prompt updated.");
             Ok(())
         }
-        Some("retire") if args.len() == 3 => {
+        Some("delete") if args.len() == 3 => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
-            store.retire_work(&args[1], &args[2])?;
-            println!("Retired station {}.", args[2]);
-            Ok(())
-        }
-        Some("unretire") if args.len() == 3 => {
-            let workspace = find_workspace()?;
-            let store = open_store(&workspace)?;
-            store.unretire_work(&args[1], &args[2])?;
-            println!("Station {} is active again.", args[2]);
+            store.delete_work(&args[1], &args[2])?;
+            println!("Deleted station {}.", args[2]);
             Ok(())
         }
         _ => bail!(
-            "Usage: im work <create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | retire <op> <work> | unretire <op> <work>>"
+            "Usage: im work <create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | delete <op> <work>>"
         ),
     }
 }
@@ -870,20 +862,8 @@ fn cmd_doctor() -> Result<()> {
         }
     }
 
-    // Missions parked at retired stations.
-    let retired: std::collections::BTreeSet<String> = stations
-        .iter()
-        .filter(|work| work.lifecycle == "retired")
-        .map(|work| work.work_key.clone())
-        .collect();
-    let stranded = store.list_stranded_missions()?;
-    if stranded.is_empty() {
-        println!("OK: no active missions stranded at retired stations {}", if retired.is_empty() { String::new() } else { format!("(retired: {})", retired.len()) });
-    } else {
-        for mission_id in &stranded {
-            println!("WARN: active mission {mission_id} sits at a retired station — route it or end it");
-        }
-    }
+    // (Station-lock semantics make stranded missions impossible: a station
+    // referenced by any active contract can never be deleted.)
     Ok(())
 }
 
@@ -954,7 +934,7 @@ Managers (human grants via `im grant` or the console Members page)
                                              delivery pipeline (grill→spec, spec→goal,
                                              implement, verify).
   im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text...>
-             / set-prompt <op> <work> --preset <name> / retire <op> <work> / unretire <op> <work>
+             / set-prompt <op> <work> --preset <name> / delete <op> <work>
   im template list                          Mission templates in .im/templates/
 
 Missions (PS semantics)

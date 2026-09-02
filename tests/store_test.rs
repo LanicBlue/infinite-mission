@@ -155,8 +155,8 @@ fn work_notes_are_consumed_only_by_the_bound_executor() {
     store.register_agent_unique("inspector").unwrap();
     store.conn
         .execute_batch(
-            "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)
-                 VALUES ('build', 'Build', 'worker', '', 'active', 0);
+            "INSERT INTO works (work_key, display_name, executor, prompt, created_at)
+                 VALUES ('build', 'Build', 'worker', '', 0);
              INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
                  VALUES ('build', 'arrival', 'ms_t', 'mission arrived', 1000, 0);",
         )

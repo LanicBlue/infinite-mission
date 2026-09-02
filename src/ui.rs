@@ -66,7 +66,6 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
                 "display_name": work.display_name,
                 "executor": work.executor,
                 "prompt": work.prompt,
-                "lifecycle": work.lifecycle,
                 "holding": holding,
             })
         })
@@ -320,11 +319,11 @@ pub fn apply_action(
             )?;
             Ok(format!("station {work} created"))
         }
-        "work_retire" => {
+        "work_delete" => {
             let work = action["work"].as_str().context("`work` required")?;
             let acting = acting_manager(store)?;
-            store.retire_work(&acting, work)?;
-            Ok(format!("station {work} retired"))
+            store.delete_work(&acting, work)?;
+            Ok(format!("station {work} deleted"))
         }
         other => bail!("unknown action type: {other}"),
     }

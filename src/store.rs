@@ -51,7 +51,6 @@ fn schema() -> String {
         display_name TEXT NOT NULL DEFAULT '',
         executor TEXT,
         prompt TEXT NOT NULL DEFAULT '',
-        lifecycle TEXT NOT NULL DEFAULT 'active',
         created_at INTEGER NOT NULL
     );
 

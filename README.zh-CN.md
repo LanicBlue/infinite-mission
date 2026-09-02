@@ -124,7 +124,9 @@ design→plan→build→review 交付流，纪律蒸馏自
 四个岗位章程以**工位模版**形式随二进制发布
 （`im work create <op> <key> --preset design|plan|build|review`，控制台新建
 工位弹窗也有下拉可选），删掉的工位可按模版重建。预建工位就是普通工位：
-换绑、改 prompt、退役（`im work unretire` 可重开）、删除都随你。
+换绑、改 prompt、删除都随你——删除即 PS 式工位锁定：被任何活跃 mission 合同
+引用（entry、works、path 端点）的工位锁死到那些 mission 终结为止；无引用的
+工位直接删行、key 释放。
 
 ## 命令面
 
@@ -132,7 +134,7 @@ design→plan→build→review 交付流，纪律蒸馏自
 工作区      im init | agents | leave | doctor | clean | ui
 收件        im receive <id> [--wait] | pending | history   # 到达通知 + 成员资格，不是聊天
 Manager   im grant|revoke <agent> | im managers           # 也可在控制台「成员」页授予
-工位        im work create|list|set-executor|set-prompt|retire|unretire
+工位        im work create|list|set-executor|set-prompt|delete
             im work create <op> <key> --preset design|plan|build|review
             im work set-prompt <op> <work> --preset <name>
 模板        im template list           （.im/templates/*.yaml）
