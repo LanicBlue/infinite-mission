@@ -21,6 +21,10 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
   auto-suffixes (`alice` → `alice-2`) — identities are never impersonated.
   Agents are stateless and persona-free: all durable state lives in missions,
   and work content arrives with each mission's station prompt.
+- **Leaving hands the stations back to the user.** `im leave <id>` archives the
+  member and releases every station they held to the user (executor = NULL —
+  missions stay parked; the station's prompt, docs and notes never leave the
+  station). Reassignment is a deliberate manager act.
 - **Managers** are humans you trust: `im grant <id>` in a terminal, or the
   Members page in `im ui` (works with zero managers — the console *is* the
   human). Managers create stations and missions.

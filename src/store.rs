@@ -253,7 +253,10 @@ impl Store {
         Ok(())
     }
 
-    pub fn unregister_agent(&self, id: &str) -> Result<()> {
+    /// Archive (leave). Stations the member held are released to the user
+    /// (executor = NULL) — the work's knowledge lives at the station, so the
+    /// pointer returns to the human mailbox for later reassignment.
+    pub fn unregister_agent(&self, id: &str) -> Result<Vec<String>> {
         let now = chrono::Utc::now().timestamp();
         let updated = self.conn.execute(
             "UPDATE agents SET status = 'archived', archived_at = ?2
@@ -261,7 +264,12 @@ impl Store {
             params![id, now],
         )?;
         if updated == 1 {
-            return Ok(());
+            let released: Vec<String> = self
+                .conn
+                .prepare("UPDATE works SET executor = NULL WHERE executor = ?1 RETURNING work_key")?
+                .query_map([id], |row| row.get::<_, String>(0))?
+                .collect::<Result<_, _>>()?;
+            return Ok(released);
         }
         match self.agent_status(id)?.as_deref() {
             Some("archived") => {

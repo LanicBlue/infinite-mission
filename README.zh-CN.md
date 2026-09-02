@@ -18,6 +18,9 @@ cargo install --path .       # 备选（装进 ~/.cargo/bin）
 - **Agent** 用 `im join <id>` 自助注册。重名自动加后缀
   （`alice` → `alice-2`），身份永远不会被冒用。Agent 无状态、无剧本：
   所有持久状态都在 mission 里，作业内容随工位 prompt 与 mission 一起到达。
+- **离岗自动归还工位。** `im leave <id>` 归档成员，并把他值守的所有工位
+  释放回用户（executor 置空——mission 原地停驻；工位的 prompt、文档、
+  通知从不跟着人走）。再分配由 manager 明确操作。
 - **Manager** 是你信任的人类：终端 `im grant <id>`，或 `im ui` 成员页
   （零 manager 时也可以点「设为 manager」——控制台就是人）。manager 创建
   工位和 mission。

@@ -156,21 +156,15 @@ fn cmd_join(id: &str) -> Result<()> {
 fn cmd_leave(id: &str) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    store.unregister_agent(id)?;
+    let released = store.unregister_agent(id)?;
     let session_file = sessions_dir(&workspace).join(id);
     let _ = std::fs::remove_file(&session_file);
     println!("{id} archived. Unread messages were preserved.");
-    let stations = store.works_for_executor(id)?;
-    if !stations.is_empty() {
-        let listing: Vec<String> = stations
-            .iter()
-            .map(|work| work.work_key.clone())
-            .collect();
+    if !released.is_empty() {
         println!(
-            "Note: {id} still guards {} station(s): {}. An manager should rebind them with \
-             `im work set-executor <op> <work-key> <agent>` — missions stay put.",
-            listing.len(),
-            listing.join(", ")
+            "Stations released to the user: {} — rebind anytime with \
+             `im work set-executor <manager> <work> <agent>`; missions stay put.",
+            released.join(", ")
         );
     }
     Ok(())

@@ -531,3 +531,82 @@ fn deleting_a_station_clears_its_arrival_notes() {
         .unwrap();
     assert_eq!(notes, 0, "stale arrival notes must not outlive the station");
 }
+
+#[test]
+fn leave_releases_held_stations_to_the_user() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws).args(["join", "temp"]).assert().success();
+    im(ws).args(["join", "free"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "lab", "--executor", "temp"])
+        .assert()
+        .success();
+
+    // Leaving with no stations stays silent; leaving with one releases it to the user.
+    im(ws)
+        .args(["leave", "free"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("released").not());
+    im(ws)
+        .args(["leave", "temp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stations released to the user: lab"));
+
+    let db = ws.join(".im").join("im.db");
+    let store = im::store::Store::open(&db).unwrap();
+    assert!(store.get_work("lab").unwrap().executor.is_none());
+    drop(store);
+
+    // Reactivation does not reclaim the station — the release is one-way;
+    // reassignment is a deliberate manager act.
+    im(ws).args(["join", "temp"]).assert().success();
+    let store = im::store::Store::open(&db).unwrap();
+    assert!(store.get_work("lab").unwrap().executor.is_none());
+}
+
+#[test]
+fn leave_unlocks_member_deletion_and_missions_stay_put() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws).args(["join", "worker"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "alpha", "--executor", "worker"])
+        .assert()
+        .success();
+    std::fs::write(
+        ws.join(".im").join("templates").join("t.yaml"),
+        "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths: []\n",
+    )
+    .unwrap();
+    im(ws)
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .assert()
+        .success();
+
+    // The executor leaves: the mission stays parked at the station, which
+    // now belongs to the user — and the member row becomes deletable.
+    im(ws).args(["leave", "worker"]).assert().success();
+    let list = String::from_utf8(
+        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(
+        list.contains("alpha — executor: (user), holding: 1, en route: 0"),
+        "station keeps the mission while returning to the user: {list}"
+    );
+
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+    store.delete_agent("workspace", "worker").unwrap();
+    let archived: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM agents WHERE id = 'worker'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(archived, 0, "leave released the binding, so delete must pass");
+}
