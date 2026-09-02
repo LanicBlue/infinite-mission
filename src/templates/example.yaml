@@ -1,0 +1,54 @@
+# A starter mission template. A mission is one-shot mail: it carries this
+# contract, travels between stations, and records its own delivery history.
+schemaVersion: 4
+name: example
+objective: "Two-station build-and-review loop"
+
+# The station where the mission starts. Every referenced station must exist
+# in the project (`im work create`) and be active when the mission is created.
+entry: build
+
+# Per-station discipline. The same station can carry different disciplines
+# in different missions.
+works:
+  build:
+    completion:
+      outcomes: [done, need-rework]   # this station's own vocabulary
+      terminal: []                    # none of these end the mission here
+      feedbackRequiredOn: []          # outcomes that must carry --feedback
+    documentRights:                   # write does NOT imply read
+      read: [spec]
+      write: [impl]
+  review:
+    completion:
+      outcomes: [pass, fail]
+      terminal: [pass]                # pass ends the mission here
+      feedbackRequiredOn: [fail]
+    documentRights:
+      read: [impl]
+      write: []
+
+# Documents are declared once; ids are fixed by the contract and rights are
+# granted per station. File paths never end in "/"; collection paths always do.
+documents:
+  - id: spec
+    kind: file
+    path: docs/spec.md
+  - id: impl
+    kind: file
+    path: docs/impl.md
+
+# The routing table. "when" is the source station's outcome, or "any".
+paths:
+  - from: build
+    when: done
+    to: review
+  - from: build
+    when: need-rework
+    to: build
+    iterationPolicy: increment        # revisit bumps the iteration counter
+  - from: review
+    when: fail
+    to: build
+    iterationPolicy: increment
+  # pass is terminal at review: the mission ends there — no edge needed.

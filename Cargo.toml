@@ -1,0 +1,31 @@
+[package]
+name = "infinite-mission"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Multi-agent mission orchestration via a static SQLite core — squad's shape, work-mission semantics"
+repository = "local"
+
+[lib]
+name = "im"
+path = "src/lib.rs"
+
+[[bin]]
+name = "im"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+rusqlite = { version = "0.31", features = ["bundled"] }
+sha2 = "0.10"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"

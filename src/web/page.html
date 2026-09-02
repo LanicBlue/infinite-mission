@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>im console</title>
+<style>
+  :root {
+    --bg: #0F172A; --card: #1B2336; --muted: #272F42; --fg: #F8FAFC;
+    --fg-muted: #94A3B8; --border: #475569; --accent: #22C55E;
+    --on-accent: #0F172A; --warn: #F59E0B; --destructive: #EF4444; --info: #38BDF8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.5; padding: 16px;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px;
+    border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 14px;
+  }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: 0.04em; }
+  header .path { color: var(--fg-muted); word-break: break-all; }
+  header .live { margin-left: auto; color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
+  header .live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); align-items: start; }
+  .card { background: var(--card); border: 1px solid var(--muted); border-radius: 8px; padding: 12px; min-width: 0; }
+  .card.wide { grid-column: 1 / -1; }
+  .card h2 { font-size: 12px; margin: 0 0 8px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+  .card h2 .count { color: var(--fg); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 4px 8px; vertical-align: top; }
+  th { color: var(--fg-muted); font-weight: 500; font-size: 11px; border-bottom: 1px solid var(--muted); }
+  td { border-bottom: 1px solid var(--muted); word-break: break-word; }
+  tr:last-child td { border-bottom: none; }
+  .pill { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; border: 1px solid var(--border); white-space: nowrap; }
+  .pill.ok { color: var(--accent); border-color: var(--accent); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--destructive); border-color: var(--destructive); }
+  .pill.dim { color: var(--fg-muted); }
+  button, select, input {
+    font: inherit; color: var(--fg); background: var(--muted);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 10px; min-height: 28px; cursor: pointer;
+    transition: border-color 150ms ease, background-color 150ms ease;
+  }
+  input { cursor: text; }
+  button:hover, select:hover { border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--destructive); border-color: var(--destructive); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  form.inline { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  form.inline input[type="text"] { flex: 1 1 120px; min-width: 100px; }
+  #toast {
+    position: fixed; right: 16px; bottom: 16px; max-width: 480px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; display: none; z-index: 10; word-break: break-word;
+  }
+  #toast.error { border-color: var(--destructive); color: var(--destructive); }
+  #toast.ok { border-color: var(--accent); }
+  .msg-meta { color: var(--fg-muted); white-space: nowrap; }
+  .empty { color: var(--fg-muted); padding: 8px; }
+  .payload { color: var(--fg-muted); font-size: 11px; word-break: break-all; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>im console</h1>
+  <span class="path" id="workspace"></span>
+  <span class="live">live</span>
+</header>
+
+<div class="grid">
+  <section class="card" aria-label="Agents">
+    <h2>agents <span class="count" id="agents-count"></span></h2>
+    <table>
+      <thead><tr><th>id</th><th>role</th><th>status</th><th></th></tr></thead>
+      <tbody id="agents-body"></tbody>
+    </table>
+  </section>
+
+  <section class="card" aria-label="Stations">
+    <h2>stations <span class="count" id="works-count"></span></h2>
+    <table>
+      <thead><tr><th>station</th><th>executor</th><th>holding</th><th></th></tr></thead>
+      <tbody id="works-body"></tbody>
+    </table>
+  </section>
+
+  <section class="card" aria-label="Inbox — user stations">
+    <h2>inbox <span class="count" id="inbox-count"></span> <span class="msg-meta">(waiting for a human)</span></h2>
+    <table><tbody id="inbox-body"></tbody></table>
+  </section>
+
+  <section class="card wide" aria-label="Missions">
+    <h2>missions <span class="count" id="missions-count"></span></h2>
+    <form class="inline" id="mission-form">
+      <select id="mission-project" aria-label="project" required></select>
+      <select id="mission-template" aria-label="template" required></select>
+      <input type="text" id="mission-key" placeholder="idempotency key" aria-label="idempotency key" required>
+      <button type="submit" class="primary">create mission</button>
+    </form>
+    <table>
+      <thead><tr><th>mission</th><th>at</th><th>status</th><th>rev</th><th></th></tr></thead>
+      <tbody id="missions-body"></tbody>
+    </table>
+  </section>
+
+  <section class="card wide" aria-label="Delivery history">
+    <h2>delivery history <span class="msg-meta">(latest 40 events)</span></h2>
+    <table><tbody id="events-body"></tbody></table>
+  </section>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const time = (unix) => new Date(unix * 1000).toLocaleTimeString([], {hour12: false});
+
+let state = null;
+
+function toast(message, ok) {
+  const el = document.getElementById("toast");
+  el.textContent = message;
+  el.className = ok ? "ok" : "error";
+  el.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.style.display = "none"; }, 4000);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/state", {cache: "no-store"});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state = await res.json();
+    render();
+  } catch (err) {
+    document.querySelector("header .live").textContent = "disconnected: " + err.message;
+  }
+}
+
+async function act(payload) {
+  try {
+    const res = await fetch("/api/action", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!data.ok) { toast(data.error || "action failed", false); return false; }
+    toast(data.message, true);
+    await refresh();
+    return true;
+  } catch (err) {
+    toast("request failed: " + err.message, false);
+    return false;
+  }
+}
+
+function statusPill(status) {
+  const cls = status.startsWith("active") ? "ok" : status.startsWith("idle") ? "warn" : status === "archived" ? "dim" : "bad";
+  return `<span class="pill ${cls}">${esc(status)}</span>`;
+}
+
+function renderAgents() {
+  const body = document.getElementById("agents-body");
+  document.getElementById("agents-count").textContent = `(${state.agents.length})`;
+  body.innerHTML = state.agents.map((a) => `
+    <tr>
+      <td>${esc(a.id)}${a.operator ? ' <span class="pill ok">operator</span>' : ""}</td>
+      <td>${esc(a.role)}</td>
+      <td>${statusPill(a.status)}</td>
+      <td>${a.status === "archived" ? "" : a.operator
+        ? `<button class="danger" data-act="revoke" data-agent="${esc(a.id)}" aria-label="revoke operator ${esc(a.id)}">revoke</button>`
+        : `<button data-act="grant" data-agent="${esc(a.id)}" aria-label="grant operator ${esc(a.id)}">grant</button>`}</td>
+    </tr>`).join("") || `<tr><td colspan="4" class="empty">no agents</td></tr>`;
+}
+
+function renderWorks() {
+  const body = document.getElementById("works-body");
+  document.getElementById("works-count").textContent = `(${state.works.length})`;
+  const activeAgents = state.agents.filter((a) => a.status !== "archived");
+  body.innerHTML = state.works.map((w) => `
+    <tr>
+      <td>${esc(w.project_id)}/${esc(w.work_key)}${w.lifecycle === "retired" ? ' <span class="pill dim">retired</span>' : ""}<br><span class="msg-meta">${esc(w.display_name || "")}</span></td>
+      <td>${esc(w.executor ?? "(user station)")}</td>
+      <td>${w.holding}</td>
+      <td class="row-actions">
+        <select class="exec-select" data-project="${esc(w.project_id)}" data-work="${esc(w.work_key)}" aria-label="executor for ${esc(w.work_key)}">
+          <option value="">executor…</option>
+          <option value="-">− (user station)</option>
+          ${activeAgents.map((a) => `<option value="${esc(a.id)}"${a.id === w.executor ? " selected" : ""}>${esc(a.id)}</option>`).join("")}
+        </select>
+        <button data-act="set_executor" data-project="${esc(w.project_id)}" data-work="${esc(w.work_key)}" aria-label="rebind ${esc(w.work_key)}">rebind</button>
+      </td>
+    </tr>`).join("") || `<tr><td colspan="4" class="empty">no stations</td></tr>`;
+}
+
+function renderInbox() {
+  const body = document.getElementById("inbox-body");
+  document.getElementById("inbox-count").textContent = `(${state.inbox.length})`;
+  body.innerHTML = state.inbox.map((m) => `
+    <tr>
+      <td class="msg-meta">${time(m.created_at ?? 0)}</td>
+      <td>${esc(m.mission_id)}<br><span class="msg-meta">${esc(m.name)} · ${esc(m.project_id)}</span></td>
+      <td><span class="pill warn">at ${esc(m.at ?? "?")}</span></td>
+      <td class="msg-meta">im mission show ${esc(m.mission_id)}</td>
+    </tr>`).join("") || `<tr><td class="empty">inbox empty</td></tr>`;
+}
+
+function renderMissions() {
+  const body = document.getElementById("missions-body");
+  document.getElementById("missions-count").textContent = `(${state.missions.length})`;
+  body.innerHTML = state.missions.map((m) => {
+    const status = m.status === "active"
+      ? `<span class="pill warn">active @ ${esc(m.at ?? "?")}</span>`
+      : `<span class="pill ${m.ended_disposition === "completed" ? "ok" : "dim"}">${esc(m.ended_disposition ?? "ended")}</span>`;
+    return `
+    <tr>
+      <td>${esc(m.mission_id)}<br><span class="msg-meta">${esc(m.name)}</span></td>
+      <td>${esc(m.at ?? "—")}</td>
+      <td>${status}</td>
+      <td>r${m.revision}</td>
+      <td class="row-actions">
+        <span class="msg-meta">im mission show ${esc(m.mission_id)}</span>
+        ${m.status === "active" ? `<button class="danger" data-act="mission_end" data-mission="${esc(m.mission_id)}" aria-label="end ${esc(m.mission_id)}">end</button>` : ""}
+      </td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">no missions</td></tr>`;
+
+  const projectSelect = document.getElementById("mission-project");
+  projectSelect.innerHTML = state.projects
+    .filter((p) => !p.retired)
+    .map((p) => `<option value="${esc(p.id)}">${esc(p.id)} · ${esc(p.name)}</option>`).join("");
+  const templateSelect = document.getElementById("mission-template");
+  templateSelect.innerHTML = state.templates
+    .map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+}
+
+function renderEvents() {
+  const body = document.getElementById("events-body");
+  body.innerHTML = state.events.map((e) => {
+    let payload = "";
+    try {
+      const parsed = JSON.parse(e.payload);
+      if (e.type === "mission.routed") payload = `${parsed.from} —${parsed.when}→ ${parsed.to} (i${parsed.iteration})`;
+      else if (e.type === "mission.round.completed") payload = `${parsed.workKey} · ${parsed.outcome} by ${parsed.resolvedBy?.executorRef ?? "?"}`;
+      else if (e.type === "mission.ended") payload = `${parsed.disposition}${parsed.outcome ? " · " + parsed.outcome : ""}`;
+      else payload = parsed.entry ? `entry ${parsed.entry}` : "";
+    } catch { payload = ""; }
+    return `
+    <tr>
+      <td class="msg-meta">${time(e.created_at)}</td>
+      <td>${esc(e.mission_id)}</td>
+      <td><span class="pill dim">${esc(e.type.replace("mission.", ""))}</span></td>
+      <td class="payload">${esc(payload)}</td>
+    </tr>`;
+  }).join("") || `<tr><td class="empty">no events yet</td></tr>`;
+}
+
+function render() {
+  document.getElementById("workspace").textContent = state.workspace;
+  document.querySelector("header .live").textContent = "live";
+  renderAgents();
+  renderWorks();
+  renderInbox();
+  renderMissions();
+  renderEvents();
+}
+
+document.addEventListener("click", (ev) => {
+  const button = ev.target.closest("button[data-act]");
+  if (!button) return;
+  const actType = button.dataset.act;
+  if (actType === "grant" || actType === "revoke") {
+    act({type: actType, agent: button.dataset.agent});
+  } else if (actType === "set_executor") {
+    const select = document.querySelector(
+      `select.exec-select[data-project="${CSS.escape(button.dataset.project)}"][data-work="${CSS.escape(button.dataset.work)}"]`);
+    const executor = select && select.value;
+    if (!executor) { toast("pick an executor first", false); return; }
+    act({type: "set_executor", project: button.dataset.project, work: button.dataset.work, executor});
+  } else if (actType === "mission_end") {
+    act({type: "mission_end", mission: button.dataset.mission});
+  }
+});
+
+document.getElementById("mission-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const project = document.getElementById("mission-project").value;
+  const template = document.getElementById("mission-template").value;
+  const key = document.getElementById("mission-key").value.trim();
+  if (!project || !template || !key) { toast("project, template and key are required", false); return; }
+  act({type: "mission_create", project, template, key}).then((ok) => {
+    if (ok) document.getElementById("mission-key").value = "";
+  });
+});
+
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+</script>
+</body>
+</html>
