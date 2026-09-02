@@ -100,12 +100,12 @@ fn receive_wait_wakes_on_station_arrival() {
     }
     im(ws).args(["grant", "boss"]).assert().success();
     im(ws)
-        .args(["work", "create", "boss", "build", "--executor", "worker"])
+        .args(["work", "create", "boss", "alpha", "--executor", "worker"])
         .assert()
         .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
-        "schemaVersion: 4\nname: t\nentry: build\nworks:\n  build:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+        "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
     )
     .unwrap();
 
@@ -126,7 +126,7 @@ fn receive_wait_wakes_on_station_arrival() {
         .success();
 
     let out = waiter.join().unwrap();
-    assert!(out.contains("[station build]"), "got: {out}");
+    assert!(out.contains("[station alpha]"), "got: {out}");
     assert!(!out.contains("timed out"), "waiter should return early: {out}");
 }
 
@@ -240,22 +240,22 @@ fn manager_commands_are_gated_by_grant() {
 
     // Before any grant: nobody may create stations.
     im(tmp.path())
-        .args(["work", "create", "boss", "build"])
+        .args(["work", "create", "boss", "alpha"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("manager"));
 
     im(tmp.path()).args(["grant", "boss"]).assert().success();
     im(tmp.path())
-        .args(["work", "create", "boss", "build"])
+        .args(["work", "create", "boss", "alpha"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created station build"));
+        .stdout(predicate::str::contains("Created station alpha"));
 
     // Grant revoked → the gate closes again.
     im(tmp.path()).args(["revoke", "boss"]).assert().success();
     im(tmp.path())
-        .args(["work", "create", "boss", "review"])
+        .args(["work", "create", "boss", "beta"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("manager"));
@@ -269,11 +269,11 @@ fn mission_end_fans_out_to_past_participants() {
         im(ws).args(["join", id]).assert().success();
     }
     im(ws).args(["grant", "boss"]).assert().success();
-    im(ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();
-    im(ws).args(["work", "create", "boss", "review", "--executor", "inspector"]).assert().success();
+    im(ws).args(["work", "create", "boss", "alpha", "--executor", "worker"]).assert().success();
+    im(ws).args(["work", "create", "boss", "beta", "--executor", "inspector"]).assert().success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
-        "schemaVersion: 4\nname: t\nentry: build\nworks:\n  build:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  review:\n    completion: {outcomes: [pass, fail], terminal: [pass], feedbackRequiredOn: [fail]}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: build, when: done, to: review}\n  - {from: review, when: fail, to: build}\n",
+        "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  beta:\n    completion: {outcomes: [pass, fail], terminal: [pass], feedbackRequiredOn: [fail]}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: alpha, when: done, to: beta}\n  - {from: beta, when: fail, to: alpha}\n",
     )
     .unwrap();
     im(ws)
@@ -297,4 +297,113 @@ fn mission_end_fans_out_to_past_participants() {
         .success()
         .stdout(predicate::str::contains("ended"))
         .stdout(predicate::str::contains(&ms[..12]));
+}
+
+#[test]
+fn init_seeds_pipeline_stations_and_reactivates_retired_ones() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+
+    // Five stations out of the box, all active, plus the template.
+    let list = String::from_utf8(
+        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    for key in ["design", "plan", "build", "review", "owner"] {
+        assert!(list.contains(key), "seeded station {key} missing: {list}");
+    }
+    assert!(!list.contains("[retired]"), "fresh seeds must be active: {list}");
+    assert!(ws.join(".im").join("templates").join("pipeline.yaml").exists());
+
+    // Seeded stations carry their preset charters.
+    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+    let design_prompt: String = db
+        .query_row("SELECT prompt FROM works WHERE work_key = 'design'", [], |r| r.get(0))
+        .unwrap();
+    assert!(design_prompt.contains("final gate"), "design charter missing: {design_prompt}");
+    drop(db);
+
+    // Re-init is a no-op for existing stations.
+    im(ws).arg("init").assert().success();
+
+    // A retired pipeline key would break every pipeline mission create
+    // (retired stations cannot be referenced) — re-init reactivates it.
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws).args(["work", "retire", "boss", "design"]).assert().success();
+    im(ws).arg("init").assert().success();
+    let relist = String::from_utf8(
+        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(
+        !relist.contains("[retired]"),
+        "retired pipeline key should have been reactivated: {relist}"
+    );
+}
+
+#[test]
+fn work_presets_fill_charters_and_unretire_reopens_a_key() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+
+    // Unknown preset fails closed with the available list.
+    im(ws)
+        .args(["work", "create", "boss", "qa", "--preset", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown preset"));
+
+    // --preset fills the charter (and display name); an explicit --prompt wins.
+    im(ws).args(["work", "create", "boss", "qa", "--preset", "review"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "hotfix", "--preset", "build", "--prompt", "just ship it"])
+        .assert()
+        .success();
+    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+    let qa_prompt: String = db
+        .query_row("SELECT prompt FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
+        .unwrap();
+    let qa_name: String = db
+        .query_row("SELECT display_name FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
+        .unwrap();
+    let hotfix_prompt: String = db
+        .query_row("SELECT prompt FROM works WHERE work_key = 'hotfix'", [], |r| r.get(0))
+        .unwrap();
+    assert!(qa_prompt.contains("verify the implementation"), "qa: {qa_prompt}");
+    assert_eq!(qa_name, "Review");
+    assert_eq!(hotfix_prompt, "just ship it");
+
+    // set-prompt --preset re-applies a charter on an existing station.
+    im(ws)
+        .args(["work", "set-prompt", "boss", "qa", "--preset", "design"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("preset 'design'"));
+
+    // retire → the key is dead for mission creates → unretire reopens it.
+    im(ws).args(["work", "retire", "boss", "qa"]).assert().success();
+    std::fs::write(
+        ws.join(".im").join("templates").join("t.yaml"),
+        "schemaVersion: 4\nname: t\nentry: qa\nworks:\n  qa:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
+    im(ws)
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("retired"));
+    im(ws).args(["work", "unretire", "boss", "qa"]).assert().success();
+    im(ws)
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .assert()
+        .success();
+    // unretire on an active station fails closed.
+    im(ws)
+        .args(["work", "unretire", "boss", "qa"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not retired"));
 }

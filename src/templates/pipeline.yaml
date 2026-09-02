@@ -1,0 +1,53 @@
+# The delivery pipeline: design grills the owner and freezes a SPEC, plan
+# compiles it into a self-contained GOAL, build implements it with a receipt,
+# review verifies the implementation against the goal, and design holds the
+# final gate. Grill questions and answers travel on --reason (they land in
+# the next station's prompt); findings travel on --feedback + the documents.
+schemaVersion: 4
+name: pipeline
+objective: "Deliver a change through design → plan → build → review → final gate"
+
+# The mission starts at design; the raw idea rides the mission objective.
+entry: design
+
+works:
+  # User station: the human answers grill questions here.
+  owner:
+    completion: {outcomes: [answers], terminal: [], feedbackRequiredOn: []}
+    documentRights: {read: [spec], write: []}
+  design:
+    completion:
+      outcomes: [needs-input, spec-ready, accept, reject]
+      terminal: [accept]            # the final gate ends the mission
+      feedbackRequiredOn: [reject]
+    documentRights: {read: [spec, review], write: [spec]}
+  plan:
+    completion: {outcomes: [goal-ready, spec-gap], terminal: [], feedbackRequiredOn: [spec-gap]}
+    documentRights: {read: [spec, goal], write: [goal]}
+  build:
+    completion: {outcomes: [done, blocked], terminal: [], feedbackRequiredOn: [blocked]}
+    documentRights: {read: [goal, review, impl], write: [impl]}
+  review:
+    completion: {outcomes: [approved, rework, spec-gap], terminal: [], feedbackRequiredOn: [rework, spec-gap]}
+    documentRights: {read: [spec, goal, impl], write: [review]}
+
+documents:
+  - {id: spec,   kind: file, path: spec.md}
+  - {id: goal,   kind: file, path: goal.md}
+  - {id: impl,   kind: file, path: impl.md}
+  - {id: review, kind: file, path: review.md}
+
+# Re-entry edges carry iterationPolicy: increment — a station's iteration is
+# its visit counter. accept is terminal at design: no edge, mission completes.
+paths:
+  - {from: design, when: needs-input, to: owner, iterationPolicy: increment}
+  - {from: owner,  when: answers,     to: design, iterationPolicy: increment}
+  - {from: design, when: spec-ready,  to: plan}
+  - {from: plan,   when: goal-ready,  to: build}
+  - {from: plan,   when: spec-gap,    to: design, iterationPolicy: increment}
+  - {from: build,  when: done,        to: review}
+  - {from: build,  when: blocked,     to: plan,   iterationPolicy: increment}
+  - {from: review, when: approved,    to: design, iterationPolicy: increment}
+  - {from: review, when: rework,      to: build,  iterationPolicy: increment}
+  - {from: review, when: spec-gap,    to: design, iterationPolicy: increment}
+  - {from: design, when: reject,      to: build,  iterationPolicy: increment}

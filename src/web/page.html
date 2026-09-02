@@ -300,14 +300,26 @@ function worksPane() {
 
 function workCreateModal() {
 	const agents = (state.agents || []).filter(a => a.status !== "archived");
+	const presets = state.presets || [];
 	openModal(`
 		<div class="modal-head"><h3>新建工位</h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
 		<label class="field"><span>key（^[a-z][a-z0-9-]*$，工位的唯一地址）</span><input data-f="work" placeholder="build"></label>
 		<label class="field"><span>名称（可选，展示用）</span><input data-f="display" placeholder="构建"></label>
+		<label class="field"><span>模版 —— 预填交付流水线岗位章程（prompt + 名称），选后可再改</span><select data-f="preset"><option value="">（无模版）</option>${presets.map(p => `<option value="${esc(p.key)}">${esc(p.display)} · ${esc(p.key)}（${p.key === "design" ? "grill→spec+终审" : p.key === "plan" ? "spec→goal" : p.key === "build" ? "实现 goal" : "对照 goal 验证"}）</option>`).join("")}</select></label>
 		<label class="field"><span>值守者（不绑 = 用户工位，人类信箱）</span><select data-f="executor"><option value="-">（用户工位）</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.id)}</option>`).join("")}</select></label>
 		<label class="field"><span>常驻 prompt —— 工位的作业内容，随每个停驻的任务一起渲染</span><textarea data-f="prompt" placeholder="实现 {mission.objective}；来自 {mission.from}，第 {mission.iteration} 轮。"></textarea></label>
 		<p class="hint">可插值槽位：<code>{mission.name}</code> <code>{mission.objective}</code> <code>{mission.from}</code> <code>{mission.iteration}</code> <code>{mission.reason}</code> —— 未知槽位保留字面</p>
 		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="work-create">创建</button></div>`);
+}
+
+function resolveModal(mission, revision, outcome, prefill) {
+	const m = (state.missions || []).find(x => x.mission_id === mission);
+	const terminal = m && (state.inbox || []).some(i => i.mission_id === mission && (i.terminal || []).includes(outcome));
+	openModal(`
+		<div class="modal-head"><h3>处置 · ${esc(outcome)}${terminal ? " ✓" : ""} <span class="chip mono">${esc(mission.slice(0,15))}…</span></h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<p class="hint" style="margin:2px 0 8px">${esc(m ? (m.name || mission) : mission)} · revision ${revision}${m && m.objective ? ` — ${esc(m.objective)}` : ""}</p>
+		<label class="field"><span>reason —— 写入事件，并插值进下一站的 prompt（路由到用户工位必填；grill 答案也走这里）</span><textarea data-f="resolve-reason">${esc(prefill || "")}</textarea></label>
+		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="resolve-confirm" data-mission="${esc(mission)}" data-revision="${revision}" data-outcome="${esc(outcome)}">提交 ${esc(outcome)}</button></div>`);
 }
 
 function workDetailModal(key) {
@@ -409,7 +421,12 @@ document.addEventListener("click", async e => {
 	if (!btn) return;
 	const d = btn.dataset;
 	switch (d.act) {
-		case "resolve": await act({ type: "mission_submit", mission: d.mission, revision: Number(d.revision), outcome: d.outcome, reason: d.reason }); break;
+		case "resolve": resolveModal(d.mission, Number(d.revision), d.outcome, d.reason); break;
+		case "resolve-confirm": {
+			const ok = await act({ type: "mission_submit", mission: d.mission, revision: Number(d.revision), outcome: d.outcome, reason: field("resolve-reason") });
+			if (ok) closeModal();
+			break;
+		}
 		case "end": { const reason = prompt("结束原因（将记录为 deleted）："); if (reason !== null) await act({ type: "mission_end", mission: d.mission, reason }); break; }
 		case "grant": await act({ type: "grant", agent: d.agent }); break;
 		case "revoke": await act({ type: "revoke", agent: d.agent }); break;
@@ -435,6 +452,19 @@ document.addEventListener("click", async e => {
 });
 
 document.addEventListener("change", async e => {
+	const preset = e.target.closest('select[data-f="preset"]');
+	if (preset) {
+		// Fill the modal from the chosen station preset; the user can still
+		// edit both fields before creating.
+		const p = (state.presets || []).find(x => x.key === preset.value);
+		if (p) {
+			const prompt = $('[data-f="prompt"]');
+			if (prompt) prompt.value = p.prompt;
+			const display = $('[data-f="display"]');
+			if (display && !display.value) display.value = p.display;
+		}
+		return;
+	}
 	const s = e.target.closest('select[data-act="rebind"]');
 	if (!s) return;
 	await act({ type: "set_executor", work: s.dataset.work, executor: s.value });

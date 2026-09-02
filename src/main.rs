@@ -413,17 +413,25 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let display_name = flag_value(&args[3..], "--display-name")?;
             let executor = flag_value(&args[3..], "--executor")?;
             let prompt = flag_value(&args[3..], "--prompt")?;
+            let preset_key = flag_value(&args[3..], "--preset")?;
+            let preset = match &preset_key {
+                Some(key) => Some(
+                    im::pipeline::preset(key)
+                        .with_context(|| format!("unknown preset {key:?} (available: {})", im::pipeline::preset_keys()))?,
+                ),
+                None => None,
+            };
+            let display = display_name
+                .or(preset.map(|p| p.display_name.to_string()))
+                .unwrap_or_default();
+            let prompt = prompt
+                .or(preset.map(|p| p.prompt.to_string()))
+                .unwrap_or_default();
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
             ensure_agent(&store, manager)?;
             check_session(&workspace, &store, manager)?;
-            let key = store.create_work(
-                manager,
-                work_key,
-                &display_name.unwrap_or_default(),
-                executor.as_deref(),
-                &prompt.unwrap_or_default(),
-            )?;
+            let key = store.create_work(manager, work_key, &display, executor.as_deref(), &prompt)?;
             println!("Created station {key}");
             if executor.is_none() {
                 println!("  (user station — bind an executor with im work set-executor)");
@@ -460,7 +468,17 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             );
             Ok(())
         }
-        Some("set-prompt") if args.len() >= 4 => {
+        Some("set-prompt") if args.len() == 5 && args[3] == "--preset" => {
+            let preset = im::pipeline::preset(&args[4]).with_context(|| {
+                format!("unknown preset {:?} (available: {})", args[4], im::pipeline::preset_keys())
+            })?;
+            let workspace = find_workspace()?;
+            let store = open_store(&workspace)?;
+            store.set_work_prompt(&args[1], &args[2], preset.prompt)?;
+            println!("Station prompt updated from preset '{}'.", preset.key);
+            Ok(())
+        }
+        Some("set-prompt") if args.len() >= 4 && args[3] != "--preset" => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
             store.set_work_prompt(&args[1], &args[2], &args[3..].join(" "))?;
@@ -474,8 +492,15 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             println!("Retired station {}.", args[2]);
             Ok(())
         }
+        Some("unretire") if args.len() == 3 => {
+            let workspace = find_workspace()?;
+            let store = open_store(&workspace)?;
+            store.unretire_work(&args[1], &args[2])?;
+            println!("Station {} is active again.", args[2]);
+            Ok(())
+        }
         _ => bail!(
-            "Usage: im work <create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | retire <op> <work>>"
+            "Usage: im work <create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | retire <op> <work> | unretire <op> <work>>"
         ),
     }
 }
@@ -917,14 +942,22 @@ COMMANDS
 
 Managers (human grants via `im grant` or the console Members page)
   im grant|revoke <agent> / im managers
-  im work create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]
+  im work create <op> <work-key> [--display-name <n>] [--executor <agent>]
+                  [--prompt <text>] [--preset design|plan|build|review]
                                              The prompt IS the work content — it travels
                                              with every mission stopping at the station.
-  im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text> / retire <op> <work>
+                                             A preset fills the standing charter of the
+                                             delivery pipeline (grill→spec, spec→goal,
+                                             implement, verify).
+  im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text...>
+             / set-prompt <op> <work> --preset <name> / retire <op> <work> / unretire <op> <work>
   im template list                          Mission templates in .im/templates/
 
 Missions (PS semantics)
   im mission create <op> --template <name> --key <unique-key> [--name] [--objective]
+                                             `im init` writes example.yaml and pipeline.yaml
+                                             (design→plan→build→review→final gate) and seeds
+                                             those stations + the owner user station.
   im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
   im missions <agent>                       Active missions at your stations
   im mission submit <agent> <ms> --revision N --outcome <o>
@@ -941,12 +974,13 @@ Maintenance
 
 QUICK START
   1. im init && im join boss && im grant boss               (human grants once)
-  2. im work create boss build --executor worker --prompt "implement X: ..."
-     im work create boss review --executor inspector --prompt "review against Y: ..."
-  3. Write .im/templates/example-like.yaml, then:
-     im mission create boss --template example-like --key v1
-  5. Worker: im missions worker → im mission show <ms> --for worker
-     → im mission doc write worker <ms> --id impl --file -
-     → im mission submit worker <ms> --revision 1 --outcome done
-  6. im inbox shows anything waiting for a human decision.
+     init seeds the pipeline stations (design/plan/build/review + owner) and
+     pipeline.yaml — bind executors first:
+     im work set-executor boss design <agent> (…plan/build/review the same way)
+  2. im mission create boss --template pipeline --key v1 --objective "ship X"
+  3. Agents loop: im missions <me> → im mission show <ms> --for <me>
+     → im mission doc write <me> <ms> --id <doc> --file -
+     → im mission submit <me> <ms> --revision N --outcome <o> [--feedback <t>]
+  4. im inbox shows anything waiting for a human decision (grill questions
+     land on the owner station; answers go back as --reason).
 "#;

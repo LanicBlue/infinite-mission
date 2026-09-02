@@ -15,6 +15,16 @@ pub fn run() -> Result<()> {
     if !example.exists() {
         std::fs::write(&example, EXAMPLE_TEMPLATE)?;
     }
+    let pipeline = dot.join("templates").join("pipeline.yaml");
+    if !pipeline.exists() {
+        std::fs::write(&pipeline, crate::pipeline::PIPELINE_TEMPLATE)?;
+    }
+
+    // Seed the delivery-pipeline stations (design/plan/build/review + the
+    // owner user station). Runs before any manager exists, so seeding writes
+    // the works table directly; existing stations are never clobbered.
+    let store = crate::store::Store::open(&dot.join("im.db"))?;
+    let seeded = crate::pipeline::seed_pipeline_works(&store)?;
 
     append_if_missing(&workspace.join(".gitignore"), ".im/")?;
     for guide in ["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
@@ -24,8 +34,18 @@ pub fn run() -> Result<()> {
         )?;
     }
     println!("Initialized InfiniteMission workspace at {}", dot.display());
-    println!("  - templates:    .im/templates/ (example.yaml is a starter mission template)");
+    println!("  - templates:    .im/templates/ (example.yaml, pipeline.yaml)");
     println!("  - documents:    .im/mission-documents/");
+    if seeded.is_empty() {
+        println!("  - stations:     design/plan/build/review/owner already present (untouched)");
+    } else {
+        println!("  - stations:     {}", seeded.join(", "));
+    }
+    println!(
+        "  - next:         bind executors — `im work set-executor <manager> <work> <agent>` \
+         for design/plan/build/review (unbound stations are user stations: every hop \
+         there waits for a manager)"
+    );
     Ok(())
 }
 

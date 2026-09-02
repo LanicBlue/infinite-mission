@@ -19,11 +19,11 @@ fn state_json_exposes_the_console_data_contract() {
         im(ws).args(["join", id]).assert().success();
     }
     im(ws).args(["grant", "boss"]).assert().success();
-    im(ws).args(["work", "create", "boss", "build", "--executor", "worker"]).assert().success();
+    im(ws).args(["work", "create", "boss", "make", "--executor", "worker"]).assert().success();
     im(ws).args(["work", "create", "boss", "approve"]).assert().success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
-        "schemaVersion: 4\nname: t\nentry: build\nworks:\n  build:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  approve:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: build, when: done, to: approve}\n",
+        "schemaVersion: 4\nname: t\nentry: make\nworks:\n  make:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  approve:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: make, when: done, to: approve}\n",
     )
     .unwrap();
     im(ws)
@@ -66,9 +66,9 @@ fn state_json_exposes_the_console_data_contract() {
 
     // Works carry executor and a holding count for the stations board.
     let works = state["works"].as_array().unwrap();
-    let build = works.iter().find(|w| w["work_key"] == "build").expect("build station");
-    assert_eq!(build["executor"].as_str().unwrap(), "worker");
-    assert_eq!(build["holding"].as_i64().unwrap(), 0, "mailbox moved on");
+    let make = works.iter().find(|w| w["work_key"] == "make").expect("make station");
+    assert_eq!(make["executor"].as_str().unwrap(), "worker");
+    assert_eq!(make["holding"].as_i64().unwrap(), 0, "mailbox moved on");
     let approve = works.iter().find(|w| w["work_key"] == "approve").expect("user station");
     assert!(approve["executor"].is_null());
 
@@ -115,13 +115,33 @@ fn console_can_grant_the_first_manager() {
         &store,
         &serde_json::json!({
             "type": "work_create",
-            "work": "build",
-            "display_name": "Build",
+            "work": "staging",
+            "display_name": "Staging",
             "executor": "cursor",
             "prompt": ""
         }),
         &ws,
     )
     .unwrap();
-    assert!(created.contains("station build created"), "got: {created}");
+    assert!(created.contains("station staging created"), "got: {created}");
+}
+
+#[test]
+fn state_json_lists_work_presets_for_the_create_modal() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+    im(ws).arg("init").assert().success();
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &[]).unwrap();
+
+    let presets = state["presets"].as_array().unwrap();
+    let keys: Vec<&str> = presets.iter().map(|p| p["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, vec!["design", "plan", "build", "review"]);
+    for preset in presets {
+        assert!(
+            preset["prompt"].as_str().unwrap().contains("{mission.objective}"),
+            "{}",
+            preset["key"]
+        );
+    }
 }

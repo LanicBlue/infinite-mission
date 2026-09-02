@@ -155,6 +155,22 @@ impl Store {
         Ok(())
     }
 
+    /// retire's mirror: without it a retired station key is a dead end (no
+    /// station may be created under that key, and templates referencing it
+    /// fail mission create).
+    pub fn unretire_work(&self, manager: &str, work_key: &str) -> Result<()> {
+        self.require_manager(manager)?;
+        let work = self.get_work(work_key)?;
+        if work.lifecycle != "retired" {
+            bail!("work '{work_key}' is not retired");
+        }
+        self.conn.execute(
+            "UPDATE works SET lifecycle = 'active' WHERE work_key = ?1",
+            [work_key],
+        )?;
+        Ok(())
+    }
+
     /// Works whose executor is this agent — the agent's duty stations.
     pub fn works_for_executor(&self, agent_id: &str) -> Result<Vec<WorkRecord>> {
         Ok(self
@@ -959,9 +975,7 @@ impl Store {
             );
         }
         let work = self.get_work(&at)?;
-        if work.executor.as_deref() != Some(agent_id) {
-            bail!("Document writes belong to the station's on-duty executor");
-        }
+        self.require_doc_on_duty(agent_id, &work, "write")?;
 
         let content_sha = {
             let digest = Sha256::digest(content);
@@ -1018,12 +1032,33 @@ impl Store {
             );
         }
         let work = self.get_work(&at)?;
-        if work.executor.as_deref() != Some(agent_id) {
-            bail!("Document reads belong to the station's on-duty executor");
-        }
+        self.require_doc_on_duty(agent_id, &work, "read")?;
         let file_path = documents_root.join(mission_id).join(path);
         std::fs::read_to_string(&file_path)
             .with_context(|| format!("document bytes not found at {}", file_path.display()))
+    }
+
+    /// Document access follows the station's on-duty rule: the bound
+    /// executor, or — at a user station — any manager (mirroring run_view's
+    /// on-duty projection and submit's manager resolution of user stations).
+    fn require_doc_on_duty(
+        &self,
+        agent_id: &str,
+        work: &WorkRecord,
+        action: &str,
+    ) -> Result<()> {
+        match work.executor.as_deref() {
+            None => self.require_manager(agent_id).with_context(|| {
+                format!(
+                    "document {action}s at user station '{}' are resolved by a manager",
+                    work.work_key
+                )
+            }),
+            Some(executor) if executor == agent_id => Ok(()),
+            Some(executor) => bail!(
+                "Document {action}s belong to the station's on-duty executor ({executor})"
+            ),
+        }
     }
 
     pub fn get_receipt(&self, key_hash: &str) -> Result<Option<DocumentReceiptRecord>> {

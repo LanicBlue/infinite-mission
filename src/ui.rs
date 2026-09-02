@@ -175,6 +175,14 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
         "workspace": workspace,
         "managers": managers,
         "templates": templates,
+        "presets": crate::pipeline::PRESETS
+            .iter()
+            .map(|p| json!({
+                "key": p.key,
+                "display": p.display_name,
+                "prompt": p.prompt,
+            }))
+            .collect::<Vec<_>>(),
         "agents": agents,
         "works": works,
         "missions": missions,

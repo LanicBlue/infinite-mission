@@ -57,29 +57,35 @@ cargo install --path .   # binary: im
 
 ```bash
 mkdir my-project && cd my-project
-im init                       # workspace + example template
+im init                       # workspace + example/pipeline templates +
+                              # the pipeline stations (design/plan/build/review/owner)
 
 im join boss                  # in each agent's terminal — no persona needed
 im join worker
 im grant boss                 # a human runs this: boss is now a manager
 
-# as boss — the station prompt IS the work content the executor will see:
-im work create boss build --executor worker --prompt "Implement {mission.objective}. Attach the design notes."
-im work create boss review --executor reviewer --prompt "Review iteration {mission.iteration} for {mission.name}."
-im work create boss approve          # user station — no executor
-im mission create boss --template example --key v1
+# as boss — first thing: bind executors to the seeded stations
+# (an unbound station is a user station: every hop there waits for a manager)
+im work set-executor boss design <agent>
+im work set-executor boss plan <agent>
+im work set-executor boss build worker
+im work set-executor boss review <agent>
 
-# as worker:
+# a pipeline mission — the objective is the raw idea:
+im mission create boss --template pipeline --key v1 --objective "ship the widget"
+
+# as worker (at build, once the goal reaches you):
 im receive worker             # arrival note: a mission landed at your station
 im missions worker            # everything active at your stations
-im mission show <ms> --for worker   # interpolated prompt, document rights, vocabulary, routes, revision
-im mission doc write worker <ms> --id impl --file src/impl.md   # → receipt
-im mission submit worker <ms> --revision 1 --outcome done \
-    --receipts document:<hash>
+im mission show <ms> --for worker   # interpolated charter, document rights, vocabulary, routes, revision
+im mission doc read worker <ms> goal.md
+im mission doc write worker <ms> --id impl --file src/receipt.md   # → receipt
+im mission submit worker <ms> --revision N --outcome done --receipts document:<hash>
 
-# a human, when a mission hops to a user station:
-im inbox
-im mission submit boss <ms> --revision 2 --outcome ok
+# a human, when design grills the owner (mission parked at `owner`):
+im inbox                      # shows the numbered questions (the hop reason)
+im mission submit boss <ms> --revision N --outcome answers \
+    --reason "1) thin scope, keep the name"     # answers ride --reason into design's prompt
 ```
 
 Station prompts interpolate `{mission.name}`, `{mission.objective}`,
@@ -87,13 +93,51 @@ Station prompts interpolate `{mission.name}`, `{mission.objective}`,
 stay literal). There are no persona playbooks: externally registered agents
 get their instructions from the mission brief alone.
 
+## The delivery pipeline
+
+`im init` seeds five stations and writes `.im/templates/pipeline.yaml` — a
+design→plan→build→review delivery flow distilled from
+[matt-skills-with-to-goal](https://github.com/tt-a1i/matt-skills-with-to-goal):
+
+```
+objective ──▶ design ──spec-ready──▶ plan ──goal-ready──▶ build ──done──▶ review
+   ▲            │ ▲                    │ ▲                  ▲  │           │ ▲
+   │            │ └──spec-gap──────────┘ └──blocked─────────┘  │           │ └─rework─┐
+   │            └─needs-input─▶ owner(user) ─answers─▶ design  ...◀─reject─┴──────────┘
+   └──────────────────── spec-gap (from review) ◀──────  review ──approved──▶ design
+                                                            (final gate: accept = terminal)
+```
+
+- **design** holds two phases: it grills the owner (frontier-round questions
+  on `needs-input` → `owner`, answers come back on `--reason`) and freezes a
+  SPEC; after review approves, it is the **final gate** (`accept` ends the
+  mission, `reject` sends implementation fixes back to build).
+- **plan** compiles the SPEC into a self-contained GOAL (compile, don't
+  re-visit); an unactionable spec goes back as `spec-gap`.
+- **build** implements the GOAL only, verifies each completion criterion with
+  evidence, and reports with a receipt (`impl.md`) incl. the pre-work git
+  baseline; local implementation only — no commit/push/deploy.
+- **review** verifies the implementation against the GOAL on two independent
+  axes (goal criteria / repo standards), every finding cited; `rework`
+  findings land in `review.md` + `--feedback`.
+- **owner** is the user station: grill questions arrive with the hop reason;
+  the human answers on `--reason`, which interpolates into design's prompt.
+
+The four agent charters ship as **work presets**
+(`im work create <op> <key> --preset design|plan|build|review`, also offered
+in the console's station-create modal), so a deleted station can be recreated
+with its charter. Seeded stations are ordinary stations: rebind, re-prompt,
+retire (`im work unretire` reopens a retired key) or delete as you like.
+
 ## Commands
 
 ```
 Workspace   im init | agents | leave | doctor | clean | ui
 Inbox       im receive <id> [--wait] | pending | history   # arrivals + membership notices, no chat
 Managers   im grant|revoke <agent> | im managers           # also: console Members page
-Stations    im work create|list|set-executor|set-prompt|retire
+Stations    im work create|list|set-executor|set-prompt|retire|unretire
+            im work create <op> <key> --preset design|plan|build|review
+            im work set-prompt <op> <work> --preset <name>
 Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|end
             im mission submit <agent> <ms> --revision N --outcome O
@@ -149,11 +193,13 @@ the world from it. Missions survive everything except `im clean`.
 ## Console
 
 `im ui` starts an ephemeral localhost console (fixed port 4600, `--port` to
-override, exits after 5 idle minutes): stations board with rebind, missions
-with revision/at/disposition, the user inbox with hop reasons, delivery
-history timeline, member management (grant/revoke manager, delete — works
-with zero managers, the console is the human), and mission actions (create
-from template, end).
+override, exits after 5 idle minutes): stations board with rebind and a
+create modal that offers the pipeline charters as presets, missions with
+revision/at/disposition, the user inbox with hop reasons and outcome buttons
+that prompt for your `--reason` (grill answers included), delivery history
+timeline, member management (grant/revoke manager, delete — works with zero
+managers, the console is the human), and mission actions (create from
+template, end).
 
 ## Attribution
 
