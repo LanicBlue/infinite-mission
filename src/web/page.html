@@ -225,9 +225,8 @@ function paneHeader(title, meta) {
 
 function inboxPane() {
 	const cards = state.inbox || [];
-	if (!cards.length) return paneHeader("收件箱", "What needs me now?") + `<div class="empty">收件箱是空的 —— 没有停在用户工位等待你决策的任务</div>`;
-	return paneHeader("收件箱", "停在用户工位的任务 · 点 outcome 直接处置") + 
-	return cards.map(i => {
+	if (!cards.length) return paneHeader("收件箱", "What needs me now?") + `<div class="empty">收件箱是空的 —— 没有停在用户工位等待你决策的任务<br><br><span class="hint">起步：终端 <code>im join &lt;你&gt; --role manager</code> → <code>im grant &lt;你&gt;</code> → 「工位」页建工位 → 「任务」页从模板建任务</span></div>`;
+	return paneHeader("收件箱", "停在用户工位的任务 · 点 outcome 直接处置") + cards.map(i => {
 		const terms = (i.outcomes || []).map(o => `<button class="btn small outcome" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="${esc(o)}">${esc(o)}${(i.terminal||[]).includes(o) ? " ✓" : ""}</button>`).join("");
 		return `<article class="card">
 			<h3>${esc(i.name)} <span class="chip user">用户工位 · ${esc(i.at)}</span></h3>
@@ -258,7 +257,7 @@ function worksPane() {
 			<span class="spacer"></span>
 			<button class="btn primary small" data-act="work-create">创建</button>
 		</div></details>`;
-	if (!works.length) return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + `<div class="empty">还没有工位</div>`;
+	if (!works.length) return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + `<div class="empty">还没有工位<br><br><span class="hint">创建前需至少一个 operator：终端 <code>im join &lt;你&gt; --role manager</code> → <code>im grant &lt;你&gt;</code>，然后在上方展开「＋ 新建工位」</span></div>`;
 	return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + works.map(w => `<article class="card">
 		<div class="card-row">
 			<h3 style="margin:0">${esc(w.display_name || w.work_key)}</h3>
@@ -284,7 +283,7 @@ function missionsPane() {
 		</div>
 		<p class="hint" style="margin:4px 0 0">模板位于 <code>.im/templates/*.yaml</code>；同 key 重复创建幂等（返回已有任务）</p></details>`;
 	const list = state.missions || [];
-	if (!list.length) return paneHeader("任务", "自带合同与投递史的一次性邮件") + create + `<div class="empty">还没有任务</div>`;
+	if (!list.length) return paneHeader("任务", "自带合同与投递史的一次性邮件") + create + `<div class="empty">还没有任务<br><br><span class="hint">模板放在 <code>.im/templates/*.yaml</code>（<code>im init</code> 已写 example），在上方选模板 + 幂等 key 创建</span></div>`;
 	return paneHeader("任务", "自带合同与投递史的一次性邮件") + create + list.map(m => {
 		const open = expanded.has(m.mission_id);
 		const evs = open ? eventsOf(m.mission_id) : [];
