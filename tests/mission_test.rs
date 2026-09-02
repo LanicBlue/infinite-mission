@@ -67,7 +67,7 @@ paths:
     to: approval
 "#;
 
-/// boss (operator), worker at build, inspector at review. One mission.
+/// boss (manager), worker at build, inspector at review. One mission.
 fn setup() -> (Fixture, String) {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
@@ -262,7 +262,7 @@ fn submit_adjudication_matrix() {
 }
 
 #[test]
-fn abandon_and_operator_delete_endings() {
+fn abandon_and_manager_delete_endings() {
     let (fixture, ms) = setup();
     let ws = fixture.workspace;
 
@@ -274,7 +274,7 @@ fn abandon_and_operator_delete_endings() {
         .success()
         .stdout(predicate::str::contains("abandoned"));
 
-    // Second mission: operator delete path.
+    // Second mission: manager delete path.
     im(&ws)
         .args(["mission", "create", "boss", "--template", "review", "--key", "v2"])
         .assert()
@@ -381,7 +381,7 @@ fn rebind_is_a_pointer_move_not_a_migration() {
     let (fixture, ms) = setup();
     let ws = fixture.workspace;
 
-    // worker-2 joins; operator rebinds the build station.
+    // worker-2 joins; manager rebinds the build station.
     im(&ws).args(["join", "worker-2", "--role", "worker"]).assert().success();
     im(&ws)
         .args(["work", "set-executor", "boss", "build", "worker-2"])
@@ -469,15 +469,15 @@ paths:
         .stdout(predicate::str::contains("needs your sign-off"))
         .stdout(predicate::str::contains("resolve it"));
 
-    // A non-operator may NOT resolve a user station.
+    // A non-manager may NOT resolve a user station.
     im(&ws)
         .args(["mission", "submit", "worker", &ms, "--revision", "2", "--outcome", "ok"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("resolved by an operator"));
+        .stderr(predicate::str::contains("resolved by a manager"));
 
-    // The operator resolves it; the terminal outcome ends the mission, and
-    // the round records the operator plane.
+    // The manager resolves it; the terminal outcome ends the mission, and
+    // the round records the manager plane.
     im(&ws)
         .args(["mission", "submit", "boss", &ms, "--revision", "2", "--outcome", "ok"])
         .assert()
@@ -492,7 +492,7 @@ paths:
         .args(["mission", "events", &ms])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"plane\":\"operator\""));
+        .stdout(predicate::str::contains("\"plane\":\"manager\""));
 }
 
 #[test]

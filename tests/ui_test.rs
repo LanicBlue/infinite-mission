@@ -58,11 +58,11 @@ fn state_json_exposes_the_console_data_contract() {
     let state = im::ui::state_json(&store, &ws.to_str().unwrap(), &templates).unwrap();
 
     // Top-level sections the page renders.
-    for key in ["workspace", "agents", "operators", "works", "missions", "inbox", "events", "templates"] {
+    for key in ["workspace", "agents", "managers", "works", "missions", "inbox", "events", "templates"] {
         assert!(state.get(key).is_some(), "state_json missing {key}");
     }
-    assert_eq!(state["operators"].as_array().unwrap().len(), 1);
-    assert_eq!(state["operators"][0].as_str().unwrap(), "boss");
+    assert_eq!(state["managers"].as_array().unwrap().len(), 1);
+    assert_eq!(state["managers"][0].as_str().unwrap(), "boss");
 
     // Works carry executor and a holding count for the stations board.
     let works = state["works"].as_array().unwrap();

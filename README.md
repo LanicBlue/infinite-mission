@@ -19,7 +19,7 @@ cargo install --path .   # binary: im
 - **Agents** self-register with `im join <id> --role <role>`. A taken id
   auto-suffixes (`alice` → `alice-2`) — identities are never impersonated.
   Agents are stateless: all durable state lives in missions.
-- **Operators** are humans you trust: `im grant <id>`. Operators create
+- **Managers** are humans you trust: `im grant <id>`. Managers create
   stations and missions.
 - **The workspace IS the project**: one directory tree, one mission space.
   **Stations** (`build`, `review`, `approve`, …) hang directly off the
@@ -44,7 +44,7 @@ cargo install --path .   # binary: im
 - **Events are the history.** `created`, `round.completed`, `routed`,
   `ended` — iteration counts are derived, never stored.
 - **Inbox**: missions parked at user stations, with the reason the sender
-  had to give. An operator resolves them.
+  had to give. An manager resolves them.
 
 ## Quick start
 
@@ -54,7 +54,7 @@ im init                       # workspace, roles, example template, /im setup
 
 im join boss --role manager   # in each agent's terminal
 im join worker --role worker
-im grant boss                 # a human runs this: boss is now an operator
+im grant boss                 # a human runs this: boss is now an manager
 
 # as boss:
 im work create boss build --executor worker
@@ -84,7 +84,7 @@ role loop to the hosting agent.
 ```
 Workspace   im init | agents | leave | roles | setup | doctor | clean | ui
 Messaging   im send <from> <to|@all> <text> | receive <id> [--wait] | pending | history
-Operators   im grant|revoke <agent> | operators
+Managers   im grant|revoke <agent> | im managers
 Stations    im work create|list|set-executor|set-prompt|retire
 Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|end
@@ -143,7 +143,7 @@ the world from it. Missions survive everything except `im clean`.
 `im ui` starts an ephemeral localhost console (random port, opens the
 browser, exits after 5 idle minutes): stations board with rebind, missions
 with revision/at/disposition, the user inbox with hop reasons, delivery
-history timeline, and operator actions (grant/revoke, create mission from
+history timeline, and manager actions (grant/revoke, create mission from
 template, end mission).
 
 ## Attribution

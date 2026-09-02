@@ -47,7 +47,7 @@ fn main() -> Result<()> {
             }
             cmd_grant(&command, &id)
         }
-        "operators" => cmd_operators(),
+        "managers" => cmd_managers(),
         "work" => cmd_work(args.collect()),
         "template" => cmd_template(args.collect()),
         "mission" => cmd_mission(args.collect()),
@@ -177,7 +177,7 @@ fn cmd_leave(id: &str) -> Result<()> {
             .map(|work| work.work_key.clone())
             .collect();
         println!(
-            "Note: {id} still guards {} station(s): {}. An operator should rebind them with \
+            "Note: {id} still guards {} station(s): {}. An manager should rebind them with \
              `im work set-executor <op> <work-key> <agent>` — missions stay put.",
             listing.len(),
             listing.join(", ")
@@ -189,8 +189,8 @@ fn cmd_leave(id: &str) -> Result<()> {
 fn cmd_agents(show_all: bool) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    let operators: std::collections::BTreeSet<String> =
-        store.list_operators()?.into_iter().collect();
+    let managers: std::collections::BTreeSet<String> =
+        store.list_managers()?.into_iter().collect();
     let agents = store.list_agents(show_all)?;
     if agents.is_empty() {
         println!("No agents online.");
@@ -215,8 +215,8 @@ fn cmd_agents(show_all: bool) -> Result<()> {
                 None => "unknown".to_string(),
             }
         };
-        let operator_tag = if operators.contains(&agent.id) { " [operator]" } else { "" };
-        println!("  {} (role: {}) — {status}{operator_tag}", agent.id, agent.role);
+        let manager_tag = if managers.contains(&agent.id) { " [manager]" } else { "" };
+        println!("  {} (role: {}) — {status}{manager_tag}", agent.id, agent.role);
     }
     Ok(())
 }
@@ -450,29 +450,29 @@ fn cmd_history(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-// --- Operators / works / templates ---
+// --- Managers / works / templates ---
 
 fn cmd_grant(command: &str, id: &str) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     if command == "grant" {
-        store.grant_operator(id)?;
-        println!("Granted operator permission to {id}.");
+        store.grant_manager(id)?;
+        println!("Granted manager to {id}.");
     } else {
-        store.revoke_operator(id)?;
-        println!("Revoked operator permission from {id}.");
+        store.revoke_manager(id)?;
+        println!("Revoked manager from {id}.");
     }
     Ok(())
 }
 
-fn cmd_operators() -> Result<()> {
+fn cmd_managers() -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    let operators = store.list_operators()?;
-    if operators.is_empty() {
-        println!("No operators granted. Run `im grant <agent-id>` to grant one.");
+    let managers = store.list_managers()?;
+    if managers.is_empty() {
+        println!("No managers granted. Run `im grant <agent-id>` to grant one.");
     } else {
-        println!("{}", operators.join("\n"));
+        println!("{}", managers.join("\n"));
     }
     Ok(())
 }
@@ -495,17 +495,17 @@ fn flag_value(args: &[String], flag: &str) -> Result<Option<String>> {
 fn cmd_work(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("create") if args.len() >= 3 => {
-            let operator = &args[1];
+            let manager = &args[1];
             let work_key = &args[2];
             let display_name = flag_value(&args[3..], "--display-name")?;
             let executor = flag_value(&args[3..], "--executor")?;
             let prompt = flag_value(&args[3..], "--prompt")?;
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
-            ensure_agent(&store, operator)?;
-            check_session(&workspace, &store, operator)?;
+            ensure_agent(&store, manager)?;
+            check_session(&workspace, &store, manager)?;
             let key = store.create_work(
-                operator,
+                manager,
                 work_key,
                 &display_name.unwrap_or_default(),
                 executor.as_deref(),
@@ -615,7 +615,7 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
 }
 
 fn cmd_mission_create(args: &[String]) -> Result<()> {
-    let operator = args
+    let manager = args
         .first()
         .context("Usage: im mission create <op> --template <name> --key <unique-key>")?;
     let template_name = flag_value(&args[1..], "--template")?.context("--template is required")?;
@@ -625,8 +625,8 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
 
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    ensure_agent(&store, operator)?;
-    check_session(&workspace, &store, operator)?;
+    ensure_agent(&store, manager)?;
+    check_session(&workspace, &store, manager)?;
 
     let template_path = templates_dir(&workspace).join(format!("{template_name}.yaml"));
     let bytes = std::fs::read(&template_path)
@@ -634,7 +634,7 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
     let template = im::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
 
     let outcome = store.create_mission(
-        operator,
+        manager,
         &template,
         &format!(".im/templates/{template_name}.yaml"),
         &bytes,
@@ -800,11 +800,11 @@ fn cmd_mission_events(mission_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_mission_end(operator: &str, mission_id: &str, reason: Option<String>) -> Result<()> {
+fn cmd_mission_end(manager: &str, mission_id: &str, reason: Option<String>) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    store.delete_mission(operator, mission_id, reason.as_deref())?;
-    println!("Mission {mission_id} ended by operator (disposition: deleted).");
+    store.delete_mission(manager, mission_id, reason.as_deref())?;
+    println!("Mission {mission_id} ended by manager (disposition: deleted).");
     Ok(())
 }
 
@@ -894,7 +894,7 @@ fn cmd_inbox() -> Result<()> {
         );
         println!("  → im mission show {}", mission.mission_id);
         println!(
-            "  → resolve it: im mission submit <operator> {} --revision {} --outcome <outcome>",
+            "  → resolve it: im mission submit <manager> {} --revision {} --outcome <outcome>",
             mission.mission_id,
             mission.revision
         );
@@ -1003,15 +1003,15 @@ COMMANDS
   im init [--refresh-roles]                 Initialize workspace (.im/)
   im join <id> [--role <role>]              Join as agent (role defaults to id)
   im leave <id>                             Archive agent
-  im agents [--all]                         List agents ([operator] tags)
+  im agents [--all]                         List agents ([manager] tags)
   im roles                                  List role files
   im send [--reply-to <id>] [--file <p-or->] <from> <to> <message>
                                              Send a note (@all broadcasts)
   im receive <id> [--wait] [--timeout N]    Check inbox + station arrival notes
   im pending / im history [agent]           Unread / full message views
 
-Operators (humans run `im grant <agent-id>` once)
-  im grant|revoke <agent> / im operators
+Managers (humans run `im grant <agent-id>` once)
+  im grant|revoke <agent> / im managers
   im work create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>]
   im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text> / retire <op> <work>
   im template list                          Mission templates in .im/templates/
@@ -1024,7 +1024,7 @@ Missions (PS semantics)
        [--next-node <station>] [--reason <t>] [--feedback <t>] [--receipts <document:hash,...>]
   im mission abandon <agent> <ms> --revision N [--reason <t>]
   im mission events <ms>                    Delivery history
-  im mission end <op> <ms> [--reason <t>]   Operator delete
+  im mission end <op> <ms> [--reason <t>]   Manager delete
   im mission doc read <agent> <ms> <path>
   im mission doc write <agent> <ms> --id <docId> --file <path-or->
   im inbox                                  Missions parked at user stations

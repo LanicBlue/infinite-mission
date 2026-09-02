@@ -46,13 +46,13 @@ fn now() -> i64 {
 impl Store {
     pub fn create_work(
         &self,
-        operator: &str,
+        manager: &str,
         work_key: &str,
         display_name: &str,
         executor: Option<&str>,
         prompt: &str,
     ) -> Result<String> {
-        self.require_operator(operator)?;
+        self.require_manager(manager)?;
         if !contract_work_key(work_key) {
             bail!("work key {work_key:?} must be lowercase kebab-case");
         }
@@ -97,16 +97,16 @@ impl Store {
         Ok(works)
     }
 
-    /// Last-write-wins by design: executor moves are an operator ordering
+    /// Last-write-wins by design: executor moves are an manager ordering
     /// problem, not a lost-update hazard (the mission revision is the only
     /// submit CAS).
     pub fn set_work_executor(
         &self,
-        operator: &str,
+        manager: &str,
         work_key: &str,
         executor: Option<&str>,
     ) -> Result<()> {
-        self.require_operator(operator)?;
+        self.require_manager(manager)?;
         self.get_work(work_key)?;
         if let Some(executor_id) = executor {
             self.require_active_agent(executor_id)?;
@@ -118,8 +118,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_work_prompt(&self, operator: &str, work_key: &str, prompt: &str) -> Result<()> {
-        self.require_operator(operator)?;
+    pub fn set_work_prompt(&self, manager: &str, work_key: &str, prompt: &str) -> Result<()> {
+        self.require_manager(manager)?;
         self.get_work(work_key)?;
         self.conn.execute(
             "UPDATE works SET prompt = ?1 WHERE work_key = ?2",
@@ -131,8 +131,8 @@ impl Store {
     /// A station referenced by any ACTIVE mission contract is editable but
     /// not deletable. The reference set is entry ∪ at ∪ works keys ∪ path
     /// endpoints.
-    pub fn retire_work(&self, operator: &str, work_key: &str) -> Result<()> {
-        self.require_operator(operator)?;
+    pub fn retire_work(&self, manager: &str, work_key: &str) -> Result<()> {
+        self.require_manager(manager)?;
         let work = self.get_work(work_key)?;
         if work.lifecycle == "retired" {
             bail!("work '{work_key}' is already retired");
@@ -198,7 +198,7 @@ impl Store {
     /// Creation only walks templates.
     pub fn create_mission(
         &self,
-        operator: &str,
+        manager: &str,
         template: &contract::MissionTemplate,
         template_path: &str,
         template_bytes: &[u8],
@@ -206,7 +206,7 @@ impl Store {
         name_override: Option<&str>,
         objective_override: Option<&str>,
     ) -> Result<MissionCreateOutcome> {
-        self.require_operator(operator)?;
+        self.require_manager(manager)?;
         let contract = contract::compile(template, template_path, template_bytes)?;
 
         // Station reference validation: every referenced station must exist
@@ -265,7 +265,7 @@ impl Store {
                 serde_json::to_string(&contract)?,
                 contract.entry,
                 created,
-                operator
+                manager
             ],
         )?;
         if inserted == 0 {
@@ -438,10 +438,10 @@ impl Store {
         let work = self.get_work(&at)?;
         let user_station = work.executor.is_none();
         if user_station {
-            // A user station is the human's mailbox: an operator resolves it.
-            self.require_operator(agent_id).with_context(|| {
+            // A user station is the human's mailbox: an manager resolves it.
+            self.require_manager(agent_id).with_context(|| {
                 format!(
-                    "station '{at}' is a user station — missions parked there are resolved by an operator"
+                    "station '{at}' is a user station — missions parked there are resolved by a manager"
                 )
             })?;
         } else if work.executor.as_deref() != Some(agent_id) {
@@ -586,7 +586,7 @@ impl Store {
             "workKey": at,
             "iteration": self.standing_iteration(&mission, &at)?.unwrap_or(1),
             "outcome": outcome,
-            "resolvedBy": {"executorRef": agent_id, "plane": if user_station { "operator" } else { "agent" }},
+            "resolvedBy": {"executorRef": agent_id, "plane": if user_station { "manager" } else { "agent" }},
             "reason": reason,
             "feedback": feedback,
             "documentReceipts": frozen_receipts,
@@ -667,7 +667,7 @@ impl Store {
                 "workKey": by_work,
                 "iteration": iteration,
                 "outcome": outcome,
-                "resolvedBy": {"executorRef": by_agent, "plane": if operator_plane { "operator" } else { "agent" }},
+                "resolvedBy": {"executorRef": by_agent, "plane": if operator_plane { "manager" } else { "agent" }},
                 "reason": reason,
                 "feedback": null,
                 "documentReceipts": frozen_receipts,
@@ -746,9 +746,9 @@ impl Store {
         Ok(seen.into_iter().collect())
     }
 
-    /// Operator delete: disposition=deleted, not attributed to any round.
-    pub fn delete_mission(&self, operator: &str, mission_id: &str, reason: Option<&str>) -> Result<()> {
-        self.require_operator(operator)?;
+    /// Manager delete: disposition=deleted, not attributed to any round.
+    pub fn delete_mission(&self, manager: &str, mission_id: &str, reason: Option<&str>) -> Result<()> {
+        self.require_manager(manager)?;
         let mission = self.get_mission(mission_id)?;
         if mission.status == "ended" {
             bail!("Mission has already ended");
@@ -1109,8 +1109,8 @@ impl Store {
                 let on_duty = for_agent
                     .map(|agent| {
                         if work.executor.is_none() {
-                            // User station: any operator is on duty.
-                            self.list_operators()
+                            // User station: any manager is on duty.
+                            self.list_managers()
                                 .map(|ops| ops.iter().any(|op| op == agent))
                                 .unwrap_or(false)
                         } else {

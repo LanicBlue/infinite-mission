@@ -22,7 +22,7 @@ fn schema_creates_all_domain_tables() {
     for expected in [
         "agents",
         "messages",
-        "operators",
+        "managers",
         "workspace_meta",
         "works",
         "missions",
@@ -79,18 +79,18 @@ fn messages_to_archived_identities_are_preserved() {
 }
 
 #[test]
-fn operator_gate_is_a_table_not_a_role() {
+fn manager_gate_is_a_table_not_a_role() {
     let (_tmp, store) = open();
     store.register_agent_unique("boss", "manager").unwrap();
     store.register_agent_unique("worker", "worker").unwrap();
 
-    assert!(store.require_operator("boss").is_err());
-    store.grant_operator("boss").unwrap();
-    assert!(store.require_operator("boss").is_ok());
+    assert!(store.require_manager("boss").is_err());
+    store.grant_manager("boss").unwrap();
+    assert!(store.require_manager("boss").is_ok());
     // Role alone confers nothing.
-    assert!(store.require_operator("worker").is_err());
-    store.revoke_operator("boss").unwrap();
-    assert!(store.require_operator("boss").is_err());
+    assert!(store.require_manager("worker").is_err());
+    store.revoke_manager("boss").unwrap();
+    assert!(store.require_manager("boss").is_err());
 }
 
 #[test]

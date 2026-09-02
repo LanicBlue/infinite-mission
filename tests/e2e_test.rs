@@ -216,7 +216,7 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
 }
 
 #[test]
-fn operator_commands_are_gated_by_grant() {
+fn manager_commands_are_gated_by_grant() {
     let tmp = setup_workspace();
     im(tmp.path()).args(["join", "boss", "--role", "manager"]).assert().success();
     im(tmp.path()).args(["join", "rando", "--role", "worker"]).assert().success();
@@ -226,7 +226,7 @@ fn operator_commands_are_gated_by_grant() {
         .args(["work", "create", "boss", "build"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("operator"));
+        .stderr(predicate::str::contains("manager"));
 
     im(tmp.path()).args(["grant", "boss"]).assert().success();
     im(tmp.path())
@@ -241,7 +241,7 @@ fn operator_commands_are_gated_by_grant() {
         .args(["work", "create", "boss", "review"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("operator"));
+        .stderr(predicate::str::contains("manager"));
 }
 
 #[test]

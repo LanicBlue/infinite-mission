@@ -17,7 +17,7 @@ cargo install --path .   # 产出二进制：im
 - **Agent** 用 `im join <id> --role <role>` 自助注册。重名自动加后缀
   （`alice` → `alice-2`），身份永远不会被冒用。Agent 无状态：所有持久
   状态都在 mission 里。
-- **Operator** 是你信任的人类：`im grant <id>`。operator 创建工位和
+- **Manager** 是你信任的人类：`im grant <id>`。manager 创建工位和
   mission。
 - **工作区即 project**：一个目录树一个任务空间，**工位**（`build`、
   `review`、`approve`……）直接挂在工作区上。工位有值守者绑定（随时可换
@@ -37,7 +37,7 @@ cargo install --path .   # 产出二进制：im
 - **事件即历史。** `created` / `round.completed` / `routed` / `ended`；
   迭代数是派生的，从不落列。
 - **Inbox**：停驻用户工位的 mission，带着发送方必须给出的 reason。由
-  operator 处置。
+  manager 处置。
 
 ## 快速开始
 
@@ -47,7 +47,7 @@ im init                       # 工作区、角色、示例模板、/im 装机
 
 im join boss --role manager   # 各 agent 的终端里
 im join worker --role worker
-im grant boss                 # 人类执行：boss 成为 operator
+im grant boss                 # 人类执行：boss 成为 manager
 
 # boss：
 im work create boss build --executor worker
@@ -77,7 +77,7 @@ OpenCode 装上斜杠命令：`/im worker`、`/im boss`……教会宿主 agent 
 ```
 工作区      im init | agents | leave | roles | setup | doctor | clean | ui
 消息层      im send <from> <to|@all> <text> | receive <id> [--wait] | pending | history
-Operator   im grant|revoke <agent> | operators
+Manager   im grant|revoke <agent> | im managers
 工位        im work create|list|set-executor|set-prompt|retire
 模板        im template list           （.im/templates/*.yaml）
 Mission    im mission create|show|events|end
@@ -133,7 +133,7 @@ CLI 调用的单个 SQLite 事务里。agent 来来去去、终端死掉、身�
 
 `im ui` 启动临时 localhost 控制台（随机端口、自动开浏览器、闲置 5 分钟自
 退）：工位板（含换绑）、mission 视图（revision/at/disposition）、用户
-inbox（带跳转 reason）、投递历史时间线、operator 动作（授权、从模板建
+inbox（带跳转 reason）、投递历史时间线、manager 动作（授权、从模板建
 mission、终结）。
 
 ## 出处

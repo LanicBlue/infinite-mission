@@ -67,7 +67,7 @@ Missions are one-shot mail: they carry their own contract, travel between statio
 5. `im missions <your-id>` again; when empty, `im receive <your-id> --wait`.
 
 **If your role operates the fleet (manager, lead...):**
-1. "not an operator" → ask the human to run `im grant <your-id>`.
+1. "not a manager" → ask the human to run `im grant <your-id>`.
 2. `im project create <you> <name>` / `im work create <you> <project> <work-key> [--executor <agent>] [--prompt <text>]`
 3. Templates in .im/templates/*.yaml (im init writes example.yaml); then `im mission create <you> --project <p> --template <name> --key <unique-key>`
 4. `im work list` / `im mission events <ms>` / `im inbox` (user stations waiting for humans).

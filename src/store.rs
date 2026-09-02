@@ -32,7 +32,7 @@ fn schema() -> String {
         reply_to INTEGER
     );
 
-    CREATE TABLE IF NOT EXISTS operators (
+    CREATE TABLE IF NOT EXISTS managers (
         agent_id TEXT PRIMARY KEY,
         granted_at INTEGER NOT NULL
     );
@@ -251,6 +251,29 @@ impl Store {
         }
     }
 
+    /// Hard-delete a member (and any manager grant). Refused while the
+    /// member is on-duty at a station — rebind first, or missions would sit
+    /// at a station whose executor no longer exists.
+    pub fn delete_agent(&self, agent_id: &str) -> Result<()> {
+        let duty: Vec<String> = self
+            .conn
+            .prepare("SELECT work_key FROM works WHERE executor = ?1")?
+            .query_map([agent_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        if !duty.is_empty() {
+            anyhow::bail!(
+                "{agent_id} is on duty at stations: {} — rebind them first (im work set-executor)",
+                duty.join(", ")
+            );
+        }
+        let deleted = self.conn.execute("DELETE FROM agents WHERE id = ?1", [agent_id])?;
+        if deleted == 0 {
+            anyhow::bail!("{agent_id} does not exist");
+        }
+        self.conn.execute("DELETE FROM managers WHERE agent_id = ?1", [agent_id])?;
+        Ok(())
+    }
+
     pub fn list_agents(&self, include_archived: bool) -> Result<Vec<AgentRecord>> {
         let sql = if include_archived {
             "SELECT id, role, joined_at, last_seen, status, archived_at FROM agents ORDER BY joined_at"
@@ -386,44 +409,44 @@ impl Store {
         Ok(messages)
     }
 
-    // --- Operators ---
+    // --- Managers ---
 
-    pub fn grant_operator(&self, agent_id: &str) -> Result<()> {
+    pub fn grant_manager(&self, agent_id: &str) -> Result<()> {
         self.require_active_agent(agent_id)?;
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
-            "INSERT OR REPLACE INTO operators (agent_id, granted_at) VALUES (?1, ?2)",
+            "INSERT OR REPLACE INTO managers (agent_id, granted_at) VALUES (?1, ?2)",
             params![agent_id, now],
         )?;
         Ok(())
     }
 
-    pub fn revoke_operator(&self, agent_id: &str) -> Result<()> {
+    pub fn revoke_manager(&self, agent_id: &str) -> Result<()> {
         let revoked = self.conn.execute(
-            "DELETE FROM operators WHERE agent_id = ?1",
+            "DELETE FROM managers WHERE agent_id = ?1",
             [agent_id],
         )?;
         if revoked == 0 {
-            anyhow::bail!("{agent_id} is not an operator");
+            anyhow::bail!("{agent_id} is not a manager");
         }
         Ok(())
     }
 
-    pub fn list_operators(&self) -> Result<Vec<String>> {
+    pub fn list_managers(&self) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT agent_id FROM operators ORDER BY granted_at")?;
+            .prepare("SELECT agent_id FROM managers ORDER BY granted_at")?;
         let names = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(names)
     }
 
-    pub fn require_operator(&self, agent_id: &str) -> Result<()> {
+    pub fn require_manager(&self, agent_id: &str) -> Result<()> {
         let found: Option<i64> = self
             .conn
             .query_row(
-                "SELECT 1 FROM operators WHERE agent_id = ?1",
+                "SELECT 1 FROM managers WHERE agent_id = ?1",
                 [agent_id],
                 |row| row.get(0),
             )
@@ -431,16 +454,16 @@ impl Store {
         if found.is_some() {
             return Ok(());
         }
-        let operators = self.list_operators()?;
-        if operators.is_empty() {
+        let managers = self.list_managers()?;
+        if managers.is_empty() {
             anyhow::bail!(
-                "{agent_id} is not an operator. No operators are granted yet; \
+                "{agent_id} is not a manager. No managers are granted yet; \
                  a human must run `im grant <agent-id>` first."
             );
         }
         anyhow::bail!(
-            "{agent_id} is not an operator. Granted operators: {}",
-            operators.join(", ")
+            "{agent_id} is not a manager. Granted managers: {}",
+            managers.join(", ")
         );
     }
 }

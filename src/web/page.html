@@ -238,8 +238,8 @@ function inboxPane() {
 				<span class="chip mono">${esc(i.mission_id.slice(0,15))}…</span>
 				<span class="spacer"></span>
 				${terms}
-				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="operator 放弃（来自控制台）">abandon</button>
-				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="operator 强制结束（disposition: deleted）">强制结束</button>
+				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="manager 放弃（来自控制台）">abandon</button>
+				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="manager 强制结束（disposition: deleted）">强制结束</button>
 			</div>
 		</article>`;
 	}).join("");
@@ -257,7 +257,7 @@ function worksPane() {
 			<span class="spacer"></span>
 			<button class="btn primary small" data-act="work-create">创建</button>
 		</div></details>`;
-	if (!works.length) return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + `<div class="empty">还没有工位<br><br><span class="hint">创建前需至少一个 operator：终端 <code>im join &lt;你&gt; --role manager</code> → <code>im grant &lt;你&gt;</code>，然后在上方展开「＋ 新建工位」</span></div>`;
+	if (!works.length) return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + `<div class="empty">还没有工位<br><br><span class="hint">创建前需至少一个 manager：终端 <code>im join &lt;你&gt; --role manager</code> → <code>im grant &lt;你&gt;</code>，然后在上方展开「＋ 新建工位」</span></div>`;
 	return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + works.map(w => `<article class="card">
 		<div class="card-row">
 			<h3 style="margin:0">${esc(w.display_name || w.work_key)}</h3>
@@ -306,28 +306,30 @@ function missionsPane() {
 
 function membersPane() {
 	const agents = state.agents || [];
-	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；operator 由人授予</p></div></header>
+	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；manager 由人授予，删除需先退出其值守工位</p></div></header>
 	<div class="card"><table>
-		<thead><tr><th>身份</th><th>角色</th><th>状态</th><th>operator</th><th></th></tr></thead>
+		<thead><tr><th>身份</th><th>角色</th><th>状态</th><th>manager</th><th></th></tr></thead>
 		<tbody>${agents.map(a => `<tr>
 			<td class="mono">${esc(a.id)}</td>
 			<td>${esc(a.role)}</td>
 			<td class="hint">${esc(a.status)}</td>
-			<td>${a.operator ? `<span class="chip accent">operator</span>` : ""}</td>
-			<td style="text-align:right">${a.status === "active" ? (a.operator
-				? `<button class="btn small" data-act="revoke" data-agent="${esc(a.id)}">收回</button>`
-				: `<button class="btn small" data-act="grant" data-agent="${esc(a.id)}">授予 operator</button>`) : ""}
+			<td>${a.manager ? `<span class="chip accent">manager</span>` : ""}</td>
+			<td style="text-align:right">${a.status === "active" ? `
+				${a.manager
+					? `<button class="btn small" data-act="revoke" data-agent="${esc(a.id)}">收回 manager</button>`
+					: `<button class="btn small" data-act="grant" data-agent="${esc(a.id)}">设为 manager</button>`}
+				<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该身份（值守工位会拒绝）">删除</button>` : ""}
 			</td></tr>`).join("")}</tbody>
 	</table></div>`;
 }
 
 function settingsPane() {
-	const ops = state.operators || [];
+	const ops = state.managers || [];
 	return `<header class="detail-header"><div><h2>工作区</h2><p class="meta mono">${esc(state.workspace || "")}</p></div></header>
 	<div class="card"><h3>概况</h3><p class="objective">
 		工位 ${liveWorks().length} · 任务 ${(state.missions||[]).length} · 事件 ${(state.events||[]).length}（最近 100 条内）· 在线成员 ${(state.agents||[]).filter(a=>a.status==="active").length}
 	</p></div>
-	<div class="card"><h3>operator</h3><p class="objective">${ops.length ? ops.map(o => `<span class="chip accent mono">${esc(o)}</span>`).join(" ") : "尚未授予 —— 终端运行 im grant &lt;agent&gt;"}</p></div>
+	<div class="card"><h3>manager</h3><p class="objective">${ops.length ? ops.map(o => `<span class="chip accent mono">${esc(o)}</span>`).join(" ") : "尚未授予 —— 终端运行 im grant &lt;agent&gt;"}</p></div>
 	<div class="card"><h3>任务模板</h3><p class="objective">${(state.templates||[]).map(t => `<span class="chip mono">${esc(t)}</span>`).join(" ") || "无"}</p>
 	<p class="hint">控制台是临时进程：仅绑 127.0.0.1，闲置 300 秒自动退出；每 2 秒轮询。</p></div>`;
 }
@@ -356,6 +358,7 @@ document.addEventListener("click", async e => {
 		case "end": { const reason = prompt("结束原因（将记录为 deleted）："); if (reason !== null) await act({ type: "mission_end", mission: d.mission, reason }); break; }
 		case "grant": await act({ type: "grant", agent: d.agent }); break;
 		case "revoke": await act({ type: "revoke", agent: d.agent }); break;
+		case "delete-agent": if (confirm(`删除成员 ${d.agent}？物理删除、不可恢复（其消息历史保留为文本）。`)) await act({ type: "delete_agent", agent: d.agent }); break;
 		case "work-create": {
 			const work = field("work");
 			if (!work) { toast("工位 key 必填", false); break; }

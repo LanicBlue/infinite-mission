@@ -16,7 +16,7 @@ const IDLE_TIMEOUT_SECS: u64 = 5 * 60;
 
 pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[String]) -> Result<Value> {
     let now_ts = chrono::Utc::now().timestamp();
-    let operators = store.list_operators()?;
+    let managers = store.list_managers()?;
     let agents: Vec<Value> = store
         .list_agents(true)?
         .into_iter()
@@ -42,7 +42,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
                 "id": agent.id,
                 "role": agent.role,
                 "status": status,
-                "operator": operators.contains(&agent.id),
+                "manager": managers.contains(&agent.id),
             })
         })
         .collect();
@@ -171,7 +171,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
 
     Ok(json!({
         "workspace": workspace,
-        "operators": operators,
+        "managers": managers,
         "templates": templates,
         "agents": agents,
         "works": works,
@@ -181,11 +181,11 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
     }))
 }
 
-fn acting_operator(store: &crate::store::Store) -> Result<String> {
-    match store.list_operators()?.into_iter().next() {
-        Some(operator) => Ok(operator),
+fn acting_manager(store: &crate::store::Store) -> Result<String> {
+    match store.list_managers()?.into_iter().next() {
+        Some(manager) => Ok(manager),
         None => bail!(
-            "no operator is granted yet — run `im grant <agent-id>` in a terminal first, \
+            "no manager is granted yet — run `im grant <agent-id>` in a terminal first, \
              then reload this page"
         ),
     }
@@ -201,18 +201,25 @@ fn apply_action(
         "grant" | "revoke" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
             if kind == "grant" {
-                store.grant_operator(agent)?;
-                Ok(format!("granted operator permission to {agent}"))
+                store.grant_manager(agent)?;
+                Ok(format!("granted manager to {agent}"))
             } else {
-                store.revoke_operator(agent)?;
-                Ok(format!("revoked operator permission from {agent}"))
+                store.revoke_manager(agent)?;
+                Ok(format!("revoked manager from {agent}"))
             }
+        }
+        "delete_agent" => {
+            let agent = action["agent"].as_str().context("`agent` required")?;
+            store.delete_agent(agent)?;
+            let session_file = workspace.join(".im").join("sessions").join(agent);
+            let _ = std::fs::remove_file(&session_file);
+            Ok(format!("deleted member {agent}"))
         }
         "set_executor" => {
             let work = action["work"].as_str().context("`work` required")?;
             let executor = action["executor"].as_str().context("`executor` required")?;
             let executor = if executor == "-" { None } else { Some(executor) };
-            let acting = acting_operator(store)?;
+            let acting = acting_manager(store)?;
             store.set_work_executor(&acting, work, executor)?;
             Ok(format!("station {work} executor → {}", executor.unwrap_or("(user station)")))
         }
@@ -223,7 +230,7 @@ fn apply_action(
             let bytes = std::fs::read(&template_path)
                 .with_context(|| format!("template '{template}' not found"))?;
             let parsed = crate::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
-            let acting = acting_operator(store)?;
+            let acting = acting_manager(store)?;
             let outcome = store.create_mission(
                 &acting,
                 &parsed,
@@ -241,7 +248,7 @@ fn apply_action(
         }
         "mission_end" => {
             let mission = action["mission"].as_str().context("`mission` required")?;
-            let acting = acting_operator(store)?;
+            let acting = acting_manager(store)?;
             store.delete_mission(&acting, mission, action["reason"].as_str())?;
             Ok(format!("ended mission {mission}"))
         }
@@ -257,7 +264,7 @@ fn apply_action(
                         .collect()
                 })
                 .unwrap_or_default();
-            let acting = acting_operator(store)?;
+            let acting = acting_manager(store)?;
             let result = store.submit_mission(
                 &acting,
                 mission,
@@ -282,7 +289,7 @@ fn apply_action(
             let work = action["work"].as_str().context("`work` required")?;
             let executor = action["executor"].as_str().context("`executor` required (\"-\" for a user station)")?;
             let executor = if executor == "-" { None } else { Some(executor) };
-            let acting = acting_operator(store)?;
+            let acting = acting_manager(store)?;
             store.create_work(
                 &acting,
                 work,
@@ -294,7 +301,7 @@ fn apply_action(
         }
         "work_retire" => {
             let work = action["work"].as_str().context("`work` required")?;
-            let acting = acting_operator(store)?;
+            let acting = acting_manager(store)?;
             store.retire_work(&acting, work)?;
             Ok(format!("station {work} retired"))
         }
