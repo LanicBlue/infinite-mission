@@ -407,3 +407,31 @@ fn work_presets_fill_charters_and_unretire_reopens_a_key() {
         .failure()
         .stderr(predicate::str::contains("not retired"));
 }
+
+#[test]
+fn retiring_a_station_releases_its_executor() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["join", "temp"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "lab", "--executor", "temp"])
+        .assert()
+        .success();
+
+    // Retire releases the guard: the executor binding goes with it, so
+    // member leave/delete can never dangle off a dead station.
+    im(ws).args(["work", "retire", "boss", "lab"]).assert().success();
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+    let work = store.get_work("lab").unwrap();
+    assert_eq!(work.lifecycle, "retired");
+    assert!(work.executor.is_none(), "retire must release the executor");
+    store.delete_agent("workspace", "temp").unwrap();
+    drop(store);
+
+    // Unretire brings the station back as a user station.
+    im(ws).args(["work", "unretire", "boss", "lab"]).assert().success();
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+    assert!(store.get_work("lab").unwrap().executor.is_none());
+}

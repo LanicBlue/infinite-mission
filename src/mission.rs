@@ -130,7 +130,9 @@ impl Store {
 
     /// A station referenced by any ACTIVE mission contract is editable but
     /// not deletable. The reference set is entry ∪ at ∪ works keys ∪ path
-    /// endpoints.
+    /// endpoints. Retiring also releases the executor: a retired station
+    /// cannot hold missions, so the binding is dead weight — and without the
+    /// release it would block member leave/delete guards forever.
     pub fn retire_work(&self, manager: &str, work_key: &str) -> Result<()> {
         self.require_manager(manager)?;
         let work = self.get_work(work_key)?;
@@ -149,7 +151,7 @@ impl Store {
             );
         }
         self.conn.execute(
-            "UPDATE works SET lifecycle = 'retired' WHERE work_key = ?1",
+            "UPDATE works SET lifecycle = 'retired', executor = NULL WHERE work_key = ?1",
             [work_key],
         )?;
         Ok(())
@@ -157,7 +159,8 @@ impl Store {
 
     /// retire's mirror: without it a retired station key is a dead end (no
     /// station may be created under that key, and templates referencing it
-    /// fail mission create).
+    /// fail mission create). The station comes back as a USER station —
+    /// rebind an executor if it should return to duty.
     pub fn unretire_work(&self, manager: &str, work_key: &str) -> Result<()> {
         self.require_manager(manager)?;
         let work = self.get_work(work_key)?;
