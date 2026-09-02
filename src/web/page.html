@@ -124,6 +124,22 @@ details.form summary { cursor: pointer; color: var(--accent); font-size: 13px; p
 .hint { color: var(--ink-faint); font-size: 12px; }
 .spacer { flex: 1; }
 
+/* ---- modal ---- */
+.modal-overlay { position: fixed; inset: 0; background: rgba(10,14,20,.45); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; z-index: 20; }
+.modal { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); width: 580px; max-width: 100%; max-height: 82vh; overflow-y: auto; padding: 18px 20px; }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.modal-head h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.modal .close { border: none; background: none; color: var(--ink-faint); font-size: 15px; line-height: 1.2; padding: 3px 7px; border-radius: var(--radius-sm); }
+.modal .close:hover { color: var(--ink); background: var(--bg); }
+.modal .field { display: block; margin: 12px 0; }
+.modal .field > span { display: block; font-size: 12px; color: var(--ink-muted); margin-bottom: 5px; }
+.modal textarea { width: 100%; min-height: 110px; resize: vertical; font: inherit; color: var(--ink); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 6px 9px; }
+.modal .kv { display: grid; grid-template-columns: 88px 1fr; gap: 7px 12px; font-size: 13px; margin: 6px 0 12px; }
+.modal .kv dt { color: var(--ink-faint); font-size: 12px; padding-top: 2px; }
+.modal .kv dd { margin: 0; }
+.modal .prompt-box { white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13px; margin: 6px 0 4px; min-height: 40px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
 #toast { position: fixed; right: 18px; bottom: 18px; max-width: 420px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
 .toast { background: var(--bg-elevated); border: 1px solid var(--border); border-left: 3px solid var(--ok); border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 9px 14px; font-size: 13px; animation: slide .18s ease-out; }
 .toast.err { border-left-color: var(--err); }
@@ -144,6 +160,7 @@ details.form summary { cursor: pointer; color: var(--accent); font-size: 13px; p
 	</aside>
 	<main class="main" id="main"></main>
 </div>
+<div id="modal-root"></div>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -176,10 +193,23 @@ async function act(action) {
 	try {
 		const res = await fetch("/api/action", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(action) });
 		const data = await res.json();
-		if (data.ok) { toast(data.message || "done", true); refresh(true); }
-		else toast(data.error || "action failed", false);
+		if (data.ok) { toast(data.message || "done", true); refresh(true); return true; }
+		toast(data.error || "action failed", false);
 	} catch (e) { toast(String(e), false); }
+	return false;
 }
+
+/* ---------------- modal ---------------- */
+function openModal(inner) {
+	closeModal();
+	const root = $("#modal-root");
+	root.innerHTML = `<div class="modal-overlay"><div class="modal" role="dialog" aria-modal="true">${inner}</div></div>`;
+	root.querySelector(".modal-overlay").addEventListener("mousedown", e => { if (e.target === e.currentTarget) closeModal(); });
+	const first = root.querySelector("input, select, textarea");
+	if (first) first.focus();
+}
+function closeModal() { $("#modal-root").innerHTML = ""; }
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
 /* ---------------- state derivation ---------------- */
 const liveWorks = () => (state.works || []).filter(w => w.lifecycle !== "retired");
@@ -249,27 +279,52 @@ function worksPane() {
 	const works = liveWorks();
 	const agents = (state.agents || []).filter(a => a.status !== "archived");
 	const options = current => `<option value="-"${current ? "" : " selected"}>（用户工位）</option>` + agents.map(a => `<option value="${esc(a.id)}"${current===a.id?" selected":""}>${esc(a.id)}</option>`).join("");
-	const create = `<details class="form card"><summary>＋ 新建工位</summary>
-		<div class="form-grid">
-			<label>key <input data-f="work" placeholder="build" size="8"></label>
-			<label>名称 <input data-f="display" placeholder="构建" size="8"></label>
-			<label>值守者 <select data-f="executor">${options(null)}</select></label>
-			<span class="spacer"></span>
-			<button class="btn primary small" data-act="work-create">创建</button>
-		</div></details>`;
-	if (!works.length) return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + `<div class="empty">还没有工位<br><br><span class="hint">创建前需至少一个 manager：在「成员」页点「设为 manager」，然后在上方展开「＋ 新建工位」</span></div>`;
-	return paneHeader("工位", "任务流转的停驻点；不绑值守者即用户工位") + create + works.map(w => `<article class="card">
+	const header = `<header class="detail-header">
+		<div><h2>工位</h2><p class="meta">任务流转的停驻点；不绑值守者即用户工位；点「详情」看完整配置</p></div>
+		<div class="header-actions"><button class="btn primary" data-act="open-work-create">＋ 新建工位</button></div>
+	</header>`;
+	if (!works.length) return header + `<div class="empty">还没有工位<br><br><span class="hint">点右上角「＋ 新建工位」创建；需先在「成员」页设一个 manager</span></div>`;
+	return header + works.map(w => `<article class="card">
 		<div class="card-row">
 			<h3 style="margin:0">${esc(w.display_name || w.work_key)}</h3>
 			<span class="chip mono">${esc(w.work_key)}</span>
 			${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位</span>`}
 			${w.holding ? `<span class="chip ok">在位任务 ${w.holding}</span>` : ""}
 			<span class="spacer"></span>
+			<button class="btn small" data-act="work-detail" data-work="${esc(w.work_key)}">详情</button>
 			<label class="hint">换绑 <select data-act="rebind" data-work="${esc(w.work_key)}">${options(w.executor)}</select></label>
 			<button class="btn small danger" data-act="work-retire" data-work="${esc(w.work_key)}">退役</button>
 		</div>
-		${w.prompt ? `<p class="objective" style="margin:8px 0 0">${esc(w.prompt.slice(0,160))}${w.prompt.length>160?"…":""}</p>` : ""}
 	</article>`).join("");
+}
+
+function workCreateModal() {
+	const agents = (state.agents || []).filter(a => a.status !== "archived");
+	openModal(`
+		<div class="modal-head"><h3>新建工位</h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<label class="field"><span>key（^[a-z][a-z0-9-]*$，工位的唯一地址）</span><input data-f="work" placeholder="build"></label>
+		<label class="field"><span>名称（可选，展示用）</span><input data-f="display" placeholder="构建"></label>
+		<label class="field"><span>值守者（不绑 = 用户工位，人类信箱）</span><select data-f="executor"><option value="-">（用户工位）</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.id)}</option>`).join("")}</select></label>
+		<label class="field"><span>常驻 prompt —— 工位的作业内容，随每个停驻的任务一起渲染</span><textarea data-f="prompt" placeholder="实现 {mission.objective}；来自 {mission.from}，第 {mission.iteration} 轮。"></textarea></label>
+		<p class="hint">可插值槽位：<code>{mission.name}</code> <code>{mission.objective}</code> <code>{mission.from}</code> <code>{mission.iteration}</code> <code>{mission.reason}</code> —— 未知槽位保留字面</p>
+		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="work-create">创建</button></div>`);
+}
+
+function workDetailModal(key) {
+	const w = (state.works || []).find(x => x.work_key === key);
+	if (!w) { toast("工位不存在（可能刚被退役）", false); return; }
+	openModal(`
+		<div class="modal-head"><h3>${esc(w.display_name || w.work_key)} <span class="chip mono">${esc(w.work_key)}</span></h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<dl class="kv">
+			<dt>key</dt><dd class="mono">${esc(w.work_key)}</dd>
+			<dt>名称</dt><dd>${esc(w.display_name || "—")}</dd>
+			<dt>值守者</dt><dd>${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位（人类信箱）</span>`}</dd>
+			<dt>生命周期</dt><dd>${w.lifecycle === "retired" ? "已退役" : `<span class="chip ok">在役</span>`}</dd>
+			<dt>在位任务</dt><dd>${w.holding ? `${w.holding} 个 active mission 停驻` : "无"}</dd>
+		</dl>
+		<div class="hint">常驻 prompt（读取时按停驻 mission 的字段插值）</div>
+		<div class="prompt-box">${w.prompt ? esc(w.prompt) : `<span class="hint">（未设置 —— 工位没有作业说明，建议补上）</span>`}</div>
+		<p class="hint">改配置：值守者用卡片右侧「换绑」；prompt 用终端 <code>im work set-prompt &lt;manager&gt; ${esc(w.work_key)} "&lt;新 prompt&gt;"</code></p>`);
 }
 
 function missionsPane() {
@@ -359,10 +414,13 @@ document.addEventListener("click", async e => {
 		case "grant": await act({ type: "grant", agent: d.agent }); break;
 		case "revoke": await act({ type: "revoke", agent: d.agent }); break;
 		case "delete-agent": if (confirm(`删除成员 ${d.agent}？物理删除、不可恢复（其消息历史保留为文本）。`)) await act({ type: "delete_agent", agent: d.agent }); break;
+		case "open-work-create": workCreateModal(); break;
+		case "work-detail": workDetailModal(d.work); break;
+		case "modal-close": closeModal(); break;
 		case "work-create": {
 			const work = field("work");
 			if (!work) { toast("工位 key 必填", false); break; }
-			await act({ type: "work_create", work, display_name: field("display"), executor: field("executor") || "-", prompt: "" });
+			if (await act({ type: "work_create", work, display_name: field("display"), executor: field("executor") || "-", prompt: field("prompt") })) closeModal();
 			break;
 		}
 		case "work-retire": if (confirm(`退役工位 ${d.work}？（在位任务会阻止退役）`)) await act({ type: "work_retire", work: d.work }); break;
