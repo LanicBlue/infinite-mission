@@ -12,6 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const PAGE: &str = include_str!("web/page.html");
+
+/// Fixed default console port so the URL is stable across runs.
+const DEFAULT_UI_PORT: u16 = 4600;
 const IDLE_TIMEOUT_SECS: u64 = 5 * 60;
 
 pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[String]) -> Result<Value> {
@@ -322,8 +325,11 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
         }
         dir
     };
-    let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0)))
-        .with_context(|| "failed to bind a local port")?;
+    let port = port.unwrap_or(DEFAULT_UI_PORT);
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .with_context(|| format!(
+            "port {port} is busy — another `im ui` may already be running; pass --port <N> for a different one"
+        ))?;
     let addr = listener.local_addr()?;
     let url = format!("http://{addr}");
     println!("im console: {url}");

@@ -247,7 +247,7 @@ function inboxPane() {
 
 function worksPane() {
 	const works = liveWorks();
-	const agents = (state.agents || []).filter(a => a.status === "active");
+	const agents = (state.agents || []).filter(a => a.status !== "archived");
 	const options = current => `<option value="-"${current ? "" : " selected"}>（用户工位）</option>` + agents.map(a => `<option value="${esc(a.id)}"${current===a.id?" selected":""}>${esc(a.id)}</option>`).join("");
 	const create = `<details class="form card"><summary>＋ 新建工位</summary>
 		<div class="form-grid">
@@ -314,7 +314,7 @@ function membersPane() {
 			<td>${esc(a.role)}</td>
 			<td class="hint">${esc(a.status)}</td>
 			<td>${a.manager ? `<span class="chip accent">manager</span>` : ""}</td>
-			<td style="text-align:right">${a.status === "active" ? `
+			<td style="text-align:right">${a.status !== "archived" ? `
 				${a.manager
 					? `<button class="btn small" data-act="revoke" data-agent="${esc(a.id)}">收回 manager</button>`
 					: `<button class="btn small" data-act="grant" data-agent="${esc(a.id)}">设为 manager</button>`}
@@ -327,7 +327,7 @@ function settingsPane() {
 	const ops = state.managers || [];
 	return `<header class="detail-header"><div><h2>工作区</h2><p class="meta mono">${esc(state.workspace || "")}</p></div></header>
 	<div class="card"><h3>概况</h3><p class="objective">
-		工位 ${liveWorks().length} · 任务 ${(state.missions||[]).length} · 事件 ${(state.events||[]).length}（最近 100 条内）· 在线成员 ${(state.agents||[]).filter(a=>a.status==="active").length}
+		工位 ${liveWorks().length} · 任务 ${(state.missions||[]).length} · 事件 ${(state.events||[]).length}（最近 100 条内）· 在线成员 ${(state.agents||[]).filter(a=>a.status!=="archived").length}
 	</p></div>
 	<div class="card"><h3>manager</h3><p class="objective">${ops.length ? ops.map(o => `<span class="chip accent mono">${esc(o)}</span>`).join(" ") : "尚未授予 —— 终端运行 im grant &lt;agent&gt;"}</p></div>
 	<div class="card"><h3>任务模板</h3><p class="objective">${(state.templates||[]).map(t => `<span class="chip mono">${esc(t)}</span>`).join(" ") || "无"}</p>

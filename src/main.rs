@@ -1030,7 +1030,7 @@ Missions (PS semantics)
   im inbox                                  Missions parked at user stations
 
 Maintenance
-  im setup [platform] / im doctor / im clean / im ui [--port N] [--no-open]
+  im ui [--port N] [--no-open]              Console at http://127.0.0.1:4600 by default
 
 QUICK START
   1. im init && im join boss --role manager && im grant boss   (human grants once)

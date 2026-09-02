@@ -95,7 +95,7 @@ Missions    im mission create|show|events|end
             im mission doc write <agent> <ms> --id <docId> --file <path|->
             im missions <agent>        # active missions at your stations
 Inbox       im inbox                   # missions waiting at user stations
-Console     im ui                      # ephemeral browser console (localhost)
+Console     im ui                      # browser console at http://127.0.0.1:4600 (localhost only)
 ```
 
 ## Mission templates

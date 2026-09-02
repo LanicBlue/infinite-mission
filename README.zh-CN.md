@@ -88,7 +88,7 @@ Mission    im mission create|show|events|end
             im mission doc write <agent> <ms> --id <docId> --file <path|->
             im missions <agent>        # 你值守工位上的 active mission
 Inbox      im inbox                   # 停在用户工位的 mission
-控制台      im ui                      # 临时浏览器控制台（localhost）
+控制台      im ui                      # 浏览器控制台（固定 http://127.0.0.1:4600，仅本机）
 ```
 
 ## 任务模板
@@ -131,8 +131,8 @@ CLI 调用的单个 SQLite 事务里。agent 来来去去、终端死掉、身�
 
 ## 控制台
 
-`im ui` 启动临时 localhost 控制台（随机端口、自动开浏览器、闲置 5 分钟自
-退）：工位板（含换绑）、mission 视图（revision/at/disposition）、用户
+`im ui` 启动临时 localhost 控制台（固定默认端口 4600、自动开浏览器、闲置 5 分钟自退；`--port N`
+可换）：工位板（含换绑）、mission 视图（revision/at/disposition）、用户
 inbox（带跳转 reason）、投递历史时间线、manager 动作（授权、从模板建
 mission、终结）。
 
