@@ -112,12 +112,45 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
                 .ok()
                 .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
                 .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from));
+            // When the mailbox arrived at this station (for aging display).
+            let arrived_at: Option<i64> = store
+                .conn
+                .query_row(
+                    "SELECT created_at FROM mission_events
+                     WHERE mission_id = ?1 AND type = 'mission.routed'
+                     ORDER BY seq DESC LIMIT 1",
+                    [&mission.mission_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            // The station's vocabulary so the human can resolve in place.
+            let (outcomes, terminal): (Vec<String>, Vec<String>) =
+                crate::mission::parse_contract(&mission.contract_json)
+                    .ok()
+                    .and_then(|contract| {
+                        mission
+                            .at
+                            .as_deref()
+                            .and_then(|at| contract.works.get(at))
+                            .map(|d| {
+                                (
+                                    d.completion.outcomes.clone(),
+                                    d.completion.terminal.clone(),
+                                )
+                            })
+                    })
+                    .unwrap_or_default();
             json!({
                 "mission_id": mission.mission_id,
                 "at": mission.at,
                 "name": mission.name,
+                "objective": mission.objective,
                 "project_id": mission.project_id,
                 "reason": reason,
+                "arrived_at": arrived_at,
+                "revision": mission.revision,
+                "outcomes": outcomes,
+                "terminal": terminal,
             })
         })
         .collect();
@@ -126,7 +159,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
         .conn
         .prepare(
             "SELECT mission_id, seq, type, payload, created_at FROM mission_events
-             ORDER BY rowid DESC LIMIT 40",
+             ORDER BY rowid DESC LIMIT 100",
         )?
         .query_map([], |row| {
             Ok(json!({
@@ -218,6 +251,74 @@ fn apply_action(
             let acting = acting_operator(store)?;
             store.delete_mission(&acting, mission, action["reason"].as_str())?;
             Ok(format!("ended mission {mission}"))
+        }
+        "mission_submit" => {
+            let mission = action["mission"].as_str().context("`mission` required")?;
+            let revision = action["revision"].as_i64().context("`revision` required")?;
+            let outcome = action["outcome"].as_str().context("`outcome` required")?;
+            let receipts: Vec<String> = action["receipts"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let acting = acting_operator(store)?;
+            let result = store.submit_mission(
+                &acting,
+                mission,
+                revision,
+                outcome,
+                action["next_node"].as_str(),
+                action["reason"].as_str(),
+                action["feedback"].as_str(),
+                &receipts,
+            )?;
+            if result.mission_ended {
+                Ok(format!("mission {mission} ended (revision {})", result.revision))
+            } else {
+                Ok(format!(
+                    "mission {mission} → {} (revision {})",
+                    result.routed_to.as_deref().unwrap_or("?"),
+                    result.revision
+                ))
+            }
+        }
+        "work_create" => {
+            let project = action["project"].as_str().context("`project` required")?;
+            let work = action["work"].as_str().context("`work` required")?;
+            let executor = action["executor"].as_str().context("`executor` required (\"-\" for a user station)")?;
+            let executor = if executor == "-" { None } else { Some(executor) };
+            let acting = acting_operator(store)?;
+            store.create_work(
+                &acting,
+                project,
+                work,
+                action["display_name"].as_str().unwrap_or(""),
+                executor,
+                action["prompt"].as_str().unwrap_or(""),
+            )?;
+            Ok(format!("station {project}/{work} created"))
+        }
+        "work_retire" => {
+            let project = action["project"].as_str().context("`project` required")?;
+            let work = action["work"].as_str().context("`work` required")?;
+            let acting = acting_operator(store)?;
+            store.retire_work(&acting, project, work)?;
+            Ok(format!("station {project}/{work} retired"))
+        }
+        "project_retire" => {
+            let project = action["project"].as_str().context("`project` required")?;
+            let acting = acting_operator(store)?;
+            store.retire_project(&acting, project)?;
+            Ok(format!("project {project} retired"))
+        }
+        "project_create" => {
+            let name = action["name"].as_str().context("`name` required")?;
+            let acting = acting_operator(store)?;
+            let id = store.create_project(&acting, name, action["description"].as_str().unwrap_or(""))?;
+            Ok(format!("project {name} created ({id})"))
         }
         other => bail!("unknown action type: {other}"),
     }
