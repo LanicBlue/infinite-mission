@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
 use std::path::Path;
 
 use crate::records::{AgentRecord, MessageRecord, Tier};
@@ -134,46 +134,55 @@ impl Store {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let conn = Connection::open(path)
+        let mut conn = Connection::open(path)
             .with_context(|| format!("failed to open database: {}", path.display()))?;
         conn.execute_batch(&schema())?;
+        // Legacy-schema migrations run as ONE immediate transaction. The
+        // probe-then-patch steps must be atomic against concurrent opens:
+        // two processes first-opening the same legacy DB race otherwise
+        // (one drops `managers` while the other is mid-fold, and the
+        // loser dies on "no such table"). BEGIN IMMEDIATE serializes the
+        // writers; busy_timeout makes the second one wait, re-probe the
+        // post-migration state, and skip.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // CREATE TABLE IF NOT EXISTS never extends an existing table — legacy
         // DBs predate the description column, so patch it in place.
-        let has_description: i64 = conn.query_row(
+        let has_description: i64 = tx.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('works') WHERE name = 'description'",
             [],
             |row| row.get(0),
         )?;
         if has_description == 0 {
-            conn.execute_batch(
+            tx.execute_batch(
                 "ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';",
             )?;
         }
         // Tier migration: pre-tier DBs lack agents.tier; add it, then fold
         // the retired managers table into the manage tier and drop it.
-        let has_tier: i64 = conn.query_row(
+        let has_tier: i64 = tx.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'tier'",
             [],
             |row| row.get(0),
         )?;
         if has_tier == 0 {
-            conn.execute_batch(
+            tx.execute_batch(
                 "ALTER TABLE agents ADD COLUMN tier TEXT NOT NULL DEFAULT 'execute'
                  CHECK (tier IN ('execute','publish','manage'));",
             )?;
         }
-        let has_managers: i64 = conn.query_row(
+        let has_managers: i64 = tx.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'managers'",
             [],
             |row| row.get(0),
         )?;
         if has_managers > 0 {
-            conn.execute_batch(
+            tx.execute_batch(
                 "UPDATE agents SET tier = 'manage'
                      WHERE id IN (SELECT agent_id FROM managers);
                  DROP TABLE managers;",
             )?;
         }
+        tx.commit()?;
         let _ = conn.execute(
             "UPDATE agents SET status = 'active' WHERE status IS NULL OR status = ''",
             [],

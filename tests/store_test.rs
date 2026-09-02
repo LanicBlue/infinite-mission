@@ -404,3 +404,62 @@ fn legacy_works_table_gains_the_description_column() {
         .unwrap();
     assert_eq!(summary, "", "backfilled descriptions start empty");
 }
+
+#[test]
+fn concurrent_opens_migrate_a_legacy_db_safely() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("im.db");
+    {
+        // Pre-tier fixture: one legacy manager (a1), one plain member (a2).
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL DEFAULT '',
+                joined_at INTEGER NOT NULL,
+                session_token TEXT,
+                last_seen INTEGER,
+                status TEXT NOT NULL DEFAULT 'active',
+                archived_at INTEGER
+            );
+             CREATE TABLE managers (agent_id TEXT PRIMARY KEY, granted_at INTEGER NOT NULL);
+             CREATE TABLE workspace_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO agents (id, joined_at) VALUES ('a1', 1), ('a2', 2);
+             INSERT INTO managers (agent_id, granted_at) VALUES ('a1', 10);",
+        )
+        .unwrap();
+    }
+
+    // Four opens racing the migration: the immediate transaction must
+    // serialize them — every open succeeds, and the fold+drop happens
+    // exactly once (the latecomers re-probe and skip).
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let path = db_path.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            Store::open(&path).map(|_| ())
+        }));
+    }
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+
+    let check = Store::open(&db_path).unwrap();
+    let managers_tables: i64 = check
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'managers'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(managers_tables, 0, "the fold must drop the managers table");
+    let tier: String = check
+        .conn
+        .query_row("SELECT tier FROM agents WHERE id = 'a1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tier, "manage");
+}
