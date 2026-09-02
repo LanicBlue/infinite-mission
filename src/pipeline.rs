@@ -10,29 +10,30 @@ pub const PIPELINE_TEMPLATE: &str = include_str!("templates/pipeline.yaml");
 
 pub struct WorkPreset {
     pub key: &'static str,
-    pub display_name: &'static str,
+    /// One-line charter summary for boards and listings.
+    pub description: &'static str,
     pub prompt: &'static str,
 }
 
 pub const PRESETS: &[WorkPreset] = &[
     WorkPreset {
         key: "design",
-        display_name: "Design",
+        description: "Grill the conversation into a frozen SPEC; hold the final gate.",
         prompt: include_str!("templates/pipeline/design.md"),
     },
     WorkPreset {
         key: "plan",
-        display_name: "Plan",
+        description: "Compile the SPEC into a self-contained GOAL.",
         prompt: include_str!("templates/pipeline/plan.md"),
     },
     WorkPreset {
         key: "build",
-        display_name: "Build",
+        description: "Implement the GOAL; report with an evidence receipt.",
         prompt: include_str!("templates/pipeline/build.md"),
     },
     WorkPreset {
         key: "review",
-        display_name: "Review",
+        description: "Verify the implementation against the GOAL, two evidence axes.",
         prompt: include_str!("templates/pipeline/review.md"),
     },
 ];
@@ -65,11 +66,11 @@ pub fn seed_pipeline_works(store: &crate::store::Store) -> Result<Vec<String>> {
             .optional()?;
         if exists.is_none() {
             store.conn.execute(
-                "INSERT INTO works (work_key, display_name, executor, prompt, created_at)
+                "INSERT INTO works (work_key, description, executor, prompt, created_at)
                  VALUES (?1, ?2, NULL, ?3, ?4)",
                 rusqlite::params![
                     key,
-                    preset.display_name,
+                    preset.description,
                     preset.prompt,
                     chrono::Utc::now().timestamp()
                 ],

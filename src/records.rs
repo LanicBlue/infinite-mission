@@ -28,7 +28,8 @@ pub struct MessageRecord {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorkRecord {
     pub work_key: String,
-    pub display_name: String,
+    /// One-line charter summary for boards and listings.
+    pub description: String,
     /// Current on-duty executor agent id; NULL means a user station.
     pub executor: Option<String>,
     pub prompt: String,

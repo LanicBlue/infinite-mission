@@ -286,15 +286,16 @@ function worksPane() {
 	if (!works.length) return header + `<div class="empty">还没有工位<br><br><span class="hint">点右上角「＋ 新建工位」创建；需先在「成员」页设一个 manager</span></div>`;
 	return header + works.map(w => `<article class="card">
 		<div class="card-row">
-			<h3 style="margin:0">${esc(w.display_name || w.work_key)}</h3>
-			<span class="chip mono">${esc(w.work_key)}</span>
+			<h3 style="margin:0">${esc(w.work_key)}</h3>
 			${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位</span>`}
-			${w.holding ? `<span class="chip ok">在位任务 ${w.holding}</span>` : ""}
+			${w.holding ? `<span class="chip ok">在岗 ${w.holding}</span>` : ""}
+			${w.incoming ? `<span class="chip">在途 ${w.incoming}</span>` : ""}
 			<span class="spacer"></span>
 			<button class="btn small" data-act="work-detail" data-work="${esc(w.work_key)}">详情</button>
 			<label class="hint">换绑 <select data-act="rebind" data-work="${esc(w.work_key)}">${options(w.executor)}</select></label>
-				<button class="btn small danger" data-act="work-delete" data-work="${esc(w.work_key)}">删除</button>
+			<button class="btn small danger" data-act="work-delete" data-work="${esc(w.work_key)}">删除</button>
 		</div>
+		${w.description ? `<p class="objective" style="margin:4px 0 0">${esc(w.description)}</p>` : ""}
 	</article>`).join("");
 }
 
@@ -303,9 +304,9 @@ function workCreateModal() {
 	const presets = state.presets || [];
 	openModal(`
 		<div class="modal-head"><h3>新建工位</h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
-		<label class="field"><span>key（^[a-z][a-z0-9-]*$，工位的唯一地址）</span><input data-f="work" placeholder="build"></label>
-		<label class="field"><span>名称（可选，展示用）</span><input data-f="display" placeholder="构建"></label>
-		<label class="field"><span>模版 —— 预填交付流水线岗位章程（prompt + 名称），选后可再改</span><select data-f="preset"><option value="">（无模版）</option>${presets.map(p => `<option value="${esc(p.key)}">${esc(p.display)} · ${esc(p.key)}（${p.key === "design" ? "grill→spec+终审" : p.key === "plan" ? "spec→goal" : p.key === "build" ? "实现 goal" : "对照 goal 验证"}）</option>`).join("")}</select></label>
+		<label class="field"><span>key（^[a-z][a-z0-9-]*$，工位的唯一地址与名字）</span><input data-f="work" placeholder="build"></label>
+		<label class="field"><span>简介（一句话，工位板与列表展示）</span><input data-f="description" placeholder="对照 goal 验证实现"></label>
+		<label class="field"><span>模版 —— 预填交付流水线岗位章程（prompt + 简介），选后可再改</span><select data-f="preset"><option value="">（无模版）</option>${presets.map(p => `<option value="${esc(p.key)}">${esc(p.key)}（${esc(p.description)}）</option>`).join("")}</select></label>
 		<label class="field"><span>值守者（不绑 = 用户工位，人类信箱）</span><select data-f="executor"><option value="-">（用户工位）</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.id)}</option>`).join("")}</select></label>
 		<label class="field"><span>常驻 prompt —— 工位的作业内容，随每个停驻的任务一起渲染</span><textarea data-f="prompt" placeholder="实现 {mission.objective}；来自 {mission.from}，第 {mission.iteration} 轮。"></textarea></label>
 		<p class="hint">可插值槽位：<code>{mission.name}</code> <code>{mission.objective}</code> <code>{mission.from}</code> <code>{mission.iteration}</code> <code>{mission.reason}</code> —— 未知槽位保留字面</p>
@@ -324,18 +325,17 @@ function resolveModal(mission, revision, outcome, prefill) {
 
 function workDetailModal(key) {
 	const w = (state.works || []).find(x => x.work_key === key);
-		if (!w) { toast("工位不存在（可能刚被删除）", false); return; }
+	if (!w) { toast("工位不存在（可能刚被删除）", false); return; }
 	openModal(`
-		<div class="modal-head"><h3>${esc(w.display_name || w.work_key)} <span class="chip mono">${esc(w.work_key)}</span></h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<div class="modal-head"><h3>${esc(w.work_key)} <span class="chip accent">👤 ${w.executor ? esc(w.executor) : "用户工位"}</span></h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
 		<dl class="kv">
 			<dt>key</dt><dd class="mono">${esc(w.work_key)}</dd>
-			<dt>名称</dt><dd>${esc(w.display_name || "—")}</dd>
-				<dt>值守者</dt><dd>${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位（人类信箱）</span>`}</dd>
-				<dt>在位任务</dt><dd>${w.holding ? `${w.holding} 个 active mission 停驻` : "无"}</dd>
+			<dt>简介</dt><dd>${esc(w.description || "—")}</dd>
+			<dt>占用</dt><dd>在岗 ${w.holding || 0} · 在途 ${w.incoming || 0}</dd>
 		</dl>
 		<div class="hint">常驻 prompt（读取时按停驻 mission 的字段插值）</div>
 		<div class="prompt-box">${w.prompt ? esc(w.prompt) : `<span class="hint">（未设置 —— 工位没有作业说明，建议补上）</span>`}</div>
-		<p class="hint">改配置：值守者用卡片右侧「换绑」；prompt 用终端 <code>im work set-prompt &lt;manager&gt; ${esc(w.work_key)} "&lt;新 prompt&gt;"</code></p>`);
+		<p class="hint">改配置：值守者用卡片右侧「换绑」；prompt/简介用终端 <code>im work set-prompt|set-description &lt;manager&gt; ${esc(w.work_key)} …</code></p>`);
 }
 
 function missionsPane() {
@@ -436,7 +436,7 @@ document.addEventListener("click", async e => {
 		case "work-create": {
 			const work = field("work");
 			if (!work) { toast("工位 key 必填", false); break; }
-			if (await act({ type: "work_create", work, display_name: field("display"), executor: field("executor") || "-", prompt: field("prompt") })) closeModal();
+			if (await act({ type: "work_create", work, description: field("description"), executor: field("executor") || "-", prompt: field("prompt") })) closeModal();
 			break;
 		}
 		case "work-delete": if (confirm(`删除工位 ${d.work}？物理删除；被活跃 mission 合同引用的工位会被锁定拒删。`)) await act({ type: "work_delete", work: d.work }); break;
@@ -459,8 +459,8 @@ document.addEventListener("change", async e => {
 		if (p) {
 			const prompt = $('[data-f="prompt"]');
 			if (prompt) prompt.value = p.prompt;
-			const display = $('[data-f="display"]');
-			if (display && !display.value) display.value = p.display;
+			const description = $('[data-f="description"]');
+			if (description && !description.value) description.value = p.description;
 		}
 		return;
 	}

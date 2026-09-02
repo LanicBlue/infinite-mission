@@ -155,8 +155,8 @@ fn work_notes_are_consumed_only_by_the_bound_executor() {
     store.register_agent_unique("inspector").unwrap();
     store.conn
         .execute_batch(
-            "INSERT INTO works (work_key, display_name, executor, prompt, created_at)
-                 VALUES ('build', 'Build', 'worker', '', 0);
+            "INSERT INTO works (work_key, description, executor, prompt, created_at)
+                 VALUES ('build', '', 'worker', '', 0);
              INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
                  VALUES ('build', 'arrival', 'ms_t', 'mission arrived', 1000, 0);",
         )
@@ -241,4 +241,41 @@ fn revision_cas_guard_rejects_stale_writes() {
         .query_row("SELECT revision FROM missions WHERE mission_id = 'ms_a'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(revision, 2);
+}
+
+#[test]
+fn legacy_works_table_gains_the_description_column() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("im.db");
+    {
+        // A pre-description database: works without the summary column.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE works (
+                work_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL DEFAULT '',
+                executor TEXT,
+                prompt TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );
+            INSERT INTO works (work_key, executor, prompt, created_at)
+             VALUES ('legacy', NULL, 'charter', 0);",
+        )
+        .unwrap();
+    }
+    let store = im::store::Store::open(&db_path).unwrap();
+    let has_description: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('works') WHERE name = 'description'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_description, 1, "migration must add the description column");
+    let summary: String = store
+        .conn
+        .query_row("SELECT description FROM works WHERE work_key = 'legacy'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(summary, "", "backfilled descriptions start empty");
 }

@@ -414,7 +414,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
         Some("create") if args.len() >= 3 => {
             let manager = &args[1];
             let work_key = &args[2];
-            let display_name = flag_value(&args[3..], "--display-name")?;
+            let description = flag_value(&args[3..], "--description")?;
             let executor = flag_value(&args[3..], "--executor")?;
             let prompt = flag_value(&args[3..], "--prompt")?;
             let preset_key = flag_value(&args[3..], "--preset")?;
@@ -425,8 +425,8 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
                 ),
                 None => None,
             };
-            let display = display_name
-                .or(preset.map(|p| p.display_name.to_string()))
+            let description = description
+                .or(preset.map(|p| p.description.to_string()))
                 .unwrap_or_default();
             let prompt = prompt
                 .or(preset.map(|p| p.prompt.to_string()))
@@ -435,7 +435,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let store = open_store(&workspace)?;
             ensure_agent(&store, manager)?;
             check_session(&workspace, &store, manager)?;
-            let key = store.create_work(manager, work_key, &display, executor.as_deref(), &prompt)?;
+            let key = store.create_work(manager, work_key, &description, executor.as_deref(), &prompt)?;
             println!("Created station {key}");
             if executor.is_none() {
                 println!("  (user station — bind an executor with im work set-executor)");
@@ -445,6 +445,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
         Some("list") => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            let inbound = store.inbound_counts()?;
             for work in store.list_works()? {
                 let executor = work.executor.as_deref().unwrap_or("(user)");
                 let holding: i64 = store.conn.query_row(
@@ -452,8 +453,14 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
                     rusqlite::params![work.work_key],
                     |row| row.get(0),
                 )?;
+                let en_route = inbound.get(&work.work_key).copied().unwrap_or(0);
+                let summary = if work.description.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", work.description)
+                };
                 println!(
-                    "  {} — executor: {}, holding: {holding}",
+                    "  {} — executor: {}, holding: {holding}, en route: {en_route}{summary}",
                     work.work_key, executor
                 );
             }
@@ -477,8 +484,10 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             })?;
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            // A preset is a full charter: standing prompt + one-line summary.
             store.set_work_prompt(&args[1], &args[2], preset.prompt)?;
-            println!("Station prompt updated from preset '{}'.", preset.key);
+            store.set_work_description(&args[1], &args[2], preset.description)?;
+            println!("Station charter updated from preset '{}'.", preset.key);
             Ok(())
         }
         Some("set-prompt") if args.len() >= 4 && args[3] != "--preset" => {
@@ -486,6 +495,13 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let store = open_store(&workspace)?;
             store.set_work_prompt(&args[1], &args[2], &args[3..].join(" "))?;
             println!("Station prompt updated.");
+            Ok(())
+        }
+        Some("set-description") if args.len() >= 4 => {
+            let workspace = find_workspace()?;
+            let store = open_store(&workspace)?;
+            store.set_work_description(&args[1], &args[2], &args[3..].join(" "))?;
+            println!("Station description updated.");
             Ok(())
         }
         Some("delete") if args.len() == 3 => {
@@ -496,7 +512,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "Usage: im work <create <op> <work-key> [--display-name <n>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | delete <op> <work>>"
+            "Usage: im work <create <op> <work-key> [--description <t>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | set-description <op> <work> <text...> | delete <op> <work>>"
         ),
     }
 }
@@ -926,15 +942,16 @@ COMMANDS
 
 Managers (human grants via `im grant` or the console Members page)
   im grant|revoke <agent> / im managers
-  im work create <op> <work-key> [--display-name <n>] [--executor <agent>]
+  im work create <op> <work-key> [--description <t>] [--executor <agent>]
                   [--prompt <text>] [--preset design|plan|build|review]
                                              The prompt IS the work content — it travels
                                              with every mission stopping at the station.
                                              A preset fills the standing charter of the
                                              delivery pipeline (grill→spec, spec→goal,
-                                             implement, verify).
+                                             implement, verify) plus its one-line summary.
   im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text...>
-             / set-prompt <op> <work> --preset <name> / delete <op> <work>
+             / set-prompt <op> <work> --preset <name> / set-description <op> <work> <text...>
+             / delete <op> <work>
   im template list                          Mission templates in .im/templates/
 
 Missions (PS semantics)

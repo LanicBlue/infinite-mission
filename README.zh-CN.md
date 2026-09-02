@@ -123,7 +123,8 @@ design→plan→build→review 交付流，纪律蒸馏自
 
 四个岗位章程以**工位模版**形式随二进制发布
 （`im work create <op> <key> --preset design|plan|build|review`，控制台新建
-工位弹窗也有下拉可选），删掉的工位可按模版重建。预建工位就是普通工位：
+工位弹窗也有下拉可选），删掉的工位可按模版重建——preset 应用常驻 prompt
+加一句话简介（工位板与列表展示）。预建工位就是普通工位：
 换绑、改 prompt、删除都随你——删除即 PS 式工位锁定：被任何活跃 mission 合同
 引用（entry、works、path 端点）的工位锁死到那些 mission 终结为止；无引用的
 工位直接删行、key 释放。
@@ -135,8 +136,10 @@ design→plan→build→review 交付流，纪律蒸馏自
 收件        im receive <id> [--wait] | pending | history   # 到达通知 + 成员资格，不是聊天
 Manager   im grant|revoke <agent> | im managers           # 也可在控制台「成员」页授予
 工位        im work create|list|set-executor|set-prompt|delete
-            im work create <op> <key> --preset design|plan|build|review
-            im work set-prompt <op> <work> --preset <name>
+            im work create <op> <key> [--description <t>] [--executor <agent>] [--preset <name>]
+            im work set-prompt <op> <work> --preset <name>   # 应用整套章程（prompt+简介）
+            im work set-description <op> <work> <text...>
+            # list 显示 executor、在岗/在途占用与一句话简介
 模板        im template list           （.im/templates/*.yaml）
 Mission    im mission create|show|events|end
             im mission submit <agent> <ms> --revision N --outcome O

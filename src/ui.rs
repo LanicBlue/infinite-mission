@@ -49,6 +49,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
         })
         .collect();
 
+    let inbound = store.inbound_counts()?;
     let works: Vec<Value> = store
         .list_works()?
         .into_iter()
@@ -63,10 +64,11 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
                 .unwrap_or(0);
             json!({
                 "work_key": work.work_key,
-                "display_name": work.display_name,
+                "description": work.description,
                 "executor": work.executor,
                 "prompt": work.prompt,
                 "holding": holding,
+                "incoming": inbound.get(&work.work_key).copied().unwrap_or(0),
             })
         })
         .collect();
@@ -178,7 +180,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
             .iter()
             .map(|p| json!({
                 "key": p.key,
-                "display": p.display_name,
+                "description": p.description,
                 "prompt": p.prompt,
             }))
             .collect::<Vec<_>>(),
@@ -313,7 +315,7 @@ pub fn apply_action(
             store.create_work(
                 &acting,
                 work,
-                action["display_name"].as_str().unwrap_or(""),
+                action["description"].as_str().unwrap_or(""),
                 executor,
                 action["prompt"].as_str().unwrap_or(""),
             )?;

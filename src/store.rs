@@ -48,7 +48,7 @@ fn schema() -> String {
 
     CREATE TABLE IF NOT EXISTS works (
         work_key TEXT PRIMARY KEY,
-        display_name TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
         executor TEXT,
         prompt TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL
@@ -141,6 +141,18 @@ impl Store {
         let conn = Connection::open(path)
             .with_context(|| format!("failed to open database: {}", path.display()))?;
         conn.execute_batch(&schema())?;
+        // CREATE TABLE IF NOT EXISTS never extends an existing table — legacy
+        // DBs predate the description column, so patch it in place.
+        let has_description: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('works') WHERE name = 'description'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_description == 0 {
+            conn.execute_batch(
+                "ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
         let _ = conn.execute(
             "UPDATE agents SET status = 'active' WHERE status IS NULL OR status = ''",
             [],

@@ -138,7 +138,8 @@ human ⇄ design-agent session     grill → spec happens HERE: a conversation,
 The four agent charters ship as **work presets**
 (`im work create <op> <key> --preset design|plan|build|review`, also offered
 in the console's station-create modal), so a deleted station can be recreated
-with its charter. Seeded stations are ordinary stations: rebind, re-prompt,
+with its charter — a preset applies the standing prompt plus a one-line
+summary shown on boards and listings. Seeded stations are ordinary stations: rebind, re-prompt,
 or delete as you like — deletion is PS-style station locking: a station
 referenced by any active mission contract (entry, works, or path endpoints)
 is locked until those missions end; unreferenced stations are deleted outright.
@@ -150,8 +151,10 @@ Workspace   im init | agents | leave | doctor | clean | ui
 Inbox       im receive <id> [--wait] | pending | history   # arrivals + membership notices, no chat
 Managers   im grant|revoke <agent> | im managers           # also: console Members page
 Stations    im work create|list|set-executor|set-prompt|delete
-            im work create <op> <key> --preset design|plan|build|review
-            im work set-prompt <op> <work> --preset <name>
+            im work create <op> <key> [--description <t>] [--executor <agent>] [--preset <name>]
+            im work set-prompt <op> <work> --preset <name>   # applies prompt + summary
+            im work set-description <op> <work> <text...>
+            # list shows executor, holding/en-route occupancy, and the one-line summary
 Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|end
             im mission submit <agent> <ms> --revision N --outcome O

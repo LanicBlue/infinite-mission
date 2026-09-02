@@ -356,33 +356,50 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
         .failure()
         .stderr(predicate::str::contains("unknown preset"));
 
-    // --preset fills the charter (and display name); an explicit --prompt wins.
+    // --preset fills the charter (prompt + one-line summary); explicit flags win.
     im(ws).args(["work", "create", "boss", "qa", "--preset", "review"]).assert().success();
     im(ws)
-        .args(["work", "create", "boss", "hotfix", "--preset", "build", "--prompt", "just ship it"])
+        .args(["work", "create", "boss", "hotfix", "--preset", "build", "--prompt", "just ship it", "--description", "hotfix lane"])
         .assert()
         .success();
     let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
     let qa_prompt: String = db
         .query_row("SELECT prompt FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
         .unwrap();
-    let qa_name: String = db
-        .query_row("SELECT display_name FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
+    let qa_summary: String = db
+        .query_row("SELECT description FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
         .unwrap();
     let hotfix_prompt: String = db
         .query_row("SELECT prompt FROM works WHERE work_key = 'hotfix'", [], |r| r.get(0))
         .unwrap();
+    let hotfix_summary: String = db
+        .query_row("SELECT description FROM works WHERE work_key = 'hotfix'", [], |r| r.get(0))
+        .unwrap();
     assert!(qa_prompt.contains("verify the implementation"), "qa: {qa_prompt}");
-    assert_eq!(qa_name, "Review");
+    assert!(qa_summary.contains("two evidence axes"), "qa summary: {qa_summary}");
     assert_eq!(hotfix_prompt, "just ship it");
-    drop(db);
+    assert_eq!(hotfix_summary, "hotfix lane");
 
-    // set-prompt --preset re-applies a charter on an existing station.
+    // set-description edits the summary in place; set-prompt --preset applies
+    // the whole charter (prompt + summary).
+    im(ws)
+        .args(["work", "set-description", "boss", "qa", "manual summary"])
+        .assert()
+        .success();
     im(ws)
         .args(["work", "set-prompt", "boss", "qa", "--preset", "design"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("preset 'design'"));
+        .stdout(predicate::str::contains("charter updated from preset 'design'"));
+    let refreshed: (String, String) = db
+        .query_row(
+            "SELECT prompt, description FROM works WHERE work_key = 'qa'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(refreshed.0.contains("final gate"), "design charter: {}", refreshed.0);
+    assert!(refreshed.1.contains("final gate"), "design summary: {}", refreshed.1);
 
     // Station lock (PS semantics): an active mission referencing qa — even
     // parked elsewhere on a return edge — blocks deletion.
@@ -434,4 +451,83 @@ fn deleting_an_unlocked_station_frees_its_executor() {
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
     assert!(store.get_work("lab").is_err(), "station row must be gone");
     store.delete_agent("workspace", "temp").unwrap();
+}
+
+#[test]
+fn work_list_shows_holding_and_en_route_occupancy() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["join", "worker"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws).args(["work", "create", "boss", "alpha", "--executor", "worker"]).assert().success();
+    im(ws).args(["work", "create", "boss", "beta", "--executor", "worker"]).assert().success();
+    std::fs::write(
+        ws.join(".im").join("templates").join("t.yaml"),
+        "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  beta:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: alpha, when: done, to: beta}\n",
+    )
+    .unwrap();
+    im(ws)
+        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .assert()
+        .success();
+
+    // The mission parks at alpha (holding 1); beta is referenced by the
+    // contract's path but not parked there (en route 1).
+    let list = String::from_utf8(
+        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(
+        list.contains("alpha — executor: worker, holding: 1, en route: 0"),
+        "alpha occupancy: {list}"
+    );
+    assert!(
+        list.contains("beta — executor: worker, holding: 0, en route: 1"),
+        "beta occupancy: {list}"
+    );
+
+    // Ending the mission clears both counts.
+    let ms = {
+        let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
+            .unwrap()
+    };
+    im(ws)
+        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done", "--reason", "over to beta"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["mission", "submit", "worker", &ms, "--revision", "2", "--outcome", "ok"])
+        .assert()
+        .success();
+    let after = String::from_utf8(
+        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(after.contains("beta — executor: worker, holding: 0, en route: 0"), "after: {after}");
+}
+
+#[test]
+fn deleting_a_station_clears_its_arrival_notes() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["grant", "boss"]).assert().success();
+    im(ws).args(["work", "create", "boss", "lab"]).assert().success();
+    {
+        let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+        db.execute(
+            "INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
+             VALUES ('lab', 'mission_arrived', 'ms_x', '[ms_x] arrived', 1000, 0)",
+            [],
+        )
+        .unwrap();
+    }
+    im(ws).args(["work", "delete", "boss", "lab"]).assert().success();
+    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+    let notes: i64 = db
+        .query_row("SELECT COUNT(*) FROM work_notes WHERE work_key = 'lab'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(notes, 0, "stale arrival notes must not outlive the station");
 }

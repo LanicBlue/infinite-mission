@@ -48,7 +48,7 @@ impl Store {
         &self,
         manager: &str,
         work_key: &str,
-        display_name: &str,
+        description: &str,
         executor: Option<&str>,
         prompt: &str,
     ) -> Result<String> {
@@ -60,9 +60,9 @@ impl Store {
             self.require_active_agent(executor_id)?;
         }
         let inserted = self.conn.execute(
-            "INSERT INTO works (work_key, display_name, executor, prompt, created_at)
+            "INSERT INTO works (work_key, description, executor, prompt, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![work_key, display_name, executor, prompt, now()],
+            params![work_key, description, executor, prompt, now()],
         );
         match inserted {
             Ok(_) => {}
@@ -83,7 +83,7 @@ impl Store {
         let work = self
             .conn
             .query_row(
-                "SELECT work_key, display_name, executor, prompt
+                "SELECT work_key, description, executor, prompt
                  FROM works WHERE work_key = ?1",
                 [work_key],
                 map_work_row,
@@ -97,7 +97,7 @@ impl Store {
 
     pub fn list_works(&self) -> Result<Vec<WorkRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT work_key, display_name, executor, prompt
+            "SELECT work_key, description, executor, prompt
              FROM works ORDER BY work_key",
         )?;
         let works = stmt
@@ -137,6 +137,16 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_work_description(&self, manager: &str, work_key: &str, description: &str) -> Result<()> {
+        self.require_manager(manager)?;
+        self.get_work(work_key)?;
+        self.conn.execute(
+            "UPDATE works SET description = ?1 WHERE work_key = ?2",
+            params![description, work_key],
+        )?;
+        Ok(())
+    }
+
     /// Hard delete (PS station-lock semantics): a station referenced by ANY
     /// active mission contract is locked — the reference set is
     /// entry ∪ works keys ∪ path endpoints (a mission's `at` always sits
@@ -161,32 +171,63 @@ impl Store {
         if deleted == 0 {
             bail!("work '{work_key}' does not exist in this workspace");
         }
+        // Stale arrival notes must not outlive the station: a same-key
+        // successor bound to the same executor would otherwise inherit them.
+        self.conn
+            .execute("DELETE FROM work_notes WHERE work_key = ?1", [work_key])?;
         Ok(())
     }
 
     /// Active missions whose contract references this station (the lock set).
     fn stations_active_missions(&self, work_key: &str) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT mission_id, contract_json FROM missions WHERE status = 'active'",
-        )?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        let mut offenders = Vec::new();
-        for (mission_id, contract_json) in rows {
-            let contract = parse_contract(&contract_json)?;
-            let referenced = contract.entry == work_key
-                || contract.works.contains_key(work_key)
-                || contract
-                    .paths
-                    .iter()
-                    .any(|edge| edge.from == work_key || edge.to == work_key);
-            if referenced {
-                offenders.push(mission_id);
+        Ok(self
+            .active_mission_references()?
+            .into_iter()
+            .filter(|(_, _, referenced)| referenced.contains(work_key))
+            .map(|(mission_id, _, _)| mission_id)
+            .collect())
+    }
+
+    /// Inbound ("en route") counts: active missions whose contract references
+    /// a station but are currently parked elsewhere. Held missions don't
+    /// count — those are the per-station `holding` numbers.
+    pub fn inbound_counts(&self) -> Result<std::collections::BTreeMap<String, usize>> {
+        let mut counts = std::collections::BTreeMap::new();
+        for (_, at, referenced) in self.active_mission_references()? {
+            for key in referenced {
+                if at.as_deref() != Some(key.as_str()) {
+                    *counts.entry(key).or_insert(0) += 1;
+                }
             }
         }
-        offenders.sort();
-        Ok(offenders)
+        Ok(counts)
+    }
+
+    /// (mission_id, at, referenced stations) for every active mission. The
+    /// reference set is entry ∪ works keys ∪ path endpoints (a mission's
+    /// `at` always sits inside it).
+    fn active_mission_references(
+        &self,
+    ) -> Result<Vec<(String, Option<String>, BTreeSet<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT mission_id, at, contract_json FROM missions WHERE status = 'active'",
+        )?;
+        let rows: Vec<(String, Option<String>, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut out = Vec::new();
+        for (mission_id, at, contract_json) in rows {
+            let contract = parse_contract(&contract_json)?;
+            let mut referenced: BTreeSet<String> = BTreeSet::new();
+            referenced.insert(contract.entry.clone());
+            referenced.extend(contract.works.keys().cloned());
+            for edge in &contract.paths {
+                referenced.insert(edge.from.clone());
+                referenced.insert(edge.to.clone());
+            }
+            out.push((mission_id, at, referenced));
+        }
+        Ok(out)
     }
 
     /// Works whose executor is this agent — the agent's duty stations.
@@ -211,7 +252,7 @@ fn contract_work_key(key: &str) -> bool {
 fn map_work_row(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
     Ok(WorkRecord {
         work_key: row.get(0)?,
-        display_name: row.get(1)?,
+        description: row.get(1)?,
         executor: row.get(2)?,
         prompt: row.get(3)?,
     })
@@ -895,7 +936,7 @@ fn map_work_row_by_prefix(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
     // executor is needed here; other station facts are re-read by callers.
     Ok(WorkRecord {
         work_key: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-        display_name: String::new(),
+        description: String::new(),
         executor: row.get(13)?,
         prompt: String::new(),
     })
