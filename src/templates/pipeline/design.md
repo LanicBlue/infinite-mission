@@ -25,7 +25,7 @@ Write the spec document (im mission doc write <you> <ms> --id spec --file <path-
 - Out of scope
 Then: im mission submit <you> <ms> --revision <N> --outcome spec-ready --receipts document:<hash> --reason "<one-line summary>"
 
-If you are the mission creator: creation is a manager action — you create the mission right after
+If you are the mission creator: creation is a publish-tier action (or above) — you create the mission right after
 the conversation settles (im mission create <you> --template pipeline --key <unique> --objective "<distilled intent>"),
 then park the SPEC in your first round as above.
 

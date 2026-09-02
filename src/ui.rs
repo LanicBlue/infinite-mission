@@ -19,7 +19,6 @@ const IDLE_TIMEOUT_SECS: u64 = 5 * 60;
 
 pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[String]) -> Result<Value> {
     let now_ts = chrono::Utc::now().timestamp();
-    let managers = store.list_managers()?;
     let agents: Vec<Value> = store
         .list_agents(true)?
         .into_iter()
@@ -44,7 +43,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
             json!({
                 "id": agent.id,
                 "status": status,
-                "manager": managers.contains(&agent.id),
+                "tier": agent.tier.as_str(),
             })
         })
         .collect();
@@ -174,7 +173,6 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
 
     Ok(json!({
         "workspace": workspace,
-        "managers": managers,
         "templates": templates,
         "presets": crate::pipeline::PRESETS
             .iter()
@@ -192,12 +190,14 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
     }))
 }
 
+/// The console's acting identity: the first manage-tier member. Manage ⊃
+/// publish, so every gated console action stays covered.
 fn acting_manager(store: &crate::store::Store) -> Result<String> {
-    match store.list_managers()?.into_iter().next() {
-        Some(manager) => Ok(manager),
+    match store.manage_members()?.into_iter().next() {
+        Some(member) => Ok(member),
         None => bail!(
-            "no manager is granted yet — run `im grant <agent-id>` in a terminal first, \
-             then reload this page"
+            "no manage-tier member exists yet — set one on this Members page \
+             (tier dropdown), then reload"
         ),
     }
 }
@@ -209,26 +209,24 @@ pub fn apply_action(
 ) -> Result<String> {
     let kind = action["type"].as_str().context("action needs a `type`")?;
     match kind {
-        "grant" | "revoke" => {
+        "set_tier" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
-            // The console is the human operator, same trust as `im grant` in a
-            // terminal. It must work with zero managers (bootstrap) and after
-            // the last manager is removed (recovery) — do not require an
-            // acting manager identity.
-            if kind == "grant" {
-                store.grant_manager("workspace", agent)?;
-                Ok(format!("granted manager to {agent}"))
-            } else {
-                store.revoke_manager("workspace", agent)?;
-                Ok(format!("revoked manager from {agent}"))
-            }
+            let tier_str = action["tier"].as_str().context("`tier` required")?;
+            let tier = crate::records::Tier::parse(tier_str)
+                .with_context(|| format!("unknown tier {tier_str:?} (execute|publish|manage)"))?;
+            // The console is the human operator, full power — the ONLY manage
+            // surface. It must work with zero manage-tier members (bootstrap)
+            // and may set manage itself.
+            store.set_agent_tier("workspace", agent, tier)?;
+            Ok(format!("set {agent} → {tier_str} tier"))
         }
         "delete_agent" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
-            // Deleting needs no acting manager — the last manager may remove
-            // themselves — so the notice is attributed to whoever remains.
+            // Deleting needs no acting manager — the user may remove any
+            // member, manage included — so the notice is attributed to
+            // whoever remains.
             let actor = store
-                .list_managers()?
+                .manage_members()?
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| "workspace".to_string());

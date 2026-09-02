@@ -1,5 +1,34 @@
 use serde::{Deserialize, Serialize};
 
+/// Member capability tiers — a linear ladder: Execute < Publish < Manage.
+/// Higher tiers include everything below them. The agents.tier column is the
+/// single source of truth; manage is configured console-only by the user.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tier {
+    Execute,
+    Publish,
+    Manage,
+}
+
+impl Tier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Execute => "execute",
+            Tier::Publish => "publish",
+            Tier::Manage => "manage",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Tier> {
+        match value {
+            "execute" => Some(Tier::Execute),
+            "publish" => Some(Tier::Publish),
+            "manage" => Some(Tier::Manage),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentRecord {
     pub id: String,
@@ -8,6 +37,7 @@ pub struct AgentRecord {
     pub last_seen: Option<i64>,
     pub status: String,
     pub archived_at: Option<i64>,
+    pub tier: Tier,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

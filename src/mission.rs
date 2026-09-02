@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::contract::{self, MissionContract, RouteRow};
 use crate::records::{
-    DocumentReceiptRecord, MissionEventRecord, MissionRecord, WorkNoteRecord,
+    DocumentReceiptRecord, MissionEventRecord, MissionRecord, Tier, WorkNoteRecord,
     WorkRecord,
 };
 use crate::store::Store;
@@ -52,7 +52,7 @@ impl Store {
         executor: Option<&str>,
         prompt: &str,
     ) -> Result<String> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Manage)?;
         if !contract_work_key(work_key) {
             bail!("work key {work_key:?} must be lowercase kebab-case");
         }
@@ -106,16 +106,16 @@ impl Store {
         Ok(works)
     }
 
-    /// Last-write-wins by design: executor moves are an manager ordering
-    /// problem, not a lost-update hazard (the mission revision is the only
-    /// submit CAS).
+    /// Last-write-wins by design: executor moves are a manage-tier
+    /// ordering problem, not a lost-update hazard (the mission revision is
+    /// the only submit CAS).
     pub fn set_work_executor(
         &self,
         manager: &str,
         work_key: &str,
         executor: Option<&str>,
     ) -> Result<()> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Manage)?;
         self.get_work(work_key)?;
         if let Some(executor_id) = executor {
             self.require_active_agent(executor_id)?;
@@ -128,7 +128,7 @@ impl Store {
     }
 
     pub fn set_work_prompt(&self, manager: &str, work_key: &str, prompt: &str) -> Result<()> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Manage)?;
         self.get_work(work_key)?;
         self.conn.execute(
             "UPDATE works SET prompt = ?1 WHERE work_key = ?2",
@@ -138,7 +138,7 @@ impl Store {
     }
 
     pub fn set_work_description(&self, manager: &str, work_key: &str, description: &str) -> Result<()> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Manage)?;
         self.get_work(work_key)?;
         self.conn.execute(
             "UPDATE works SET description = ?1 WHERE work_key = ?2",
@@ -154,7 +154,7 @@ impl Store {
     /// out from under it). With the lock in place no soft-delete lifecycle
     /// is needed: un-referenced stations are simply gone, key freed.
     pub fn delete_work(&self, manager: &str, work_key: &str) -> Result<()> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Manage)?;
         self.get_work(work_key)?; // bails "does not exist" for unknown keys
         let offenders = self.stations_active_missions(work_key)?;
         if !offenders.is_empty() {
@@ -280,7 +280,7 @@ impl Store {
         name_override: Option<&str>,
         objective_override: Option<&str>,
     ) -> Result<MissionCreateOutcome> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Publish)?;
         let contract = contract::compile(template, template_path, template_bytes)?;
 
         // Station reference validation: every referenced station must exist
@@ -498,10 +498,11 @@ impl Store {
         let work = self.get_work(&at)?;
         let user_station = work.executor.is_none();
         if user_station {
-            // A user station is the human's mailbox: an manager resolves it.
-            self.require_manager(agent_id).with_context(|| {
+            // A user station is the human's mailbox: a manage-tier
+            // member resolves it.
+            self.require_tier(agent_id, Tier::Manage).with_context(|| {
                 format!(
-                    "station '{at}' is a user station — missions parked there are resolved by a manager"
+                    "station '{at}' is a user station — missions parked there are resolved by a manage-tier member"
                 )
             })?;
         } else if work.executor.as_deref() != Some(agent_id) {
@@ -809,7 +810,7 @@ impl Store {
 
     /// Manager delete: disposition=deleted, not attributed to any round.
     pub fn delete_mission(&self, manager: &str, mission_id: &str, reason: Option<&str>) -> Result<()> {
-        self.require_manager(manager)?;
+        self.require_tier(manager, Tier::Manage)?;
         let mission = self.get_mission(mission_id)?;
         if mission.status == "ended" {
             bail!("Mission has already ended");
@@ -1082,8 +1083,8 @@ impl Store {
     }
 
     /// Document access follows the station's on-duty rule: the bound
-    /// executor, or — at a user station — any manager (mirroring run_view's
-    /// on-duty projection and submit's manager resolution of user stations).
+    /// executor, or — at a user station — any manage-tier member (mirroring
+    /// run_view's on-duty projection and submit's resolution of user stations).
     fn require_doc_on_duty(
         &self,
         agent_id: &str,
@@ -1091,9 +1092,9 @@ impl Store {
         action: &str,
     ) -> Result<()> {
         match work.executor.as_deref() {
-            None => self.require_manager(agent_id).with_context(|| {
+            None => self.require_tier(agent_id, Tier::Manage).with_context(|| {
                 format!(
-                    "document {action}s at user station '{}' are resolved by a manager",
+                    "document {action}s at user station '{}' are resolved by a manage-tier member",
                     work.work_key
                 )
             }),
@@ -1188,9 +1189,9 @@ impl Store {
                 let on_duty = for_agent
                     .map(|agent| {
                         if work.executor.is_none() {
-                            // User station: any manager is on duty.
-                            self.list_managers()
-                                .map(|ops| ops.iter().any(|op| op == agent))
+                            // User station: any manage-tier member is on duty.
+                            self.agent_tier(agent)
+                                .map(|tier| tier == Some(Tier::Manage))
                                 .unwrap_or(false)
                         } else {
                             work.executor.as_deref() == Some(agent)

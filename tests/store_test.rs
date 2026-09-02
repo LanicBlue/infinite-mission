@@ -1,3 +1,4 @@
+use im::records::Tier;
 use im::store::Store;
 use rusqlite::params;
 use tempfile::TempDir;
@@ -22,7 +23,6 @@ fn schema_creates_all_domain_tables() {
     for expected in [
         "agents",
         "messages",
-        "managers",
         "workspace_meta",
         "works",
         "missions",
@@ -32,6 +32,11 @@ fn schema_creates_all_domain_tables() {
     ] {
         assert!(names.iter().any(|n| n == expected), "missing table {expected}: {names:?}");
     }
+    // The managers table retired with the tier ladder — never create it.
+    assert!(
+        !names.iter().any(|n| n == "managers"),
+        "managers table must not exist: {names:?}"
+    );
 }
 
 #[test]
@@ -83,69 +88,83 @@ fn peer_notes_are_rejected() {
 fn notices_to_archived_identities_are_preserved() {
     let (_tmp, store) = open();
     store.register_agent_unique("bob").unwrap();
-    store.grant_manager("workspace", "bob").unwrap();
+    store.set_agent_tier("workspace", "bob", Tier::Manage).unwrap();
 
     store.unregister_agent("bob").unwrap();
     // The row survives; has_unread still reports it for history consumers.
     let all = store.all_messages(Some("bob")).unwrap();
     assert_eq!(all.len(), 1);
-    assert!(all[0].content.contains("granted manager"));
+    assert!(all[0].content.contains("tier was set to manage"));
     assert_eq!(all[0].read, false);
 }
 
 #[test]
-fn manager_gate_is_a_table_not_a_role() {
+fn tier_ladder_gates_and_refusals() {
     let (_tmp, store) = open();
-    store.register_agent_unique("boss").unwrap();
-    store.register_agent_unique("worker").unwrap();
+    for id in ["boss", "worker", "plain"] {
+        store.register_agent_unique(id).unwrap();
+    }
 
-    assert!(store.require_manager("boss").is_err());
-    store.grant_manager("workspace", "boss").unwrap();
-    assert!(store.require_manager("boss").is_ok());
-    // Role alone confers nothing.
-    assert!(store.require_manager("worker").is_err());
-    store.revoke_manager("workspace", "boss").unwrap();
-    assert!(store.require_manager("boss").is_err());
+    // Fresh members sit at execute.
+    assert_eq!(store.agent_tier("worker").unwrap(), Some(Tier::Execute));
+
+    // set_agent_tier is the console path: ungated, any tier (manage included).
+    store.set_agent_tier("workspace", "boss", Tier::Manage).unwrap();
+    assert_eq!(store.agent_tier("boss").unwrap(), Some(Tier::Manage));
+
+    // require_tier follows the linear ladder: manage passes everything,
+    // execute passes only itself.
+    assert!(store.require_tier("boss", Tier::Manage).is_ok());
+    assert!(store.require_tier("worker", Tier::Execute).is_ok());
+    let err = store.require_tier("worker", Tier::Publish).unwrap_err().to_string();
+    assert!(err.contains("below publish tier"), "got: {err}");
+    assert!(err.contains("boss"), "hint names the manage member: {err}");
+    let err = store.require_tier("worker", Tier::Manage).unwrap_err().to_string();
+    assert!(err.contains("below manage tier"), "got: {err}");
+
+    // grant_publish: manage operator only.
+    let err = store
+        .grant_publish("plain", "worker")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("below manage tier"), "got: {err}");
+    store.grant_publish("boss", "worker").unwrap();
+    assert_eq!(store.agent_tier("worker").unwrap(), Some(Tier::Publish));
+    // Idempotent: granting publish twice is fine.
+    store.grant_publish("boss", "worker").unwrap();
+    assert_eq!(store.agent_tier("worker").unwrap(), Some(Tier::Publish));
+
+    // revoke_publish refuses anything not sitting at publish.
+    let err = store
+        .revoke_publish("boss", "plain")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is not at publish tier"), "got: {err}");
+    store.revoke_publish("boss", "worker").unwrap();
+    assert_eq!(store.agent_tier("worker").unwrap(), Some(Tier::Execute));
+
+    // Manage-tier targets are untouchable from the CLI surface — every
+    // operator-tier action on them names the console.
+    for action in [
+        store.grant_publish("boss", "boss").unwrap_err().to_string(),
+        store.revoke_publish("boss", "boss").unwrap_err().to_string(),
+        store.delete_member("boss", "boss").unwrap_err().to_string(),
+    ] {
+        assert!(action.contains("console"), "manage target refused via console hint: {action}");
+    }
+
+    // delete_member: manage-tier operator deletes a plain member.
+    store.delete_member("boss", "plain").unwrap();
+    assert_eq!(store.agent_tier("plain").unwrap(), None);
 }
 
 #[test]
-fn membership_actions_deliver_inbox_notices() {
+fn require_tier_hint_points_to_the_console_when_no_manage_member_exists() {
     let (_tmp, store) = open();
-    store.register_agent_unique("worker").unwrap();
-
-    store.grant_manager("workspace", "worker").unwrap();
-    store.revoke_manager("workspace", "worker").unwrap();
-    store.delete_agent("workspace", "worker").unwrap();
-
-    // The notices outlive the deleted agent row (messages carry no FK).
-    let notices: Vec<(String, String)> = store
-        .conn
-        .prepare(
-            "SELECT from_agent, content FROM messages
-             WHERE to_agent = 'worker' AND kind = 'membership' ORDER BY id",
-        )
-        .unwrap()
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(
-        notices,
-        vec![
-            (
-                "workspace".to_string(),
-                "[membership] you were granted manager permission.".to_string()
-            ),
-            (
-                "workspace".to_string(),
-                "[membership] your manager permission was revoked.".to_string()
-            ),
-            (
-                "workspace".to_string(),
-                "[membership] you were removed from this workspace.".to_string()
-            ),
-        ]
-    );
+    store.register_agent_unique("lone").unwrap();
+    let err = store.require_tier("lone", Tier::Manage).unwrap_err().to_string();
+    assert!(err.contains("below manage tier"), "got: {err}");
+    assert!(err.contains("console Members page"), "got: {err}");
 }
 
 #[test]
@@ -241,6 +260,112 @@ fn revision_cas_guard_rejects_stale_writes() {
         .query_row("SELECT revision FROM missions WHERE mission_id = 'ms_a'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(revision, 2);
+}
+
+#[test]
+fn legacy_managers_fold_into_the_manage_tier() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("im.db");
+    {
+        // A pre-tier database: agents without the tier column, a managers
+        // table holding a1/a2, plain member a3.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL DEFAULT '',
+                joined_at INTEGER NOT NULL,
+                session_token TEXT,
+                last_seen INTEGER,
+                status TEXT NOT NULL DEFAULT 'active',
+                archived_at INTEGER
+            );
+             CREATE TABLE managers (
+                agent_id TEXT PRIMARY KEY,
+                granted_at INTEGER NOT NULL
+             );
+             CREATE TABLE workspace_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO agents (id, joined_at) VALUES ('a1', 1), ('a2', 2), ('a3', 3);
+             INSERT INTO managers (agent_id, granted_at) VALUES ('a1', 10), ('a2', 20);",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&db_path).unwrap();
+    let tiers: Vec<String> = store
+        .conn
+        .prepare("SELECT tier FROM agents ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(tiers, vec!["manage", "manage", "execute"]);
+    let managers: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'managers'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(managers, 0, "the managers table must be dropped");
+    let has_tier: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'tier'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_tier, 1, "the tier column must exist");
+    // Reopening is idempotent.
+    drop(store);
+    let store = Store::open(&db_path).unwrap();
+    assert_eq!(store.agent_tier("a1").unwrap(), Some(Tier::Manage));
+}
+
+#[test]
+fn membership_actions_deliver_inbox_notices() {
+    let (_tmp, store) = open();
+    for id in ["boss", "worker"] {
+        store.register_agent_unique(id).unwrap();
+    }
+    store.set_agent_tier("workspace", "boss", Tier::Manage).unwrap();
+    store.grant_publish("boss", "worker").unwrap();
+    store.revoke_publish("boss", "worker").unwrap();
+    store.delete_agent("workspace", "worker").unwrap();
+
+    // The notices outlive the deleted agent row (messages carry no FK).
+    let notices: Vec<(String, String)> = store
+        .conn
+        .prepare(
+            "SELECT from_agent, content FROM messages
+             WHERE to_agent = 'worker' AND kind = 'membership' ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    // (The set_tier notice went to boss, not worker — only worker's stream
+    // is asserted here.)
+    assert_eq!(
+        notices,
+        vec![
+            (
+                "boss".to_string(),
+                "[membership] you were granted publish-tier permission.".to_string()
+            ),
+            (
+                "boss".to_string(),
+                "[membership] your publish-tier permission was revoked.".to_string()
+            ),
+            (
+                "workspace".to_string(),
+                "[membership] you were removed from this workspace.".to_string()
+            ),
+        ]
+    );
 }
 
 #[test]

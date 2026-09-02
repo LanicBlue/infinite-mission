@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::path::Path;
 
-use crate::records::{AgentRecord, MessageRecord};
+use crate::records::{AgentRecord, MessageRecord, Tier};
 
 /// Create the im workspace database schema. Fresh project: no legacy
 /// migrations, one canonical shape.
@@ -18,7 +18,8 @@ fn schema() -> String {
         session_token TEXT,
         last_seen INTEGER,
         status TEXT NOT NULL DEFAULT 'active',
-        archived_at INTEGER
+        archived_at INTEGER,
+        tier TEXT NOT NULL DEFAULT 'execute' CHECK (tier IN ('execute','publish','manage'))
     );
 
     -- System notices only (membership, mission_ended). Members have no
@@ -32,11 +33,6 @@ fn schema() -> String {
         read INTEGER NOT NULL DEFAULT 0,
         kind TEXT NOT NULL DEFAULT 'membership',
         reply_to INTEGER
-    );
-
-    CREATE TABLE IF NOT EXISTS managers (
-        agent_id TEXT PRIMARY KEY,
-        granted_at INTEGER NOT NULL
     );
 
     -- The workspace IS the project: works and missions hang directly off it.
@@ -151,6 +147,31 @@ impl Store {
         if has_description == 0 {
             conn.execute_batch(
                 "ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+        // Tier migration: pre-tier DBs lack agents.tier; add it, then fold
+        // the retired managers table into the manage tier and drop it.
+        let has_tier: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'tier'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_tier == 0 {
+            conn.execute_batch(
+                "ALTER TABLE agents ADD COLUMN tier TEXT NOT NULL DEFAULT 'execute'
+                 CHECK (tier IN ('execute','publish','manage'));",
+            )?;
+        }
+        let has_managers: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'managers'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_managers > 0 {
+            conn.execute_batch(
+                "UPDATE agents SET tier = 'manage'
+                     WHERE id IN (SELECT agent_id FROM managers);
+                 DROP TABLE managers;",
             )?;
         }
         let _ = conn.execute(
@@ -301,7 +322,6 @@ impl Store {
         if deleted == 0 {
             anyhow::bail!("{agent_id} does not exist");
         }
-        self.conn.execute("DELETE FROM managers WHERE agent_id = ?1", [agent_id])?;
         // Messages carry no FK, so the notice outlives the deleted row — if
         // the id ever rejoins, the first receive shows what happened.
         self.send_message_envelope(
@@ -316,9 +336,9 @@ impl Store {
 
     pub fn list_agents(&self, include_archived: bool) -> Result<Vec<AgentRecord>> {
         let sql = if include_archived {
-            "SELECT id, role, joined_at, last_seen, status, archived_at FROM agents ORDER BY joined_at"
+            "SELECT id, role, joined_at, last_seen, status, archived_at, tier FROM agents ORDER BY joined_at"
         } else {
-            "SELECT id, role, joined_at, last_seen, status, archived_at FROM agents WHERE status = 'active' ORDER BY joined_at"
+            "SELECT id, role, joined_at, last_seen, status, archived_at, tier FROM agents WHERE status = 'active' ORDER BY joined_at"
         };
         let mut stmt = self.conn.prepare(sql)?;
         let agents = stmt
@@ -330,6 +350,8 @@ impl Store {
                     last_seen: row.get(3)?,
                     status: row.get(4)?,
                     archived_at: row.get(5)?,
+                    tier: Tier::parse(&row.get::<_, String>(6)?)
+                        .unwrap_or(Tier::Execute),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -444,75 +466,129 @@ impl Store {
         Ok(messages)
     }
 
-    // --- Managers ---
+    // --- Member tiers ---
+    //
+    // A linear ladder execute ⊂ publish ⊂ manage on agents.tier. Manage is
+    // configured console-only by the user; CLI grant/revoke move members
+    // between execute and publish and must refuse manage-tier targets.
 
-    pub fn grant_manager(&self, actor: &str, agent_id: &str) -> Result<()> {
-        self.require_active_agent(agent_id)?;
-        let now = chrono::Utc::now().timestamp();
-        self.conn.execute(
-            "INSERT OR REPLACE INTO managers (agent_id, granted_at) VALUES (?1, ?2)",
-            params![agent_id, now],
-        )?;
-        self.send_message_envelope(
-            actor,
-            agent_id,
-            "[membership] you were granted manager permission.",
-            "membership",
-            None,
-        )?;
-        Ok(())
-    }
-
-    pub fn revoke_manager(&self, actor: &str, agent_id: &str) -> Result<()> {
-        let revoked = self.conn.execute(
-            "DELETE FROM managers WHERE agent_id = ?1",
-            [agent_id],
-        )?;
-        if revoked == 0 {
-            anyhow::bail!("{agent_id} is not a manager");
-        }
-        self.send_message_envelope(
-            actor,
-            agent_id,
-            "[membership] your manager permission was revoked.",
-            "membership",
-            None,
-        )?;
-        Ok(())
-    }
-
-    pub fn list_managers(&self) -> Result<Vec<String>> {
-        let mut stmt = self
+    /// The tier a member holds, or None when the id is unknown.
+    pub fn agent_tier(&self, id: &str) -> Result<Option<Tier>> {
+        let tier: Option<String> = self
             .conn
-            .prepare("SELECT agent_id FROM managers ORDER BY granted_at")?;
+            .query_row("SELECT tier FROM agents WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(tier.as_deref().and_then(Tier::parse))
+    }
+
+    /// Active manage-tier members (the console acting identity and the
+    /// gate-refusal hint both draw from this).
+    pub fn manage_members(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM agents WHERE status = 'active' AND tier = 'manage' ORDER BY joined_at",
+        )?;
         let names = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(names)
     }
 
-    pub fn require_manager(&self, agent_id: &str) -> Result<()> {
-        let found: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM managers WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if found.is_some() {
+    pub fn require_tier(&self, agent_id: &str, min_tier: Tier) -> Result<()> {
+        if self.agent_tier(agent_id)?.map(|tier| tier >= min_tier).unwrap_or(false) {
             return Ok(());
         }
-        let managers = self.list_managers()?;
+        let managers = self.manage_members()?;
         if managers.is_empty() {
             anyhow::bail!(
-                "{agent_id} is not a manager. No managers are granted yet; \
-                 a human must run `im grant <agent-id>` first."
+                "{agent_id} is below {} tier. No manage-tier members exist yet; \
+                 set one on the console Members page (`im ui`)",
+                min_tier.as_str()
             );
         }
         anyhow::bail!(
-            "{agent_id} is not a manager. Granted managers: {}",
+            "{agent_id} is below {} tier. Manage-tier members: {}",
+            min_tier.as_str(),
             managers.join(", ")
         );
+    }
+
+    /// Console-only tier change (the user, full power — manage included).
+    /// Not reachable from any CLI verb.
+    pub fn set_agent_tier(&self, actor: &str, agent_id: &str, tier: Tier) -> Result<()> {
+        self.require_active_agent(agent_id)?;
+        self.conn.execute(
+            "UPDATE agents SET tier = ?2 WHERE id = ?1",
+            params![agent_id, tier.as_str()],
+        )?;
+        self.send_message_envelope(
+            actor,
+            agent_id,
+            &format!("[membership] your tier was set to {}.", tier.as_str()),
+            "membership",
+            None,
+        )?;
+        Ok(())
+    }
+
+    fn refuse_manage_target(&self, target: &str) -> Result<()> {
+        if self.agent_tier(target)? == Some(Tier::Manage) {
+            bail!("only the user can touch manage-tier members — use the console (`im ui`)");
+        }
+        Ok(())
+    }
+
+    /// Idempotent: sets tier='publish'. Operator must be manage-tier; a
+    /// manage-tier target is refused (console-only surface).
+    pub fn grant_publish(&self, operator: &str, target: &str) -> Result<()> {
+        self.require_active_agent(target)?;
+        self.require_tier(operator, Tier::Manage)?;
+        self.refuse_manage_target(target)?;
+        self.conn.execute(
+            "UPDATE agents SET tier = 'publish' WHERE id = ?1",
+            [target],
+        )?;
+        self.send_message_envelope(
+            operator,
+            target,
+            "[membership] you were granted publish-tier permission.",
+            "membership",
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// Bails on a target not sitting at publish tier (the revoke mirror of
+    /// the retired "is not a manager" refusal).
+    pub fn revoke_publish(&self, operator: &str, target: &str) -> Result<()> {
+        self.require_active_agent(target)?;
+        self.require_tier(operator, Tier::Manage)?;
+        self.refuse_manage_target(target)?;
+        if self.agent_tier(target)? != Some(Tier::Publish) {
+            bail!("{target} is not at publish tier");
+        }
+        self.conn.execute(
+            "UPDATE agents SET tier = 'execute' WHERE id = ?1",
+            [target],
+        )?;
+        self.send_message_envelope(
+            operator,
+            target,
+            "[membership] your publish-tier permission was revoked.",
+            "membership",
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// CLI member delete: manage-tier operator, manage-tier targets refused;
+    /// the delete_agent body (on-duty refusal, physical delete, surviving
+    /// notice) applies unchanged beneath.
+    pub fn delete_member(&self, operator: &str, target: &str) -> Result<()> {
+        self.require_active_agent(target)?;
+        self.require_tier(operator, Tier::Manage)?;
+        self.refuse_manage_target(target)?;
+        self.delete_agent(operator, target)
     }
 }

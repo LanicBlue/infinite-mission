@@ -255,7 +255,7 @@ function paneHeader(title, meta) {
 
 function inboxPane() {
 	const cards = state.inbox || [];
-	if (!cards.length) return paneHeader("收件箱", "What needs me now?") + `<div class="empty">收件箱是空的 —— 没有停在用户工位等待你决策的任务<br><br><span class="hint">起步：终端 <code>im join &lt;你&gt;</code> → 「成员」页设为 manager → 「工位」页建工位 → 「任务」页从模板建任务</span></div>`;
+	if (!cards.length) return paneHeader("收件箱", "What needs me now?") + `<div class="empty">收件箱是空的 —— 没有停在用户工位等待你决策的任务<br><br><span class="hint">起步：终端 <code>im join &lt;你&gt;</code> → 「成员」页把 tier 设为 manage → 「工位」页建工位 → 「任务」页从模板建任务</span></div>`;
 	return paneHeader("收件箱", "停在用户工位的任务 · 点 outcome 直接处置") + cards.map(i => {
 		const terms = (i.outcomes || []).map(o => `<button class="btn small outcome" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="${esc(o)}">${esc(o)}${(i.terminal||[]).includes(o) ? " ✓" : ""}</button>`).join("");
 		return `<article class="card">
@@ -268,8 +268,8 @@ function inboxPane() {
 				<span class="chip mono">${esc(i.mission_id.slice(0,15))}…</span>
 				<span class="spacer"></span>
 				${terms}
-				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="manager 放弃（来自控制台）">abandon</button>
-				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="manager 强制结束（disposition: deleted）">强制结束</button>
+				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="manage-tier 放弃（来自控制台）">abandon</button>
+				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="manage tier 强制结束（disposition: deleted）">强制结束</button>
 			</div>
 		</article>`;
 	}).join("");
@@ -283,7 +283,7 @@ function worksPane() {
 		<div><h2>工位</h2><p class="meta">任务流转的停驻点；不绑值守者即用户工位；点「详情」看完整配置</p></div>
 		<div class="header-actions"><button class="btn primary" data-act="open-work-create">＋ 新建工位</button></div>
 	</header>`;
-	if (!works.length) return header + `<div class="empty">还没有工位<br><br><span class="hint">点右上角「＋ 新建工位」创建；需先在「成员」页设一个 manager</span></div>`;
+	if (!works.length) return header + `<div class="empty">还没有工位<br><br><span class="hint">点右上角「＋ 新建工位」创建；需先在「成员」页设一个 manage tier</span></div>`;
 	return header + works.map(w => `<article class="card">
 		<div class="card-row">
 			<h3 style="margin:0">${esc(w.work_key)}</h3>
@@ -335,7 +335,7 @@ function workDetailModal(key) {
 		</dl>
 		<div class="hint">常驻 prompt（读取时按停驻 mission 的字段插值）</div>
 		<div class="prompt-box">${w.prompt ? esc(w.prompt) : `<span class="hint">（未设置 —— 工位没有作业说明，建议补上）</span>`}</div>
-		<p class="hint">改配置：值守者用卡片右侧「换绑」；prompt/简介用终端 <code>im work set-prompt|set-description &lt;manager&gt; ${esc(w.work_key)} …</code></p>`);
+		<p class="hint">改配置：值守者用卡片右侧「换绑」；prompt/简介用终端 <code>im work set-prompt|set-description &lt;op&gt; ${esc(w.work_key)} …</code></p>`);
 }
 
 function missionsPane() {
@@ -372,30 +372,32 @@ function missionsPane() {
 
 function membersPane() {
 	const agents = state.agents || [];
-	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；成员之间没有直连，作业只随工位 prompt 与任务到达；manager 权限由本页授予（零 manager 时也可点「设为 manager」）；在册与归档成员都可删除，值守工位须先换绑</p></div></header>
+	const tiers = ["execute", "publish", "manage"];
+	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；成员之间没有直连，作业只随工位 prompt 与任务到达；权限是三级阶梯 execute ⊂ publish ⊂ manage（manage 只能在本页的 tier 下拉设置，零 manage 时同样可用）；在册与归档成员都可删除，值守工位须先换绑</p></div></header>
 	<div class="card"><table>
-		<thead><tr><th>身份</th><th>状态</th><th>manager 权限</th><th></th></tr></thead>
+		<thead><tr><th>身份</th><th>状态</th><th>tier</th><th></th></tr></thead>
 		<tbody>${agents.map(a => `<tr>
 			<td class="mono">${esc(a.id)}</td>
 			<td class="hint">${esc(a.status)}</td>
-			<td>${a.manager ? `<span class="chip accent">manager</span>` : ""}</td>
-			<td style="text-align:right">${a.status !== "archived" ? `
-				${a.manager
-					? `<button class="btn small" data-act="revoke" data-agent="${esc(a.id)}">收回 manager</button>`
-					: `<button class="btn small" data-act="grant" data-agent="${esc(a.id)}">设为 manager</button>`}
-				<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该身份（值守工位会拒绝）">删除</button>`
-			: `<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该归档身份（值守工位会拒绝）">删除</button>`}
+			<td class="card-row">
+				<span class="chip${a.tier === "manage" ? " accent" : ""}">${esc(a.tier || "execute")}</span>
+				${a.status !== "archived" ? `<select data-act="set-tier" data-agent="${esc(a.id)}" aria-label="tier 下拉">
+					${tiers.map(t => `<option value="${t}"${a.tier === t ? " selected" : ""}>${t}</option>`).join("")}
+				</select>` : ""}
+			</td>
+			<td style="text-align:right">
+				<button class="btn small danger" data-act="delete-agent" data-agent="${esc(a.id)}" title="物理删除该身份（值守工位会拒绝）">删除</button>
 			</td></tr>`).join("")}</tbody>
 	</table></div>`;
 }
 
 function settingsPane() {
-	const ops = state.managers || [];
+	const manage = (state.agents || []).filter(a => a.tier === "manage" && a.status !== "archived");
 	return `<header class="detail-header"><div><h2>工作区</h2><p class="meta mono">${esc(state.workspace || "")}</p></div></header>
 	<div class="card"><h3>概况</h3><p class="objective">
 		工位 ${liveWorks().length} · 任务 ${(state.missions||[]).length} · 事件 ${(state.events||[]).length}（最近 100 条内）· 在线成员 ${(state.agents||[]).filter(a=>a.status!=="archived").length}
 	</p></div>
-	<div class="card"><h3>manager</h3><p class="objective">${ops.length ? ops.map(o => `<span class="chip accent mono">${esc(o)}</span>`).join(" ") : "尚未授予 —— 在「成员」页点「设为 manager」"}</p></div>
+	<div class="card"><h3>权限阶梯</h3><p class="objective">${manage.length ? manage.map(o => `<span class="chip accent mono">${esc(o.id)}</span>`).join(" ") : "暂无 manage 成员 —— 在「成员」页 tier 下拉设置"}<br><span class="hint">execute ⊂ publish ⊂ manage：execute 只执行任务；publish 可建 mission；manage 另管工位与成员。manage 只能由控制台设置</span></p></div>
 	<div class="card"><h3>任务模板</h3><p class="objective">${(state.templates||[]).map(t => `<span class="chip mono">${esc(t)}</span>`).join(" ") || "无"}</p>
 	<p class="hint">控制台是临时进程：仅绑 127.0.0.1，闲置 300 秒自动退出；每 2 秒轮询。</p></div>`;
 }
@@ -427,8 +429,6 @@ document.addEventListener("click", async e => {
 			break;
 		}
 		case "end": { const reason = prompt("结束原因（将记录为 deleted）："); if (reason !== null) await act({ type: "mission_end", mission: d.mission, reason }); break; }
-		case "grant": await act({ type: "grant", agent: d.agent }); break;
-		case "revoke": await act({ type: "revoke", agent: d.agent }); break;
 		case "delete-agent": if (confirm(`删除成员 ${d.agent}？物理删除、不可恢复（其消息历史保留为文本）。`)) await act({ type: "delete_agent", agent: d.agent }); break;
 		case "open-work-create": workCreateModal(); break;
 		case "work-detail": workDetailModal(d.work); break;
@@ -462,6 +462,11 @@ document.addEventListener("change", async e => {
 			const description = $('[data-f="description"]');
 			if (description && !description.value) description.value = p.description;
 		}
+		return;
+	}
+	const tier = e.target.closest('select[data-act="set-tier"]');
+	if (tier) {
+		await act({ type: "set_tier", agent: tier.dataset.agent, tier: tier.value });
 		return;
 	}
 	const s = e.target.closest('select[data-act="rebind"]');

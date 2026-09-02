@@ -1,6 +1,6 @@
 [package]
 name = "infinite-mission"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Multi-agent mission orchestration via a static SQLite core — squad's shape, work-mission semantics"

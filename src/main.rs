@@ -37,13 +37,14 @@ fn main() -> Result<()> {
         "pending" => cmd_pending(),
         "history" => cmd_history(args.collect()),
         "grant" | "revoke" => {
-            let id = args.next().unwrap_or_default();
-            if id.is_empty() {
-                bail!("Usage: im {command} <agent-id>");
+            let operator = args.next().unwrap_or_default();
+            let target = args.next().unwrap_or_default();
+            if operator.is_empty() || target.is_empty() {
+                bail!("Usage: im {command} <operator> <target>");
             }
-            cmd_grant(&command, &id)
+            cmd_grant(&command, &operator, &target)
         }
-        "managers" => cmd_managers(),
+        "member" => cmd_member(args.collect()),
         "work" => cmd_work(args.collect()),
         "template" => cmd_template(args.collect()),
         "mission" => cmd_mission(args.collect()),
@@ -163,7 +164,7 @@ fn cmd_leave(id: &str) -> Result<()> {
     if !released.is_empty() {
         println!(
             "Stations released to the user: {} — rebind anytime with \
-             `im work set-executor <manager> <work> <agent>`; missions stay put.",
+             `im work set-executor <op> <work> <agent>`; missions stay put.",
             released.join(", ")
         );
     }
@@ -173,8 +174,6 @@ fn cmd_leave(id: &str) -> Result<()> {
 fn cmd_agents(show_all: bool) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    let managers: std::collections::BTreeSet<String> =
-        store.list_managers()?.into_iter().collect();
     let agents = store.list_agents(show_all)?;
     if agents.is_empty() {
         println!("No agents online.");
@@ -199,8 +198,7 @@ fn cmd_agents(show_all: bool) -> Result<()> {
                 None => "unknown".to_string(),
             }
         };
-        let manager_tag = if managers.contains(&agent.id) { " [manager]" } else { "" };
-        println!("  {} — {status}{manager_tag}", agent.id);
+        println!("  {} — {status} [{}]", agent.id, agent.tier.as_str());
     }
     Ok(())
 }
@@ -361,31 +359,43 @@ fn cmd_history(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-// --- Managers / works / templates ---
+// --- Member tiers / works / templates ---
 
-fn cmd_grant(command: &str, id: &str) -> Result<()> {
+/// CLI publish-tier grants: `im grant|revoke <operator> <target>`. The
+/// operator must be manage-tier; manage-tier targets are refused (the
+/// console is the only manage surface).
+fn cmd_grant(command: &str, operator: &str, target: &str) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
+    ensure_agent(&store, operator)?;
+    check_session(&workspace, &store, operator)?;
     if command == "grant" {
-        store.grant_manager("workspace", id)?;
-        println!("Granted manager to {id}.");
+        store.grant_publish(operator, target)?;
+        println!("Granted publish tier to {target}.");
     } else {
-        store.revoke_manager("workspace", id)?;
-        println!("Revoked manager from {id}.");
+        store.revoke_publish(operator, target)?;
+        println!("Revoked publish tier from {target}.");
     }
     Ok(())
 }
 
-fn cmd_managers() -> Result<()> {
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    let managers = store.list_managers()?;
-    if managers.is_empty() {
-        println!("No managers granted. Run `im grant <agent-id>` to grant one.");
-    } else {
-        println!("{}", managers.join("\n"));
+fn cmd_member(args: Vec<String>) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("delete") if args.len() == 3 => {
+            let (operator, target) = (&args[1], &args[2]);
+            let workspace = find_workspace()?;
+            let store = open_store(&workspace)?;
+            ensure_agent(&store, operator)?;
+            check_session(&workspace, &store, operator)?;
+            store.delete_member(operator, target)?;
+            // Mirror the console delete: the session file goes with the row.
+            let session_file = sessions_dir(&workspace).join(target);
+            let _ = std::fs::remove_file(&session_file);
+            println!("Deleted member {target}.");
+            Ok(())
+        }
+        _ => bail!("Usage: im member delete <operator> <target>"),
     }
-    Ok(())
 }
 
 fn flag_value(args: &[String], flag: &str) -> Result<Option<String>> {
@@ -748,7 +758,7 @@ fn cmd_mission_end(manager: &str, mission_id: &str, reason: Option<String>) -> R
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     store.delete_mission(manager, mission_id, reason.as_deref())?;
-    println!("Mission {mission_id} ended by manager (disposition: deleted).");
+    println!("Mission {mission_id} ended by manage tier (disposition: deleted).");
     Ok(())
 }
 
@@ -838,7 +848,7 @@ fn cmd_inbox() -> Result<()> {
         );
         println!("  → im mission show {}", mission.mission_id);
         println!(
-            "  → resolve it: im mission submit <manager> {} --revision {} --outcome <outcome>",
+            "  → resolve it: im mission submit <op> {} --revision {} --outcome <outcome>",
             mission.mission_id,
             mission.revision
         );
@@ -930,12 +940,13 @@ COMMANDS
   im init                                   Initialize workspace (.im/)
   im join <id>                              Join as agent (id self-reported, auto-suffixed on conflict)
   im leave <id>                             Archive agent
-  im agents [--all]                         List agents ([manager] tags)
+  im agents [--all]                         List agents (with tier tags)
   im receive <id> [--wait] [--timeout N]    Station arrival notes + membership notices
   im pending / im history [agent]           Unread / full system-notice views
 
-Managers (human grants via `im grant` or the console Members page)
-  im grant|revoke <agent> / im managers
+Member tiers (execute ⊂ publish ⊂ manage; manage is console-only)
+  im grant|revoke <operator> <target>       Publish-tier grants by manage-tier members
+  im member delete <operator> <target>      Remove a non-manage member (manage-tier only)
   im work create <op> <work-key> [--description <t>] [--executor <agent>]
                   [--prompt <text>] [--preset design|plan|build|review]
                                              The prompt IS the work content — it travels
@@ -959,7 +970,7 @@ Missions (PS semantics)
        [--next-node <station>] [--reason <t>] [--feedback <t>] [--receipts <document:hash,...>]
   im mission abandon <agent> <ms> --revision N [--reason <t>]
   im mission events <ms>                    Delivery history
-  im mission end <op> <ms> [--reason <t>]   Manager delete
+  im mission end <op> <ms> [--reason <t>]   Manage-tier delete
   im mission doc read <agent> <ms> <path>
   im mission doc write <agent> <ms> --id <docId> --file <path-or->
   im inbox                                  Missions parked at user stations
@@ -968,11 +979,13 @@ Maintenance
   im ui [--port N] [--no-open]              Console at http://127.0.0.1:4600 by default
 
 QUICK START
-  1. im init && im join boss && im grant boss               (human grants once)
-     init seeds the pipeline stations (design/plan/build/review) and
-     pipeline.yaml — bind executors first:
+  1. im init && im join boss && im ui                       (set boss → manage tier
+     on the console Members page — manage is console-only); init seeds the
+     pipeline stations (design/plan/build/review) and pipeline.yaml —
+     bind executors first:
      im work set-executor boss design <agent> (…plan/build/review the same way);
-     the design executor should also be a manager (it creates the missions)
+     the design executor also needs publish tier to create the missions
+     (im grant boss <design-agent>, or the console tier dropdown)
   2. Grill→spec happens in the design agent's own session conversation with
      the human — no mission round-trips. Then the design agent starts delivery:
      im mission create <design-agent> --template pipeline --key v1 --objective "ship X"

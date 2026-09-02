@@ -18,7 +18,14 @@ fn state_json_exposes_the_console_data_contract() {
     for id in ["boss", "worker"] {
         im(ws).args(["join", id]).assert().success();
     }
-    im(ws).args(["grant", "boss"]).assert().success();
+    // Tier seeding goes through the console path (set_agent_tier) — the bare
+    // CLI grant retired with the tier ladder.
+    {
+        let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+        store
+            .set_agent_tier("workspace", "boss", im::records::Tier::Manage)
+            .unwrap();
+    }
     im(ws).args(["work", "create", "boss", "make", "--executor", "worker"]).assert().success();
     im(ws).args(["work", "create", "boss", "approve"]).assert().success();
     std::fs::write(
@@ -58,11 +65,22 @@ fn state_json_exposes_the_console_data_contract() {
     let state = im::ui::state_json(&store, &ws.to_str().unwrap(), &templates).unwrap();
 
     // Top-level sections the page renders.
-    for key in ["workspace", "agents", "managers", "works", "missions", "inbox", "events", "templates"] {
+    for key in ["workspace", "agents", "works", "missions", "inbox", "events", "templates"] {
         assert!(state.get(key).is_some(), "state_json missing {key}");
     }
-    assert_eq!(state["managers"].as_array().unwrap().len(), 1);
-    assert_eq!(state["managers"][0].as_str().unwrap(), "boss");
+    // The managers array retired with the tier ladder.
+    assert!(state.get("managers").is_none(), "managers key must be gone");
+
+    // Agents carry their tier instead of a manager bool.
+    let agents = state["agents"].as_array().unwrap();
+    let boss = agents.iter().find(|a| a["id"] == "boss").expect("boss");
+    assert_eq!(boss["tier"].as_str().unwrap(), "manage");
+    let worker = agents.iter().find(|a| a["id"] == "worker").expect("worker");
+    assert_eq!(worker["tier"].as_str().unwrap(), "execute");
+    assert!(
+        agents.iter().all(|a| a.get("manager").is_none()),
+        "per-agent manager bool must be gone"
+    );
 
     // Works carry executor and a holding count for the stations board.
     let works = state["works"].as_array().unwrap();
@@ -92,38 +110,68 @@ fn state_json_exposes_the_console_data_contract() {
 }
 
 #[test]
-fn console_can_grant_the_first_manager() {
+fn console_can_set_the_first_manage_member_and_delete_one() {
     let tmp = TempDir::new().unwrap();
     let ws = tmp.path().to_path_buf();
     im(&ws).arg("init").assert().success();
     im(&ws).args(["join", "cursor"]).assert().success();
 
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
-    assert!(store.list_managers().unwrap().is_empty());
+    assert!(store.manage_members().unwrap().is_empty());
 
+    // Bootstrap regression: set_tier to manage works with zero manage-tier
+    // members — the console is the human.
     let message = im::ui::apply_action(
         &store,
-        &serde_json::json!({ "type": "grant", "agent": "cursor" }),
+        &serde_json::json!({ "type": "set_tier", "agent": "cursor", "tier": "manage" }),
         &ws,
     )
     .unwrap();
-    assert!(message.contains("granted manager to cursor"), "got: {message}");
-    assert_eq!(store.list_managers().unwrap(), vec!["cursor".to_string()]);
+    assert!(message.contains("set cursor → manage tier"), "got: {message}");
+    assert_eq!(store.agent_tier("cursor").unwrap(), Some(im::records::Tier::Manage));
 
-    // Bootstrap grant is enough for the rest of the console (create a station).
+    // Bootstrap is enough for the rest of the console (create a station —
+    // a user station, so the member stays deletable below).
     let created = im::ui::apply_action(
         &store,
         &serde_json::json!({
             "type": "work_create",
             "work": "staging",
             "display_name": "Staging",
-            "executor": "cursor",
+            "executor": "-",
             "prompt": ""
         }),
         &ws,
     )
     .unwrap();
     assert!(created.contains("station staging created"), "got: {created}");
+
+    // Console delete keeps full power over a manage-tier member.
+    im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "delete_agent", "agent": "cursor" }),
+        &ws,
+    )
+    .unwrap();
+    assert_eq!(store.agent_tier("cursor").unwrap(), None);
+}
+
+#[test]
+fn set_tier_validates_the_tier_enum() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_path_buf();
+    im(&ws).arg("init").assert().success();
+    im(&ws).args(["join", "cursor"]).assert().success();
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+
+    let err = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "set_tier", "agent": "cursor", "tier": "root" }),
+        &ws,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("unknown tier"), "got: {err}");
 }
 
 #[test]

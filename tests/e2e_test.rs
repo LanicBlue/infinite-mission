@@ -18,6 +18,17 @@ fn setup_workspace() -> TempDir {
     tmp
 }
 
+/// Seed a member tier directly (the console path — the bare `im grant <id>`
+/// bootstrap retired with the tier ladder).
+fn seed_tier(ws: &Path, id: &str, tier: &str) {
+    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+    db.execute(
+        "UPDATE agents SET tier = ?2 WHERE id = ?1",
+        rusqlite::params![id, tier],
+    )
+    .unwrap();
+}
+
 #[test]
 fn join_collision_appends_suffix() {
     let tmp = setup_workspace();
@@ -98,7 +109,7 @@ fn receive_wait_wakes_on_station_arrival() {
     for id in ["boss", "worker"] {
         im(ws).args(["join", id]).assert().success();
     }
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws)
         .args(["work", "create", "boss", "alpha", "--executor", "worker"])
         .assert()
@@ -133,28 +144,42 @@ fn receive_wait_wakes_on_station_arrival() {
 #[test]
 fn membership_changes_notify_the_member() {
     let tmp = setup_workspace();
-    im(tmp.path()).args(["join", "alice"]).assert().success();
+    let ws = tmp.path();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["join", "alice"]).assert().success();
+    seed_tier(ws, "boss", "manage");
 
-    im(tmp.path())
-        .args(["grant", "alice"])
+    im(ws)
+        .args(["grant", "boss", "alice"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Granted manager to alice."));
-    im(tmp.path())
+        .stdout(predicate::str::contains("Granted publish tier to alice."));
+    im(ws)
+        .args(["agents"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alice"))  // id line
+        ;
+    let roster = String::from_utf8(
+        im(ws).arg("agents").assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(roster.contains("[publish]"), "roster shows tier: {roster}");
+    im(ws)
         .args(["receive", "alice"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "[from workspace] [membership] you were granted manager permission.",
+            "[from boss] [membership] you were granted publish-tier permission.",
         ));
 
-    im(tmp.path()).args(["revoke", "alice"]).assert().success();
-    im(tmp.path())
+    im(ws).args(["revoke", "boss", "alice"]).assert().success();
+    im(ws)
         .args(["receive", "alice"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "[membership] your manager permission was revoked.",
+            "[membership] your publish-tier permission was revoked.",
         ));
 }
 
@@ -194,7 +219,14 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
     im(ws).args(["join", "alice"]).assert().success();
     im(ws).args(["join", "bob"]).assert().success();
 
-    im(ws).args(["grant", "alice"]).assert().success();
+    // Seed via the console path so the membership notice exists for the
+    // archived-period assertion below.
+    {
+        let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+        store
+            .set_agent_tier("workspace", "alice", im::records::Tier::Manage)
+            .unwrap();
+    }
     im(ws).args(["leave", "alice"]).assert().success();
 
     // Archived: gone from the active roster, still visible with --all.
@@ -221,7 +253,7 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
         .args(["receive", "alice"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("granted manager permission"));
+        .stdout(predicate::str::contains("tier was set to manage"));
 
     // A stale terminal (old session file) is displaced by the new join.
     std::fs::write(ws.join(".im").join("sessions").join("alice"), "stale-token").unwrap();
@@ -233,32 +265,179 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
 }
 
 #[test]
-fn manager_commands_are_gated_by_grant() {
+fn gates_follow_the_tier_ladder() {
     let tmp = setup_workspace();
-    im(tmp.path()).args(["join", "boss"]).assert().success();
-    im(tmp.path()).args(["join", "rando"]).assert().success();
+    let ws = tmp.path();
+    for id in ["mgmt", "pub", "exec"] {
+        im(ws).args(["join", id]).assert().success();
+    }
+    seed_tier(ws, "mgmt", "manage");
+    seed_tier(ws, "pub", "publish");
 
-    // Before any grant: nobody may create stations.
-    im(tmp.path())
-        .args(["work", "create", "boss", "alpha"])
+    std::fs::write(
+        ws.join(".im").join("templates").join("t.yaml"),
+        "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  gate:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [spec], write: [spec]}\npaths:\n  - {from: alpha, when: done, to: gate}\ndocuments:\n  - {id: spec, kind: file, path: docs/spec.md}\n",
+    )
+    .unwrap();
+    im(ws)
+        .args(["work", "create", "mgmt", "alpha", "--executor", "pub"])
+        .assert()
+        .success();
+    im(ws).args(["work", "create", "mgmt", "gate"]).assert().success();
+
+    // Execute: mission create fails.
+    im(ws)
+        .args(["mission", "create", "exec", "--template", "t", "--key", "k-exec"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("manager"));
+        .stderr(predicate::str::contains("below publish tier"));
 
-    im(tmp.path()).args(["grant", "boss"]).assert().success();
-    im(tmp.path())
-        .args(["work", "create", "boss", "alpha"])
+    // Publish: mission create is the one gate it passes…
+    im(ws)
+        .args(["mission", "create", "pub", "--template", "t", "--key", "k-pub"])
+        .assert()
+        .success();
+    let ms = {
+        let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
+            .unwrap()
+    };
+
+    // …the five work ops stay manage-tier.
+    for call in [
+        vec!["work", "create", "pub", "extra"],
+        vec!["work", "set-executor", "pub", "alpha", "-"],
+        vec!["work", "set-prompt", "pub", "alpha", "nope"],
+        vec!["work", "set-description", "pub", "alpha", "nope"],
+        vec!["work", "delete", "pub", "alpha"],
+    ] {
+        im(ws)
+            .args(&call)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("below manage tier"));
+    }
+    // Mission delete stays manage-tier.
+    im(ws)
+        .args(["mission", "end", "pub", &ms])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("below manage tier"));
+
+    // Park the mission on the user station: publish may not resolve it.
+    im(ws)
+        .args(["mission", "submit", "pub", &ms, "--revision", "1", "--outcome", "done", "--reason", "over to the user"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["mission", "submit", "pub", &ms, "--revision", "2", "--outcome", "ok"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("resolved by a manage-tier member"));
+    im(ws)
+        .args(["mission", "doc", "read", "pub", &ms, "docs/spec.md"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("resolved by a manage-tier member"));
+    im(ws)
+        .args(["mission", "doc", "write", "pub", &ms, "--id", "spec", "--file", "-"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("resolved by a manage-tier member"));
+
+    // Manage: everything above passes.
+    im(ws)
+        .args(["mission", "submit", "mgmt", &ms, "--revision", "2", "--outcome", "ok"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn cli_grant_revoke_and_member_delete_use_operator_forms() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+    for id in ["op", "publisher", "target", "guardian"] {
+        im(ws).args(["join", id]).assert().success();
+    }
+    seed_tier(ws, "op", "manage");
+    seed_tier(ws, "guardian", "manage"); // manage-tier target, console-only
+    seed_tier(ws, "publisher", "publish");
+
+    // Manage operator grants publish; visible in im agents; notice delivered.
+    im(ws)
+        .args(["grant", "op", "target"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created station alpha"));
+        .stdout(predicate::str::contains("Granted publish tier to target."));
+    let roster = String::from_utf8(
+        im(ws).arg("agents").assert().success().get_output().stdout.clone(),
+    )
+    .unwrap();
+    assert!(roster.contains("target"), "roster: {roster}");
+    assert!(roster.matches("[publish]").count() >= 1, "roster: {roster}");
+    im(ws)
+        .args(["receive", "target"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("granted publish-tier permission"));
 
-    // Grant revoked → the gate closes again.
-    im(tmp.path()).args(["revoke", "boss"]).assert().success();
-    im(tmp.path())
-        .args(["work", "create", "boss", "beta"])
+    // A publish-tier operator is refused.
+    im(ws)
+        .args(["grant", "publisher", "target"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("manager"));
+        .stderr(predicate::str::contains("below manage tier"));
+
+    // A manage-tier target is refused with the console hint.
+    im(ws)
+        .args(["grant", "op", "guardian"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("console"));
+    im(ws)
+        .args(["revoke", "op", "guardian"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("console"));
+
+    // The single-arg form is a usage error (the bare grant retired).
+    im(ws)
+        .args(["grant", "target"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage: im grant <operator> <target>"));
+
+    // member delete: non-manage target goes (row + session file).
+    im(ws)
+        .args(["member", "delete", "op", "target"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted member target."));
+    {
+        let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM agents WHERE id = 'target'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+    assert!(!ws.join(".im").join("sessions").join("target").exists());
+
+    // Manage-tier target refused; on-duty member refused.
+    im(ws)
+        .args(["member", "delete", "op", "guardian"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("console"));
+    im(ws)
+        .args(["work", "create", "op", "lab", "--executor", "publisher"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["member", "delete", "op", "publisher"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("on duty"));
 }
 
 #[test]
@@ -268,7 +447,7 @@ fn mission_end_fans_out_to_past_participants() {
     for id in ["boss", "worker", "inspector"] {
         im(ws).args(["join", id]).assert().success();
     }
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws).args(["work", "create", "boss", "alpha", "--executor", "worker"]).assert().success();
     im(ws).args(["work", "create", "boss", "beta", "--executor", "inspector"]).assert().success();
     std::fs::write(
@@ -332,7 +511,7 @@ fn init_seeds_pipeline_stations_and_reseeds_deleted_ones() {
 
     // A deleted pipeline station is re-seeded on the next init.
     im(ws).args(["join", "boss"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws).args(["work", "delete", "boss", "design"]).assert().success();
     im(ws).arg("init").assert().success();
     let reseeded = String::from_utf8(
@@ -347,7 +526,7 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
     let tmp = setup_workspace();
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
 
     // Unknown preset fails closed with the available list.
     im(ws)
@@ -439,7 +618,7 @@ fn deleting_an_unlocked_station_frees_its_executor() {
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
     im(ws).args(["join", "temp"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws)
         .args(["work", "create", "boss", "lab", "--executor", "temp"])
         .assert()
@@ -459,7 +638,7 @@ fn work_list_shows_holding_and_en_route_occupancy() {
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
     im(ws).args(["join", "worker"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws).args(["work", "create", "boss", "alpha", "--executor", "worker"]).assert().success();
     im(ws).args(["work", "create", "boss", "beta", "--executor", "worker"]).assert().success();
     std::fs::write(
@@ -513,7 +692,7 @@ fn deleting_a_station_clears_its_arrival_notes() {
     let tmp = setup_workspace();
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws).args(["work", "create", "boss", "lab"]).assert().success();
     {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
@@ -537,7 +716,7 @@ fn leave_releases_held_stations_to_the_user() {
     let tmp = setup_workspace();
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws).args(["join", "temp"]).assert().success();
     im(ws).args(["join", "free"]).assert().success();
     im(ws)
@@ -574,7 +753,7 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
     let tmp = setup_workspace();
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
-    im(ws).args(["grant", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
     im(ws).args(["join", "worker"]).assert().success();
     im(ws)
         .args(["work", "create", "boss", "alpha", "--executor", "worker"])

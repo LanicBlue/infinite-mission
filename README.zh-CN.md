@@ -20,10 +20,19 @@ cargo install --path .       # 备选（装进 ~/.cargo/bin）
   所有持久状态都在 mission 里，作业内容随工位 prompt 与 mission 一起到达。
 - **离岗自动归还工位。** `im leave <id>` 归档成员，并把他值守的所有工位
   释放回用户（executor 置空——mission 原地停驻；工位的 prompt、文档、
-  通知从不跟着人走）。再分配由 manager 明确操作。
-- **Manager** 是你信任的人类：终端 `im grant <id>`，或 `im ui` 成员页
-  （零 manager 时也可以点「设为 manager」——控制台就是人）。manager 创建
-  工位和 mission。
+  通知从不跟着人走）。再分配由 manage 层成员明确操作。
+- **成员权限是三级阶梯** `execute ⊂ publish ⊂ manage`，落在 `agents.tier`：
+  | 层级 | 可以…… |
+  |---|---|
+  | execute | 在所绑工位作业 |
+  | publish | + 创建 mission（`im mission create`） |
+  | manage | + 工位操作（`work create/set-* /delete`）、处置/终结用户工位
+    上的 mission、用户工位文档、`mission end` |
+  manage **只能在控制台设置**：`im ui` 成员页（零 manage 成员时同样可用——
+  控制台就是人）。publish 由 manage 层操作者在 CLI 授予
+  （`im grant <operator> <target>`），或在控制台设置。任何 CLI 动词都不能
+  设置 manage、也不能触碰 manage 层成员——grant、revoke、成员删除对
+  manage 层目标一律拒绝。
 - **工作区即 project**：一个目录树一个任务空间，**工位**（`build`、
   `review`、`approve`……）直接挂在工作区上。工位有值守者绑定（随时可换
   绑，last-write-wins）；**不绑值守者 = 用户工位**，即人类的收件箱。
@@ -46,7 +55,7 @@ cargo install --path .       # 备选（装进 ~/.cargo/bin）
 - **事件即历史。** `created` / `round.completed` / `routed` / `ended`；
   迭代数是派生的，从不落列。
 - **Inbox**：停驻用户工位的 mission，带着发送方必须给出的 reason。由
-  manager 处置。
+  manage 层成员处置。
 
 ## 快速开始
 
@@ -57,17 +66,18 @@ im init                       # 工作区 + example/pipeline 模板 +
 
 im join boss                  # 各 agent 的终端里——不需要任何剧本
 im join worker
-im grant boss                 # 人类执行：boss 成为 manager
+im ui                         # 在「成员」页把 boss 设为 manage
+                              # （manage 只能控制台设置）
 
 # boss——第一件事：给预建工位绑值守者
-# （不绑 = 用户工位，每个跳到那里的 mission 都要等 manager 手动处理）
+# （不绑 = 用户工位，每个跳到那里的 mission 都要等 manage 层成员处理）
 im work set-executor boss design <agent>
 im work set-executor boss plan <agent>
 im work set-executor boss build worker
 im work set-executor boss review <agent>
 
 # 一条流水线 mission——grill→spec 在 design 岗 agent 自己的 session 对话里
-# 完成（零 mission 往返）；聊定后由 design 岗（须为 manager）发起交付：
+# 完成（零 mission 往返）；聊定后由 design 岗（须为 publish 层及以上）发起交付：
 im mission create <design-agent> --template pipeline --key v1 \
     --objective "ship the widget"          # 蒸馏后的意图
 
@@ -112,7 +122,7 @@ design→plan→build→review 交付流，纪律蒸馏自
 ```
 
 - **design** 双阶段：**前期在 mission 之外**——在你自己的 session 对话里
-  grill 人、聊出 spec；聊定后（作为 manager）创建 mission、落定冻结的
+  grill 人、聊出 spec；聊定后（publish 层及以上）创建 mission、落定冻结的
   SPEC（`spec-ready`）。review 通过后进入**终审**——`accept` 终局，`reject`
   把实现问题打回 build。
 - **plan** 把 SPEC 编译成自足的 GOAL（编译，不重访）；spec 不可编译则以
@@ -137,7 +147,9 @@ design→plan→build→review 交付流，纪律蒸馏自
 ```
 工作区      im init | agents | leave | doctor | clean | ui
 收件        im receive <id> [--wait] | pending | history   # 到达通知 + 成员资格，不是聊天
-Manager   im grant|revoke <agent> | im managers           # 也可在控制台「成员」页授予
+成员       im grant|revoke <operator> <target>                # 授/收 publish，须 manage 层操作者
+           im member delete <operator> <target>                # 仅非 manage 目标
+           （manage 层：仅控制台「成员」页可设——im ui）
 工位        im work create|list|set-executor|set-prompt|delete
             im work create <op> <key> [--description <t>] [--executor <agent>] [--preset <name>]
             im work set-prompt <op> <work> --preset <name>   # 应用整套章程（prompt+简介）
@@ -198,9 +210,9 @@ CLI 调用的单个 SQLite 事务里。agent 来来去去、终端死掉、身�
 `im ui` 启动临时 localhost 控制台（固定默认端口 4600、自动开浏览器、闲置 5 分钟自退；`--port N`
 可换）：工位板（含换绑；新建弹窗可选流水线岗位模版预填章程）、mission 视图
 （revision/at/disposition）、用户 inbox（带跳转 reason；outcome 按钮会弹框让你
-填 `--reason`，路由到用户工位时必填）、投递历史时间线、成员管理（授权/收回
-manager、删除——零 manager 时也可用，控制台即人类）、任务动作（从模板创建、
-终结）。
+填 `--reason`，路由到用户工位时必填）、投递历史时间线、成员管理（tier
+下拉——含 manage；零 manage 成员时同样可用，控制台即人类——以及删除）、
+任务动作（从模板创建、终结）。
 
 ## 出处
 

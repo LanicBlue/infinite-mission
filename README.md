@@ -24,10 +24,20 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
 - **Leaving hands the stations back to the user.** `im leave <id>` archives the
   member and releases every station they held to the user (executor = NULL —
   missions stay parked; the station's prompt, docs and notes never leave the
-  station). Reassignment is a deliberate manager act.
-- **Managers** are humans you trust: `im grant <id>` in a terminal, or the
-  Members page in `im ui` (works with zero managers — the console *is* the
-  human). Managers create stations and missions.
+  station). Reassignment is a deliberate manage-tier act.
+- **Member tiers** are a linear ladder `execute ⊂ publish ⊂ manage` on
+  `agents.tier`:
+  | tier | may … |
+  |---|---|
+  | execute | work missions at bound stations |
+  | publish | + create missions (`im mission create`) |
+  | manage | + station ops (`work create/set-* /delete`), resolve/abort
+    missions at user stations, user-station documents, `mission end` |
+  Manage is **console-only**: set it on the Members page in `im ui` (works
+  with zero manage members — the console *is* the human). Publish is granted
+  from the CLI by a manage-tier operator (`im grant <op> <target>`), or in
+  the console. No CLI verb may set manage or touch a manage-tier member —
+  grant, revoke and member delete all refuse manage-tier targets.
 - **The workspace IS the project**: one directory tree, one mission space.
   **Stations** (`build`, `review`, `approve`, …) hang directly off the
   workspace. A station has an executor binding (rebindable at any time,
@@ -56,7 +66,7 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
 - **Events are the history.** `created`, `round.completed`, `routed`,
   `ended` — iteration counts are derived, never stored.
 - **Inbox**: missions parked at user stations, with the reason the sender
-  had to give. A manager resolves them.
+  had to give. A manage-tier member resolves them.
 
 ## Quick start
 
@@ -67,10 +77,12 @@ im init                       # workspace + example/pipeline templates +
 
 im join boss                  # in each agent's terminal — no persona needed
 im join worker
-im grant boss                 # a human runs this: boss is now a manager
+im ui                         # set boss → manage on the Members page
+                              # (manage is console-only)
 
 # as boss — first thing: bind executors to the seeded stations
-# (an unbound station is a user station: every hop there waits for a manager)
+# (an unbound station is a user station: every hop there waits for a
+#  manage-tier member)
 im work set-executor boss design <agent>
 im work set-executor boss plan <agent>
 im work set-executor boss build worker
@@ -123,8 +135,8 @@ human ⇄ design-agent session     grill → spec happens HERE: a conversation,
 ```
 
 - **design** holds two phases. The front phase lives outside the mission:
-  grill the human in your own session conversation, then — as a manager —
-  create the mission and park the frozen SPEC (`spec-ready`). After review
+  grill the human in your own session conversation, then — at publish tier
+  or above — create the mission and park the frozen SPEC (`spec-ready`). After review
   approves, design is the **final gate**: `accept` ends the mission, `reject`
   sends implementation fixes back to build.
 - **plan** compiles the SPEC into a self-contained GOAL (compile, don't
@@ -153,7 +165,9 @@ is locked until those missions end; unreferenced stations are deleted outright.
 ```
 Workspace   im init | agents | leave | doctor | clean | ui
 Inbox       im receive <id> [--wait] | pending | history   # arrivals + membership notices, no chat
-Managers   im grant|revoke <agent> | im managers           # also: console Members page
+Members    im grant|revoke <operator> <target>                # publish tier, by manage-tier op
+           im member delete <operator> <target>                # non-manage targets only
+           (manage tier: console Members page only — im ui)
 Stations    im work create|list|set-executor|set-prompt|delete
             im work create <op> <key> [--description <t>] [--executor <agent>] [--preset <name>]
             im work set-prompt <op> <work> --preset <name>   # applies prompt + summary
@@ -219,9 +233,9 @@ create modal that offers the pipeline charters as presets, missions with
 revision/at/disposition, the user inbox with hop reasons and outcome buttons
 that prompt for your `--reason` — required when routing onto another user
 station), delivery history
-timeline, member management (grant/revoke manager, delete — works with zero
-managers, the console is the human), and mission actions (create from
-template, end).
+timeline, member management (tier dropdown — manage included, works with
+zero manage members because the console is the human — and delete), and
+mission actions (create from template, end).
 
 ## Attribution
 

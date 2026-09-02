@@ -76,7 +76,7 @@ fn setup() -> (Fixture, String) {
     for id in ["boss", "worker", "inspector"] {
         im(&workspace).args(["join", id]).assert().success();
     }
-    im(&workspace).args(["grant", "boss"]).assert().success();
+    seed_tier(&workspace, "boss", "manage");
     im(&workspace)
         .args(["work", "create", "boss", "make", "--executor", "worker"])
         .assert()
@@ -103,6 +103,16 @@ fn setup() -> (Fixture, String) {
 
     let mission_id = first_mission_id(&workspace);
     (Fixture { _tmp: tmp, workspace }, mission_id)
+}
+
+/// Seed a member tier directly (console path; the bare CLI grant retired).
+fn seed_tier(ws: &Path, id: &str, tier: &str) {
+    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+    db.execute(
+        "UPDATE agents SET tier = ?2 WHERE id = ?1",
+        rusqlite::params![id, tier],
+    )
+    .unwrap();
 }
 
 fn first_mission_id(workspace: &Path) -> String {
@@ -421,7 +431,7 @@ fn user_stations_need_a_reason_and_surface_in_inbox() {
     im(&ws).arg("init").assert().success();
     im(&ws).args(["join", "boss"]).assert().success();
     im(&ws).args(["join", "worker"]).assert().success();
-    im(&ws).args(["grant", "boss"]).assert().success();
+    seed_tier(&ws, "boss", "manage");
     // make has an executor; approve is a USER station (no executor).
     im(&ws).args(["work", "create", "boss", "make", "--executor", "worker"]).assert().success();
     im(&ws).args(["work", "create", "boss", "approve"]).assert().success();
@@ -476,7 +486,7 @@ paths:
         .stdout(predicate::str::contains("needs your sign-off"))
         .stdout(predicate::str::contains("resolve it"));
 
-    // Document reads at a user station are resolved by a manager (aligned
+    // Document reads at a user station are resolved by a manage-tier member (aligned
     // with run_view's on-duty projection and manager-resolved submits).
     im(&ws)
         .args(["mission", "doc", "read", "boss", &ms, "spec.md"])
@@ -487,14 +497,14 @@ paths:
         .args(["mission", "doc", "read", "worker", &ms, "spec.md"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("resolved by a manager"));
+        .stderr(predicate::str::contains("resolved by a manage-tier member"));
 
     // A non-manager may NOT resolve a user station.
     im(&ws)
         .args(["mission", "submit", "worker", &ms, "--revision", "2", "--outcome", "ok"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("resolved by a manager"));
+        .stderr(predicate::str::contains("resolved by a manage-tier member"));
 
     // The manager resolves it; the terminal outcome ends the mission, and
     // the round records the manager plane.
@@ -598,7 +608,7 @@ fn setup_pipeline() -> (Fixture, String) {
     for id in ["boss", "arch", "strategist", "coder", "auditor"] {
         im(&workspace).args(["join", id]).assert().success();
     }
-    im(&workspace).args(["grant", "boss"]).assert().success();
+    seed_tier(&workspace, "boss", "manage");
     for (work, agent) in [("design", "arch"), ("plan", "strategist"), ("build", "coder"), ("review", "auditor")] {
         im(&workspace)
             .args(["work", "set-executor", "boss", work, agent])
