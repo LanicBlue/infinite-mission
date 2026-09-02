@@ -49,7 +49,7 @@ cargo install --path .   # 产出二进制：im
 ```bash
 mkdir my-project && cd my-project
 im init                       # 工作区 + example/pipeline 模板 +
-                              # 流水线工位（design/plan/build/review/owner）
+                              # 流水线工位（design/plan/build/review）
 
 im join boss                  # 各 agent 的终端里——不需要任何剧本
 im join worker
@@ -62,21 +62,27 @@ im work set-executor boss plan <agent>
 im work set-executor boss build worker
 im work set-executor boss review <agent>
 
-# 一条流水线 mission——objective 就是原始想法：
-im mission create boss --template pipeline --key v1 --objective "ship the widget"
+# 一条流水线 mission——grill→spec 在 design 岗 agent 自己的 session 对话里
+# 完成（零 mission 往返）；聊定后由 design 岗（须为 manager）发起交付：
+im mission create <design-agent> --template pipeline --key v1 \
+    --objective "ship the widget"          # 蒸馏后的意图
+
+# design 岗第一轮（落定冻结的 spec）：
+im receive <design-agent>          # 到达通知
+im mission show <ms> --for <design-agent>   # 插值后的章程、权限、词表、revision
+im mission doc write <design-agent> <ms> --id spec --file -   # → 回执
+im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready \
+    --receipts document:<hash>
 
 # worker（goal 到达 build 后）：
-im receive worker             # 到达通知：有 mission 落到你值守的工位
 im missions worker            # 你值守工位上的全部 active mission
-im mission show <ms> --for worker   # 插值后的岗位章程、文档权限、词表、路由表、revision
 im mission doc read worker <ms> goal.md
 im mission doc write worker <ms> --id impl --file src/receipt.md   # → 回执
 im mission submit worker <ms> --revision N --outcome done --receipts document:<hash>
 
-# 人类，当 design 向 owner 拷问需求（mission 停在 `owner` 工位）：
-im inbox                      # 显示编号问题（即跳转 reason）
-im mission submit boss <ms> --revision N --outcome answers \
-    --reason "1) 做薄版，名字保留"     # 答案走 --reason，插值进 design 的 prompt
+# 人类，当其他模板的 mission 跳到用户工位：
+im inbox
+im mission submit boss <ms> --revision N --outcome ok --reason "同意"
 ```
 
 工位 prompt 可插值 `{mission.name}`、`{mission.objective}`、
@@ -85,31 +91,34 @@ im mission submit boss <ms> --revision N --outcome answers \
 
 ## 交付流水线
 
-`im init` 预建五个工位并写入 `.im/templates/pipeline.yaml` —— 一条
+`im init` 预建四个工位并写入 `.im/templates/pipeline.yaml` —— 一条
 design→plan→build→review 交付流，纪律蒸馏自
 [matt-skills-with-to-goal](https://github.com/tt-a1i/matt-skills-with-to-goal)：
 
 ```
-objective ──▶ design ──spec-ready──▶ plan ──goal-ready──▶ build ──done──▶ review
-   ▲            │ ▲                    │ ▲                  ▲  │           │ ▲
-   │            │ └──spec-gap──────────┘ └──blocked─────────┘  │           │ └─rework─┐
-   │            └─needs-input─▶ owner(用户工位) ─answers─▶ design ...◀─reject─┴───────┘
-   └──────────────────── spec-gap（来自 review）◀──────  review ──approved──▶ design
-                                                          （终审：accept 即终局）
+人 ⇄ design 岗 agent 的 session      grill→spec 在这里完成：直接对话，
+        │                            零 mission 往返
+        └─ design 创建 mission ─▶ 落定 spec.md ──spec-ready──▶ plan
+                                                          goal-ready │
+   design ◀──approved── review ◀──done── build ◀─────────────────────┘
+
+   终审（design）：accept 即终局 │ reject ─▶ build（只修发现的问题）
+   回边：spec-gap（plan|review）─▶ design · blocked（build）─▶ plan
+        · rework（review）─▶ build
 ```
 
-- **design** 双阶段：前期 grill——以「决策树前沿」逐轮向 owner 提问
-  （`needs-input` → `owner`，答案经 `--reason` 回流插值进 prompt），前沿清空
-  后冻结 SPEC；review 通过后进入**终审**——`accept` 终局，`reject` 把实现
-  问题打回 build。
+- **design** 双阶段：**前期在 mission 之外**——在你自己的 session 对话里
+  grill 人、聊出 spec；聊定后（作为 manager）创建 mission、落定冻结的
+  SPEC（`spec-ready`）。review 通过后进入**终审**——`accept` 终局，`reject`
+  把实现问题打回 build。
 - **plan** 把 SPEC 编译成自足的 GOAL（编译，不重访）；spec 不可编译则以
   `spec-gap` 退回。
 - **build** 只按 GOAL 施工，逐条完成标准以证据自验，以回执（`impl.md`，含
   施工前 git 基线）交卷；授权边界 = 仅本地实现与验证，不 commit/push/deploy。
 - **review** 对照 GOAL 双轴独立验证（完成标准轴 / 仓库规范轴），每条发现必须
   带证据；`rework` 的发现落 `review.md` + `--feedback`。
-- **owner** 是用户工位：grill 问题随跳转 reason 到达，人类用 `--reason` 回
-  答，答案插值进 design 的 prompt。
+- 发现走 `--reason`（插值进下一站 prompt）+ `--feedback` + mission 文档——
+  没有 peer 通道，流水线也不需要。
 
 四个岗位章程以**工位模版**形式随二进制发布
 （`im work create <op> <key> --preset design|plan|build|review`，控制台新建
@@ -180,7 +189,7 @@ CLI 调用的单个 SQLite 事务里。agent 来来去去、终端死掉、身�
 `im ui` 启动临时 localhost 控制台（固定默认端口 4600、自动开浏览器、闲置 5 分钟自退；`--port N`
 可换）：工位板（含换绑；新建弹窗可选流水线岗位模版预填章程）、mission 视图
 （revision/at/disposition）、用户 inbox（带跳转 reason；outcome 按钮会弹框让你
-填 `--reason`——grill 答案也走这里）、投递历史时间线、成员管理（授权/收回
+填 `--reason`，路由到用户工位时必填）、投递历史时间线、成员管理（授权/收回
 manager、删除——零 manager 时也可用，控制台即人类）、任务动作（从模板创建、
 终结）。
 

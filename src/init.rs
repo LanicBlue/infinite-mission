@@ -20,9 +20,9 @@ pub fn run() -> Result<()> {
         std::fs::write(&pipeline, crate::pipeline::PIPELINE_TEMPLATE)?;
     }
 
-    // Seed the delivery-pipeline stations (design/plan/build/review + the
-    // owner user station). Runs before any manager exists, so seeding writes
-    // the works table directly; existing stations are never clobbered.
+    // Seed the delivery-pipeline stations (design/plan/build/review). Runs
+    // before any manager exists, so seeding writes the works table directly;
+    // existing stations are never clobbered.
     let store = crate::store::Store::open(&dot.join("im.db"))?;
     let seeded = crate::pipeline::seed_pipeline_works(&store)?;
 
@@ -37,14 +37,15 @@ pub fn run() -> Result<()> {
     println!("  - templates:    .im/templates/ (example.yaml, pipeline.yaml)");
     println!("  - documents:    .im/mission-documents/");
     if seeded.is_empty() {
-        println!("  - stations:     design/plan/build/review/owner already present (untouched)");
+        println!("  - stations:     design/plan/build/review already present (untouched)");
     } else {
         println!("  - stations:     {}", seeded.join(", "));
     }
     println!(
         "  - next:         bind executors — `im work set-executor <manager> <work> <agent>` \
          for design/plan/build/review (unbound stations are user stations: every hop \
-         there waits for a manager)"
+         there waits for a manager); the design executor should also be a manager — \
+         it creates pipeline missions after the grill conversation"
     );
     Ok(())
 }

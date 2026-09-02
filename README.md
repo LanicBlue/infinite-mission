@@ -58,7 +58,7 @@ cargo install --path .   # binary: im
 ```bash
 mkdir my-project && cd my-project
 im init                       # workspace + example/pipeline templates +
-                              # the pipeline stations (design/plan/build/review/owner)
+                              # the pipeline stations (design/plan/build/review)
 
 im join boss                  # in each agent's terminal — no persona needed
 im join worker
@@ -71,21 +71,27 @@ im work set-executor boss plan <agent>
 im work set-executor boss build worker
 im work set-executor boss review <agent>
 
-# a pipeline mission — the objective is the raw idea:
-im mission create boss --template pipeline --key v1 --objective "ship the widget"
+# a pipeline mission — grill→spec happens in the design agent's session
+# conversation with you; when it settles, the design agent starts delivery:
+im mission create <design-agent> --template pipeline --key v1 \
+    --objective "ship the widget"          # the distilled intent
+
+# as the design agent (first round: park the frozen spec):
+im receive <design-agent>          # arrival note
+im mission show <ms> --for <design-agent>   # interpolated charter, rights, vocabulary, revision
+im mission doc write <design-agent> <ms> --id spec --file -   # → receipt
+im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready \
+    --receipts document:<hash>
 
 # as worker (at build, once the goal reaches you):
-im receive worker             # arrival note: a mission landed at your station
 im missions worker            # everything active at your stations
-im mission show <ms> --for worker   # interpolated charter, document rights, vocabulary, routes, revision
 im mission doc read worker <ms> goal.md
 im mission doc write worker <ms> --id impl --file src/receipt.md   # → receipt
 im mission submit worker <ms> --revision N --outcome done --receipts document:<hash>
 
-# a human, when design grills the owner (mission parked at `owner`):
-im inbox                      # shows the numbered questions (the hop reason)
-im mission submit boss <ms> --revision N --outcome answers \
-    --reason "1) thin scope, keep the name"     # answers ride --reason into design's prompt
+# a human, when a mission hops to a user station (other templates):
+im inbox
+im mission submit boss <ms> --revision N --outcome ok --reason "go ahead"
 ```
 
 Station prompts interpolate `{mission.name}`, `{mission.objective}`,
@@ -95,23 +101,27 @@ get their instructions from the mission brief alone.
 
 ## The delivery pipeline
 
-`im init` seeds five stations and writes `.im/templates/pipeline.yaml` — a
+`im init` seeds four stations and writes `.im/templates/pipeline.yaml` — a
 design→plan→build→review delivery flow distilled from
 [matt-skills-with-to-goal](https://github.com/tt-a1i/matt-skills-with-to-goal):
 
 ```
-objective ──▶ design ──spec-ready──▶ plan ──goal-ready──▶ build ──done──▶ review
-   ▲            │ ▲                    │ ▲                  ▲  │           │ ▲
-   │            │ └──spec-gap──────────┘ └──blocked─────────┘  │           │ └─rework─┐
-   │            └─needs-input─▶ owner(user) ─answers─▶ design  ...◀─reject─┴──────────┘
-   └──────────────────── spec-gap (from review) ◀──────  review ──approved──▶ design
-                                                            (final gate: accept = terminal)
+human ⇄ design-agent session     grill → spec happens HERE: a conversation,
+        │                        zero mission round-trips
+        └─ design creates the mission ─▶ parks spec.md ──spec-ready──▶ plan
+                                                                  goal-ready │
+   design ◀──approved── review ◀──done── build ◀───────────────────────────┘
+
+   final gate (design): accept = terminal │ reject ─▶ build (fix-only)
+   return edges: spec-gap (plan|review) ─▶ design · blocked (build) ─▶ plan
+               · rework (review) ─▶ build
 ```
 
-- **design** holds two phases: it grills the owner (frontier-round questions
-  on `needs-input` → `owner`, answers come back on `--reason`) and freezes a
-  SPEC; after review approves, it is the **final gate** (`accept` ends the
-  mission, `reject` sends implementation fixes back to build).
+- **design** holds two phases. The front phase lives outside the mission:
+  grill the human in your own session conversation, then — as a manager —
+  create the mission and park the frozen SPEC (`spec-ready`). After review
+  approves, design is the **final gate**: `accept` ends the mission, `reject`
+  sends implementation fixes back to build.
 - **plan** compiles the SPEC into a self-contained GOAL (compile, don't
   re-visit); an unactionable spec goes back as `spec-gap`.
 - **build** implements the GOAL only, verifies each completion criterion with
@@ -120,8 +130,9 @@ objective ──▶ design ──spec-ready──▶ plan ──goal-ready──
 - **review** verifies the implementation against the GOAL on two independent
   axes (goal criteria / repo standards), every finding cited; `rework`
   findings land in `review.md` + `--feedback`.
-- **owner** is the user station: grill questions arrive with the hop reason;
-  the human answers on `--reason`, which interpolates into design's prompt.
+- Findings travel on `--reason` (interpolated into the next station's
+  prompt) plus `--feedback` and the mission documents — there is no peer
+  channel, and the pipeline needs none.
 
 The four agent charters ship as **work presets**
 (`im work create <op> <key> --preset design|plan|build|review`, also offered
@@ -196,7 +207,8 @@ the world from it. Missions survive everything except `im clean`.
 override, exits after 5 idle minutes): stations board with rebind and a
 create modal that offers the pipeline charters as presets, missions with
 revision/at/disposition, the user inbox with hop reasons and outcome buttons
-that prompt for your `--reason` (grill answers included), delivery history
+that prompt for your `--reason` — required when routing onto another user
+station), delivery history
 timeline, member management (grant/revoke manager, delete — works with zero
 managers, the console is the human), and mission actions (create from
 template, end).

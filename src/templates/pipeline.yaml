@@ -1,23 +1,21 @@
-# The delivery pipeline: design grills the owner and freezes a SPEC, plan
-# compiles it into a self-contained GOAL, build implements it with a receipt,
-# review verifies the implementation against the goal, and design holds the
-# final gate. Grill questions and answers travel on --reason (they land in
-# the next station's prompt); findings travel on --feedback + the documents.
+# The delivery pipeline: grill→spec happens in the design executor's own
+# session conversation with the human (no mission round-trips); the design
+# agent then CREATES the mission, parks the frozen SPEC, and submits
+# spec-ready. plan compiles a self-contained GOAL, build implements it with
+# a receipt, review verifies against the goal, and design holds the final
+# gate. Findings travel on --reason + --feedback and the documents.
 schemaVersion: 4
 name: pipeline
 objective: "Deliver a change through design → plan → build → review → final gate"
 
-# The mission starts at design; the raw idea rides the mission objective.
+# The mission starts at design: the first round parks the SPEC that came out
+# of the session conversation (the objective carries its distilled intent).
 entry: design
 
 works:
-  # User station: the human answers grill questions here.
-  owner:
-    completion: {outcomes: [answers], terminal: [], feedbackRequiredOn: []}
-    documentRights: {read: [spec], write: []}
   design:
     completion:
-      outcomes: [needs-input, spec-ready, accept, reject]
+      outcomes: [spec-ready, accept, reject]
       terminal: [accept]            # the final gate ends the mission
       feedbackRequiredOn: [reject]
     documentRights: {read: [spec, review], write: [spec]}
@@ -40,9 +38,7 @@ documents:
 # Re-entry edges carry iterationPolicy: increment — a station's iteration is
 # its visit counter. accept is terminal at design: no edge, mission completes.
 paths:
-  - {from: design, when: needs-input, to: owner, iterationPolicy: increment}
-  - {from: owner,  when: answers,     to: design, iterationPolicy: increment}
-  - {from: design, when: spec-ready,  to: plan}
+  - {from: design, when: spec-ready, to: plan}
   - {from: plan,   when: goal-ready,  to: build}
   - {from: plan,   when: spec-gap,    to: design, iterationPolicy: increment}
   - {from: build,  when: done,        to: review}

@@ -957,7 +957,7 @@ Missions (PS semantics)
   im mission create <op> --template <name> --key <unique-key> [--name] [--objective]
                                              `im init` writes example.yaml and pipeline.yaml
                                              (design→plan→build→review→final gate) and seeds
-                                             those stations + the owner user station.
+                                             those four stations.
   im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
   im missions <agent>                       Active missions at your stations
   im mission submit <agent> <ms> --revision N --outcome <o>
@@ -974,13 +974,19 @@ Maintenance
 
 QUICK START
   1. im init && im join boss && im grant boss               (human grants once)
-     init seeds the pipeline stations (design/plan/build/review + owner) and
+     init seeds the pipeline stations (design/plan/build/review) and
      pipeline.yaml — bind executors first:
-     im work set-executor boss design <agent> (…plan/build/review the same way)
-  2. im mission create boss --template pipeline --key v1 --objective "ship X"
+     im work set-executor boss design <agent> (…plan/build/review the same way);
+     the design executor should also be a manager (it creates the missions)
+  2. Grill→spec happens in the design agent's own session conversation with
+     the human — no mission round-trips. Then the design agent starts delivery:
+     im mission create <design-agent> --template pipeline --key v1 --objective "ship X"
+     → im mission doc write <design-agent> <ms> --id spec --file -
+     → im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready
   3. Agents loop: im missions <me> → im mission show <ms> --for <me>
      → im mission doc write <me> <ms> --id <doc> --file -
      → im mission submit <me> <ms> --revision N --outcome <o> [--feedback <t>]
-  4. im inbox shows anything waiting for a human decision (grill questions
-     land on the owner station; answers go back as --reason).
+  4. review approved → design holds the final gate (accept ends the mission,
+     reject sends implementation fixes back to build).
+  5. im inbox shows anything parked at user stations (other templates).
 "#;

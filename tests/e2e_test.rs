@@ -304,12 +304,12 @@ fn init_seeds_pipeline_stations_and_reactivates_retired_ones() {
     let tmp = setup_workspace();
     let ws = tmp.path();
 
-    // Five stations out of the box, all active, plus the template.
+    // Four stations out of the box, all active, plus the template.
     let list = String::from_utf8(
         im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
     )
     .unwrap();
-    for key in ["design", "plan", "build", "review", "owner"] {
+    for key in ["design", "plan", "build", "review"] {
         assert!(list.contains(key), "seeded station {key} missing: {list}");
     }
     assert!(!list.contains("[retired]"), "fresh seeds must be active: {list}");

@@ -37,17 +37,6 @@ pub const PRESETS: &[WorkPreset] = &[
     },
 ];
 
-/// The user station the pipeline routes grill questions onto. It has no
-/// preset (user stations are the human's mailbox), but init seeds it so the
-/// template's stations exist out of the box.
-pub const OWNER_STATION: (&str, &str, &str) = (
-    "owner",
-    "Owner",
-    "User station — the human mailbox. Missions stop here when a station needs your decision. \
-     Read the hop reason (and spec.md when grilling), then resolve with an outcome; your \
-     --reason is delivered into the next station's prompt.",
-);
-
 pub fn preset(key: &str) -> Option<&'static WorkPreset> {
     PRESETS.iter().find(|p| p.key == key)
 }
@@ -67,47 +56,41 @@ pub fn seed_pipeline_works(store: &crate::store::Store) -> Result<Vec<String>> {
     use rusqlite::OptionalExtension;
 
     let mut notes = Vec::new();
-    let seed_one =
-        |key: &str, display: &str, prompt: &str, notes: &mut Vec<String>| -> Result<()> {
-            let existing: Option<(String, String)> = store
-                .conn
-                .query_row(
-                    "SELECT lifecycle, prompt FROM works WHERE work_key = ?1",
-                    [key],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            match existing {
-                None => {
-                    store.conn.execute(
-                        "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)
-                         VALUES (?1, ?2, NULL, ?3, 'active', ?4)",
-                        rusqlite::params![
-                            key,
-                            display,
-                            prompt,
-                            chrono::Utc::now().timestamp()
-                        ],
-                    )?;
-                    notes.push(format!("created station {key}"));
-                }
-                Some((lifecycle, existing_prompt)) if lifecycle != "active" => {
-                    let fill_prompt = existing_prompt.trim().is_empty();
-                    store.conn.execute(
-                        "UPDATE works SET lifecycle = 'active', prompt = CASE WHEN ?1 THEN ?2 ELSE prompt END
-                         WHERE work_key = ?3",
-                        rusqlite::params![fill_prompt, prompt, key],
-                    )?;
-                    notes.push(format!("reactivated station {key}"));
-                }
-                Some(_) => {}
-            }
-            Ok(())
-        };
-
     for preset in PRESETS {
-        seed_one(preset.key, preset.display_name, preset.prompt, &mut notes)?;
+        let key = preset.key;
+        let existing: Option<(String, String)> = store
+            .conn
+            .query_row(
+                "SELECT lifecycle, prompt FROM works WHERE work_key = ?1",
+                [key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        match existing {
+            None => {
+                store.conn.execute(
+                    "INSERT INTO works (work_key, display_name, executor, prompt, lifecycle, created_at)
+                     VALUES (?1, ?2, NULL, ?3, 'active', ?4)",
+                    rusqlite::params![
+                        key,
+                        preset.display_name,
+                        preset.prompt,
+                        chrono::Utc::now().timestamp()
+                    ],
+                )?;
+                notes.push(format!("created station {key}"));
+            }
+            Some((lifecycle, existing_prompt)) if lifecycle != "active" => {
+                let fill_prompt = existing_prompt.trim().is_empty();
+                store.conn.execute(
+                    "UPDATE works SET lifecycle = 'active', prompt = CASE WHEN ?1 THEN ?2 ELSE prompt END
+                     WHERE work_key = ?3",
+                    rusqlite::params![fill_prompt, preset.prompt, key],
+                )?;
+                notes.push(format!("reactivated station {key}"));
+            }
+            Some(_) => {}
+        }
     }
-    seed_one(OWNER_STATION.0, OWNER_STATION.1, OWNER_STATION.2, &mut notes)?;
     Ok(notes)
 }
