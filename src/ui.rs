@@ -203,17 +203,25 @@ fn apply_action(
     match kind {
         "grant" | "revoke" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
+            let acting = acting_manager(store)?;
             if kind == "grant" {
-                store.grant_manager(agent)?;
+                store.grant_manager(&acting, agent)?;
                 Ok(format!("granted manager to {agent}"))
             } else {
-                store.revoke_manager(agent)?;
+                store.revoke_manager(&acting, agent)?;
                 Ok(format!("revoked manager from {agent}"))
             }
         }
         "delete_agent" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
-            store.delete_agent(agent)?;
+            // Deleting needs no acting manager — the last manager may remove
+            // themselves — so the notice is attributed to whoever remains.
+            let actor = store
+                .list_managers()?
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "workspace".to_string());
+            store.delete_agent(&actor, agent)?;
             let session_file = workspace.join(".im").join("sessions").join(agent);
             let _ = std::fs::remove_file(&session_file);
             Ok(format!("deleted member {agent}"))

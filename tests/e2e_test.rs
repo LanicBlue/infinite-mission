@@ -168,6 +168,63 @@ fn receive_wait_wakes_on_arrival() {
 }
 
 #[test]
+fn membership_changes_notify_the_member() {
+    let tmp = setup_workspace();
+    im(tmp.path()).args(["join", "alice", "--role", "worker"]).assert().success();
+
+    im(tmp.path())
+        .args(["grant", "alice"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Granted manager to alice."));
+    im(tmp.path())
+        .args(["receive", "alice"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[from workspace] [membership] you were granted manager permission.",
+        ));
+
+    im(tmp.path()).args(["revoke", "alice"]).assert().success();
+    im(tmp.path())
+        .args(["receive", "alice"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[membership] your manager permission was revoked.",
+        ));
+}
+
+#[test]
+fn receive_wait_farewells_when_membership_ends() {
+    let tmp = setup_workspace();
+    im(tmp.path()).args(["join", "alice", "--role", "worker"]).assert().success();
+
+    let ws = tmp.path().to_path_buf();
+    let waiter = std::thread::spawn(move || {
+        let out = StdCommand::new(env!("CARGO_BIN_EXE_im"))
+            .current_dir(&ws)
+            .args(["receive", "alice", "--wait", "--timeout", "10"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    });
+
+    // Once the listener is inside its poll loop, delete the member under it.
+    sleep(Duration::from_millis(1200));
+    let store = im::store::Store::open(&tmp.path().join(".im").join("im.db")).unwrap();
+    store.delete_agent("workspace", "alice").unwrap();
+    drop(store);
+
+    let out = waiter.join().unwrap();
+    assert!(
+        out.contains("no longer an active member"),
+        "waiter should farewell, got: {out}"
+    );
+    assert!(!out.contains("Error"), "should not error, got: {out}");
+}
+
+#[test]
 fn leave_archives_identity_and_join_reactivates_with_new_session() {
     let tmp = setup_workspace();
     let ws = tmp.path();

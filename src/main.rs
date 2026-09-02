@@ -360,6 +360,13 @@ fn cmd_receive(args: Vec<String>) -> Result<()> {
         let mut last_heartbeat = std::time::Instant::now();
         loop {
             let store = open_store(&workspace)?;
+            if !store.agent_active(&id)? {
+                println!(
+                    "[membership] you are no longer an active member (removed or archived) — \
+                     stopping the listener."
+                );
+                return Ok(());
+            }
             if last_heartbeat.elapsed() >= std::time::Duration::from_secs(30) {
                 store.touch_agent(&id)?;
                 last_heartbeat = std::time::Instant::now();
@@ -456,10 +463,10 @@ fn cmd_grant(command: &str, id: &str) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     if command == "grant" {
-        store.grant_manager(id)?;
+        store.grant_manager("workspace", id)?;
         println!("Granted manager to {id}.");
     } else {
-        store.revoke_manager(id)?;
+        store.revoke_manager("workspace", id)?;
         println!("Revoked manager from {id}.");
     }
     Ok(())

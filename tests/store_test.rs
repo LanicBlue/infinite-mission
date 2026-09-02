@@ -85,12 +85,52 @@ fn manager_gate_is_a_table_not_a_role() {
     store.register_agent_unique("worker", "worker").unwrap();
 
     assert!(store.require_manager("boss").is_err());
-    store.grant_manager("boss").unwrap();
+    store.grant_manager("workspace", "boss").unwrap();
     assert!(store.require_manager("boss").is_ok());
     // Role alone confers nothing.
     assert!(store.require_manager("worker").is_err());
-    store.revoke_manager("boss").unwrap();
+    store.revoke_manager("workspace", "boss").unwrap();
     assert!(store.require_manager("boss").is_err());
+}
+
+#[test]
+fn membership_actions_deliver_inbox_notices() {
+    let (_tmp, store) = open();
+    store.register_agent_unique("worker", "worker").unwrap();
+
+    store.grant_manager("workspace", "worker").unwrap();
+    store.revoke_manager("workspace", "worker").unwrap();
+    store.delete_agent("workspace", "worker").unwrap();
+
+    // The notices outlive the deleted agent row (messages carry no FK).
+    let notices: Vec<(String, String)> = store
+        .conn
+        .prepare(
+            "SELECT from_agent, content FROM messages
+             WHERE to_agent = 'worker' AND kind = 'membership' ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        notices,
+        vec![
+            (
+                "workspace".to_string(),
+                "[membership] you were granted manager permission.".to_string()
+            ),
+            (
+                "workspace".to_string(),
+                "[membership] your manager permission was revoked.".to_string()
+            ),
+            (
+                "workspace".to_string(),
+                "[membership] you were removed from this workspace.".to_string()
+            ),
+        ]
+    );
 }
 
 #[test]

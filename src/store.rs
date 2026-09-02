@@ -212,6 +212,13 @@ impl Store {
         }
     }
 
+    /// Non-bailing active check — the `--wait` receive loop polls this every
+    /// 500 ms to notice its own membership ending (deleted or archived)
+    /// mid-listen and bow out instead of erroring.
+    pub fn agent_active(&self, id: &str) -> Result<bool> {
+        Ok(self.agent_status(id)?.as_deref() == Some("active"))
+    }
+
     pub fn agent_names(&self) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
@@ -254,7 +261,7 @@ impl Store {
     /// Hard-delete a member (and any manager grant). Refused while the
     /// member is on-duty at a station — rebind first, or missions would sit
     /// at a station whose executor no longer exists.
-    pub fn delete_agent(&self, agent_id: &str) -> Result<()> {
+    pub fn delete_agent(&self, actor: &str, agent_id: &str) -> Result<()> {
         let duty: Vec<String> = self
             .conn
             .prepare("SELECT work_key FROM works WHERE executor = ?1")?
@@ -271,6 +278,15 @@ impl Store {
             anyhow::bail!("{agent_id} does not exist");
         }
         self.conn.execute("DELETE FROM managers WHERE agent_id = ?1", [agent_id])?;
+        // Messages carry no FK, so the notice outlives the deleted row — if
+        // the id ever rejoins, the first receive shows what happened.
+        self.send_message_envelope(
+            actor,
+            agent_id,
+            "[membership] you were removed from this workspace.",
+            "membership",
+            None,
+        )?;
         Ok(())
     }
 
@@ -411,17 +427,24 @@ impl Store {
 
     // --- Managers ---
 
-    pub fn grant_manager(&self, agent_id: &str) -> Result<()> {
+    pub fn grant_manager(&self, actor: &str, agent_id: &str) -> Result<()> {
         self.require_active_agent(agent_id)?;
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
             "INSERT OR REPLACE INTO managers (agent_id, granted_at) VALUES (?1, ?2)",
             params![agent_id, now],
         )?;
+        self.send_message_envelope(
+            actor,
+            agent_id,
+            "[membership] you were granted manager permission.",
+            "membership",
+            None,
+        )?;
         Ok(())
     }
 
-    pub fn revoke_manager(&self, agent_id: &str) -> Result<()> {
+    pub fn revoke_manager(&self, actor: &str, agent_id: &str) -> Result<()> {
         let revoked = self.conn.execute(
             "DELETE FROM managers WHERE agent_id = ?1",
             [agent_id],
@@ -429,6 +452,13 @@ impl Store {
         if revoked == 0 {
             anyhow::bail!("{agent_id} is not a manager");
         }
+        self.send_message_envelope(
+            actor,
+            agent_id,
+            "[membership] your manager permission was revoked.",
+            "membership",
+            None,
+        )?;
         Ok(())
     }
 
