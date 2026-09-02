@@ -8,7 +8,8 @@ are the work-mission model: a mission is one-shot mail that carries its own
 contract, travels between stations, and records its own delivery history.
 
 ```
-cargo install --path .   # binary: im
+./install.sh                 # cargo build --release → ~/.local/bin/im
+cargo install --path .       # alternative (installs into ~/.cargo/bin)
 ```
 
 ## The model in one screen

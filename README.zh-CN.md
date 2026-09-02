@@ -7,7 +7,8 @@ WAL 模式的 SQLite 文件上。运行语义是 work-mission 模型：mission �
 邮件，自带合同、在工位之间流转、自带投递历史。
 
 ```
-cargo install --path .   # 产出二进制：im
+./install.sh                 # cargo build --release → 安装到 ~/.local/bin/im
+cargo install --path .       # 备选（装进 ~/.cargo/bin）
 ```
 
 ## 一屏看懂模型
