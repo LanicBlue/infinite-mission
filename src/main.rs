@@ -903,7 +903,7 @@ fn cmd_clean() -> Result<()> {
         std::fs::remove_dir_all(&notes_dir)?;
         std::fs::create_dir_all(&notes_dir)?;
     }
-    println!("Cleaned InfiniteMission state (roles/templates kept).");
+    println!("Cleaned InfiniteMission state (templates kept).");
     Ok(())
 }
 
