@@ -99,7 +99,10 @@ fn receive_wait_times_out_and_lock_is_exclusive() {
         .stderr(predicate::str::contains("already running"));
 
     let out = waiter.join().unwrap();
-    assert!(out.contains("No new messages (timed out after 2s)"), "got: {out}");
+    assert!(
+        out.contains("No new messages (timed out after 2s)"),
+        "got: {out}"
+    );
 }
 
 #[test]
@@ -132,13 +135,24 @@ fn receive_wait_wakes_on_station_arrival() {
 
     sleep(Duration::from_millis(900));
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "t",
+            "--key",
+            "k1",
+        ])
         .assert()
         .success();
 
     let out = waiter.join().unwrap();
     assert!(out.contains("[station alpha]"), "got: {out}");
-    assert!(!out.contains("timed out"), "waiter should return early: {out}");
+    assert!(
+        !out.contains("timed out"),
+        "waiter should return early: {out}"
+    );
 }
 
 #[test]
@@ -161,7 +175,13 @@ fn membership_changes_notify_the_member() {
         .stdout(predicate::str::contains("alice"))  // id line
         ;
     let roster = String::from_utf8(
-        im(ws).arg("agents").assert().success().get_output().stdout.clone(),
+        im(ws)
+            .arg("agents")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     assert!(roster.contains("[publish]"), "roster shows tier: {roster}");
@@ -230,9 +250,19 @@ fn leave_archives_identity_and_join_reactivates_with_new_session() {
     im(ws).args(["leave", "alice"]).assert().success();
 
     // Archived: gone from the active roster, still visible with --all.
-    im(ws).arg("agents").assert().success().stdout(predicate::str::contains("bob"));
+    im(ws)
+        .arg("agents")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bob"));
     let active = String::from_utf8(
-        im(ws).arg("agents").assert().success().get_output().stdout.clone(),
+        im(ws)
+            .arg("agents")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     assert!(!active.contains("alice"));
@@ -283,24 +313,45 @@ fn gates_follow_the_tier_ladder() {
         .args(["work", "create", "mgmt", "alpha", "--executor", "pub"])
         .assert()
         .success();
-    im(ws).args(["work", "create", "mgmt", "gate"]).assert().success();
+    im(ws)
+        .args(["work", "create", "mgmt", "gate"])
+        .assert()
+        .success();
 
     // Execute: mission create fails.
     im(ws)
-        .args(["mission", "create", "exec", "--template", "t", "--key", "k-exec"])
+        .args([
+            "mission",
+            "create",
+            "exec",
+            "--template",
+            "t",
+            "--key",
+            "k-exec",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("below publish tier"));
 
     // Publish: mission create is the one gate it passes…
     im(ws)
-        .args(["mission", "create", "pub", "--template", "t", "--key", "k-pub"])
+        .args([
+            "mission",
+            "create",
+            "pub",
+            "--template",
+            "t",
+            "--key",
+            "k-pub",
+        ])
         .assert()
         .success();
     let ms = {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
-        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
-            .unwrap()
+        db.query_row("SELECT mission_id FROM missions", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
     };
 
     // …the five work ops stay manage-tier.
@@ -326,11 +377,31 @@ fn gates_follow_the_tier_ladder() {
 
     // Park the mission on the user station: publish may not resolve it.
     im(ws)
-        .args(["mission", "submit", "pub", &ms, "--revision", "1", "--outcome", "done", "--reason", "over to the user"])
+        .args([
+            "mission",
+            "submit",
+            "pub",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+            "--reason",
+            "over to the user",
+        ])
         .assert()
         .success();
     im(ws)
-        .args(["mission", "submit", "pub", &ms, "--revision", "2", "--outcome", "ok"])
+        .args([
+            "mission",
+            "submit",
+            "pub",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "ok",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("resolved by a manage-tier member"));
@@ -340,7 +411,9 @@ fn gates_follow_the_tier_ladder() {
         .failure()
         .stderr(predicate::str::contains("resolved by a manage-tier member"));
     im(ws)
-        .args(["mission", "doc", "write", "pub", &ms, "--id", "spec", "--file", "-"])
+        .args([
+            "mission", "doc", "write", "pub", &ms, "--id", "spec", "--file", "-",
+        ])
         .write_stdin("")
         .assert()
         .failure()
@@ -348,7 +421,16 @@ fn gates_follow_the_tier_ladder() {
 
     // Manage: everything above passes.
     im(ws)
-        .args(["mission", "submit", "mgmt", &ms, "--revision", "2", "--outcome", "ok"])
+        .args([
+            "mission",
+            "submit",
+            "mgmt",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "ok",
+        ])
         .assert()
         .success();
 }
@@ -371,7 +453,13 @@ fn cli_grant_revoke_and_member_delete_use_operator_forms() {
         .success()
         .stdout(predicate::str::contains("Granted publish tier to target."));
     let roster = String::from_utf8(
-        im(ws).arg("agents").assert().success().get_output().stdout.clone(),
+        im(ws)
+            .arg("agents")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     assert!(roster.contains("target"), "roster: {roster}");
@@ -406,7 +494,9 @@ fn cli_grant_revoke_and_member_delete_use_operator_forms() {
         .args(["grant", "target"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Usage: im grant <operator> <target>"));
+        .stderr(predicate::str::contains(
+            "Usage: im grant <operator> <target>",
+        ));
 
     // member delete: non-manage target goes (row + session file).
     im(ws)
@@ -417,7 +507,9 @@ fn cli_grant_revoke_and_member_delete_use_operator_forms() {
     {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
         let rows: i64 = db
-            .query_row("SELECT COUNT(*) FROM agents WHERE id = 'target'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM agents WHERE id = 'target'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(rows, 0);
     }
@@ -448,26 +540,66 @@ fn mission_end_fans_out_to_past_participants() {
         im(ws).args(["join", id]).assert().success();
     }
     seed_tier(ws, "boss", "manage");
-    im(ws).args(["work", "create", "boss", "alpha", "--executor", "worker"]).assert().success();
-    im(ws).args(["work", "create", "boss", "beta", "--executor", "inspector"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "alpha", "--executor", "worker"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["work", "create", "boss", "beta", "--executor", "inspector"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  beta:\n    completion: {outcomes: [pass, fail], terminal: [pass], feedbackRequiredOn: [fail]}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: alpha, when: done, to: beta}\n  - {from: beta, when: fail, to: alpha}\n",
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "t",
+            "--key",
+            "k1",
+        ])
         .assert()
         .success();
     let ms = {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
-        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
-            .unwrap()
+        db.query_row("SELECT mission_id FROM missions", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
     };
 
     // build → review → terminal pass: worker is a past participant.
-    im(ws).args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done"]).assert().success();
-    im(ws).args(["mission", "submit", "inspector", &ms, "--revision", "2", "--outcome", "pass"]).assert().success();
+    im(ws)
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
+        .assert()
+        .success();
+    im(ws)
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "pass",
+        ])
+        .assert()
+        .success();
 
     // The ended fan-out reaches the worker even though the mailbox moved on.
     im(ws)
@@ -485,26 +617,49 @@ fn init_seeds_pipeline_stations_and_reseeds_deleted_ones() {
 
     // Four stations out of the box, plus the template.
     let list = String::from_utf8(
-        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     for key in ["design", "plan", "build", "review"] {
         assert!(list.contains(key), "seeded station {key} missing: {list}");
     }
-    assert!(ws.join(".im").join("templates").join("pipeline.yaml").exists());
+    assert!(ws
+        .join(".im")
+        .join("templates")
+        .join("pipeline.yaml")
+        .exists());
 
     // Seeded stations carry their preset charters.
     let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
     let design_prompt: String = db
-        .query_row("SELECT prompt FROM works WHERE work_key = 'design'", [], |r| r.get(0))
+        .query_row(
+            "SELECT prompt FROM works WHERE work_key = 'design'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert!(design_prompt.contains("final gate"), "design charter missing: {design_prompt}");
+    assert!(
+        design_prompt.contains("final gate"),
+        "design charter missing: {design_prompt}"
+    );
     drop(db);
 
     // Re-init is a no-op for existing stations.
     im(ws).arg("init").assert().success();
     let relist = String::from_utf8(
-        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     assert!(relist.contains("design"));
@@ -512,13 +667,25 @@ fn init_seeds_pipeline_stations_and_reseeds_deleted_ones() {
     // A deleted pipeline station is re-seeded on the next init.
     im(ws).args(["join", "boss"]).assert().success();
     seed_tier(ws, "boss", "manage");
-    im(ws).args(["work", "delete", "boss", "design"]).assert().success();
+    im(ws)
+        .args(["work", "delete", "boss", "design"])
+        .assert()
+        .success();
     im(ws).arg("init").assert().success();
     let reseeded = String::from_utf8(
-        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
-    assert!(reseeded.contains("design"), "deleted pipeline key should have been re-seeded: {reseeded}");
+    assert!(
+        reseeded.contains("design"),
+        "deleted pipeline key should have been re-seeded: {reseeded}"
+    );
 }
 
 #[test]
@@ -536,26 +703,60 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
         .stderr(predicate::str::contains("unknown preset"));
 
     // --preset fills the charter (prompt + one-line summary); explicit flags win.
-    im(ws).args(["work", "create", "boss", "qa", "--preset", "review"]).assert().success();
     im(ws)
-        .args(["work", "create", "boss", "hotfix", "--preset", "build", "--prompt", "just ship it", "--description", "hotfix lane"])
+        .args(["work", "create", "boss", "qa", "--preset", "review"])
+        .assert()
+        .success();
+    im(ws)
+        .args([
+            "work",
+            "create",
+            "boss",
+            "hotfix",
+            "--preset",
+            "build",
+            "--prompt",
+            "just ship it",
+            "--description",
+            "hotfix lane",
+        ])
         .assert()
         .success();
     let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
     let qa_prompt: String = db
-        .query_row("SELECT prompt FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
+        .query_row("SELECT prompt FROM works WHERE work_key = 'qa'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let qa_summary: String = db
-        .query_row("SELECT description FROM works WHERE work_key = 'qa'", [], |r| r.get(0))
+        .query_row(
+            "SELECT description FROM works WHERE work_key = 'qa'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let hotfix_prompt: String = db
-        .query_row("SELECT prompt FROM works WHERE work_key = 'hotfix'", [], |r| r.get(0))
+        .query_row(
+            "SELECT prompt FROM works WHERE work_key = 'hotfix'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let hotfix_summary: String = db
-        .query_row("SELECT description FROM works WHERE work_key = 'hotfix'", [], |r| r.get(0))
+        .query_row(
+            "SELECT description FROM works WHERE work_key = 'hotfix'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert!(qa_prompt.contains("verify the implementation"), "qa: {qa_prompt}");
-    assert!(qa_summary.contains("two evidence axes"), "qa summary: {qa_summary}");
+    assert!(
+        qa_prompt.contains("verify the implementation"),
+        "qa: {qa_prompt}"
+    );
+    assert!(
+        qa_summary.contains("two evidence axes"),
+        "qa summary: {qa_summary}"
+    );
     assert_eq!(hotfix_prompt, "just ship it");
     assert_eq!(hotfix_summary, "hotfix lane");
 
@@ -569,7 +770,9 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
         .args(["work", "set-prompt", "boss", "qa", "--preset", "design"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("charter updated from preset 'design'"));
+        .stdout(predicate::str::contains(
+            "charter updated from preset 'design'",
+        ));
     let refreshed: (String, String) = db
         .query_row(
             "SELECT prompt, description FROM works WHERE work_key = 'qa'",
@@ -577,8 +780,16 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert!(refreshed.0.contains("final gate"), "design charter: {}", refreshed.0);
-    assert!(refreshed.1.contains("final gate"), "design summary: {}", refreshed.1);
+    assert!(
+        refreshed.0.contains("final gate"),
+        "design charter: {}",
+        refreshed.0
+    );
+    assert!(
+        refreshed.1.contains("final gate"),
+        "design summary: {}",
+        refreshed.1
+    );
 
     // Station lock (PS semantics): an active mission referencing qa — even
     // parked elsewhere on a return edge — blocks deletion.
@@ -588,13 +799,23 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "t",
+            "--key",
+            "k1",
+        ])
         .assert()
         .success();
     let ms = {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
-        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
-            .unwrap()
+        db.query_row("SELECT mission_id FROM missions", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
     };
     im(ws)
         .args(["work", "delete", "boss", "qa"])
@@ -605,11 +826,26 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
 
     // End the mission → the lock lifts → delete succeeds and frees the key.
     im(ws)
-        .args(["mission", "abandon", "boss", &ms, "--revision", "1", "--reason", "done testing"])
+        .args([
+            "mission",
+            "abandon",
+            "boss",
+            &ms,
+            "--revision",
+            "1",
+            "--reason",
+            "done testing",
+        ])
         .assert()
         .success();
-    im(ws).args(["work", "delete", "boss", "qa"]).assert().success();
-    im(ws).args(["work", "create", "boss", "qa", "--preset", "review"]).assert().success();
+    im(ws)
+        .args(["work", "delete", "boss", "qa"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["work", "create", "boss", "qa", "--preset", "review"])
+        .assert()
+        .success();
 }
 
 #[test]
@@ -626,7 +862,10 @@ fn deleting_an_unlocked_station_frees_its_executor() {
 
     // Hard delete of an unlocked station: the row goes, so the member's
     // duty guard can never dangle off it.
-    im(ws).args(["work", "delete", "boss", "lab"]).assert().success();
+    im(ws)
+        .args(["work", "delete", "boss", "lab"])
+        .assert()
+        .success();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
     assert!(store.get_work("lab").is_err(), "station row must be gone");
     store.delete_agent("workspace", "temp").unwrap();
@@ -639,22 +878,42 @@ fn work_list_shows_holding_and_en_route_occupancy() {
     im(ws).args(["join", "boss"]).assert().success();
     im(ws).args(["join", "worker"]).assert().success();
     seed_tier(ws, "boss", "manage");
-    im(ws).args(["work", "create", "boss", "alpha", "--executor", "worker"]).assert().success();
-    im(ws).args(["work", "create", "boss", "beta", "--executor", "worker"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "alpha", "--executor", "worker"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["work", "create", "boss", "beta", "--executor", "worker"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  beta:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: alpha, when: done, to: beta}\n",
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "t",
+            "--key",
+            "k1",
+        ])
         .assert()
         .success();
 
     // The mission parks at alpha (holding 1); beta is referenced by the
     // contract's path but not parked there (en route 1).
     let list = String::from_utf8(
-        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     assert!(
@@ -669,22 +928,53 @@ fn work_list_shows_holding_and_en_route_occupancy() {
     // Ending the mission clears both counts.
     let ms = {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
-        db.query_row("SELECT mission_id FROM missions", [], |r| r.get::<_, String>(0))
-            .unwrap()
+        db.query_row("SELECT mission_id FROM missions", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
     };
     im(ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done", "--reason", "over to beta"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+            "--reason",
+            "over to beta",
+        ])
         .assert()
         .success();
     im(ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "2", "--outcome", "ok"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "ok",
+        ])
         .assert()
         .success();
     let after = String::from_utf8(
-        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
-    assert!(after.contains("beta — executor: worker, holding: 0, en route: 0"), "after: {after}");
+    assert!(
+        after.contains("beta — executor: worker, holding: 0, en route: 0"),
+        "after: {after}"
+    );
 }
 
 #[test]
@@ -693,7 +983,10 @@ fn deleting_a_station_clears_its_arrival_notes() {
     let ws = tmp.path();
     im(ws).args(["join", "boss"]).assert().success();
     seed_tier(ws, "boss", "manage");
-    im(ws).args(["work", "create", "boss", "lab"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "lab"])
+        .assert()
+        .success();
     {
         let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
         db.execute(
@@ -703,10 +996,17 @@ fn deleting_a_station_clears_its_arrival_notes() {
         )
         .unwrap();
     }
-    im(ws).args(["work", "delete", "boss", "lab"]).assert().success();
+    im(ws)
+        .args(["work", "delete", "boss", "lab"])
+        .assert()
+        .success();
     let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
     let notes: i64 = db
-        .query_row("SELECT COUNT(*) FROM work_notes WHERE work_key = 'lab'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM work_notes WHERE work_key = 'lab'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(notes, 0, "stale arrival notes must not outlive the station");
 }
@@ -734,7 +1034,9 @@ fn leave_releases_held_stations_to_the_user() {
         .args(["leave", "temp"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Stations released to the user: lab"));
+        .stdout(predicate::str::contains(
+            "Stations released to the user: lab",
+        ));
 
     let db = ws.join(".im").join("im.db");
     let store = im::store::Store::open(&db).unwrap();
@@ -765,7 +1067,15 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "t",
+            "--key",
+            "k1",
+        ])
         .assert()
         .success();
 
@@ -773,7 +1083,13 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
     // now belongs to the user — and the member row becomes deletable.
     im(ws).args(["leave", "worker"]).assert().success();
     let list = String::from_utf8(
-        im(ws).args(["work", "list"]).assert().success().get_output().stdout.clone(),
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
     )
     .unwrap();
     assert!(
@@ -785,7 +1101,12 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
     store.delete_agent("workspace", "worker").unwrap();
     let archived: i64 = store
         .conn
-        .query_row("SELECT COUNT(*) FROM agents WHERE id = 'worker'", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM agents WHERE id = 'worker'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
-    assert_eq!(archived, 0, "leave released the binding, so delete must pass");
+    assert_eq!(
+        archived, 0,
+        "leave released the binding, so delete must pass"
+    );
 }

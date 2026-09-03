@@ -153,9 +153,7 @@ impl Store {
             |row| row.get(0),
         )?;
         if has_description == 0 {
-            tx.execute_batch(
-                "ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';",
-            )?;
+            tx.execute_batch("ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';")?;
         }
         // Tier migration: pre-tier DBs lack agents.tier; add it, then fold
         // the retired managers table into the manage tier and drop it.
@@ -197,9 +195,8 @@ impl Store {
     /// stays (DEFAULT '') reserved for built-in agents.
     pub fn register_agent_unique(&self, requested_id: &str) -> Result<(String, String)> {
         let now = chrono::Utc::now().timestamp();
-        let candidates = std::iter::once(requested_id.to_string()).chain(
-            (2..=99).map(|i| format!("{}-{}", requested_id, i)),
-        );
+        let candidates = std::iter::once(requested_id.to_string())
+            .chain((2..=99).map(|i| format!("{}-{}", requested_id, i)));
         for candidate in candidates {
             let token = uuid::Uuid::new_v4().to_string();
             let reactivated = self.conn.execute(
@@ -327,7 +324,9 @@ impl Store {
                 duty.join(", ")
             );
         }
-        let deleted = self.conn.execute("DELETE FROM agents WHERE id = ?1", [agent_id])?;
+        let deleted = self
+            .conn
+            .execute("DELETE FROM agents WHERE id = ?1", [agent_id])?;
         if deleted == 0 {
             anyhow::bail!("{agent_id} does not exist");
         }
@@ -359,8 +358,7 @@ impl Store {
                     last_seen: row.get(3)?,
                     status: row.get(4)?,
                     archived_at: row.get(5)?,
-                    tier: Tier::parse(&row.get::<_, String>(6)?)
-                        .unwrap_or(Tier::Execute),
+                    tier: Tier::parse(&row.get::<_, String>(6)?).unwrap_or(Tier::Execute),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -505,7 +503,11 @@ impl Store {
     }
 
     pub fn require_tier(&self, agent_id: &str, min_tier: Tier) -> Result<()> {
-        if self.agent_tier(agent_id)?.map(|tier| tier >= min_tier).unwrap_or(false) {
+        if self
+            .agent_tier(agent_id)?
+            .map(|tier| tier >= min_tier)
+            .unwrap_or(false)
+        {
             return Ok(());
         }
         let managers = self.manage_members()?;
@@ -554,10 +556,8 @@ impl Store {
         self.require_active_agent(target)?;
         self.require_tier(operator, Tier::Manage)?;
         self.refuse_manage_target(target)?;
-        self.conn.execute(
-            "UPDATE agents SET tier = 'publish' WHERE id = ?1",
-            [target],
-        )?;
+        self.conn
+            .execute("UPDATE agents SET tier = 'publish' WHERE id = ?1", [target])?;
         self.send_message_envelope(
             operator,
             target,
@@ -577,10 +577,8 @@ impl Store {
         if self.agent_tier(target)? != Some(Tier::Publish) {
             bail!("{target} is not at publish tier");
         }
-        self.conn.execute(
-            "UPDATE agents SET tier = 'execute' WHERE id = ?1",
-            [target],
-        )?;
+        self.conn
+            .execute("UPDATE agents SET tier = 'execute' WHERE id = ?1", [target])?;
         self.send_message_envelope(
             operator,
             target,

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +17,11 @@ const PAGE: &str = include_str!("web/page.html");
 const DEFAULT_UI_PORT: u16 = 4600;
 const IDLE_TIMEOUT_SECS: u64 = 5 * 60;
 
-pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[String]) -> Result<Value> {
+pub fn state_json(
+    store: &crate::store::Store,
+    workspace: &str,
+    templates: &[String],
+) -> Result<Value> {
     let now_ts = chrono::Utc::now().timestamp();
     let agents: Vec<Value> = store
         .list_agents(true)?
@@ -132,12 +136,7 @@ pub fn state_json(store: &crate::store::Store, workspace: &str, templates: &[Str
                             .at
                             .as_deref()
                             .and_then(|at| contract.works.get(at))
-                            .map(|d| {
-                                (
-                                    d.completion.outcomes.clone(),
-                                    d.completion.terminal.clone(),
-                                )
-                            })
+                            .map(|d| (d.completion.outcomes.clone(), d.completion.terminal.clone()))
                     })
                     .unwrap_or_default();
             json!({
@@ -205,7 +204,7 @@ fn acting_manager(store: &crate::store::Store) -> Result<String> {
 pub fn apply_action(
     store: &crate::store::Store,
     action: &Value,
-    workspace: &PathBuf,
+    workspace: &Path,
 ) -> Result<String> {
     let kind = action["type"].as_str().context("action needs a `type`")?;
     match kind {
@@ -238,31 +237,48 @@ pub fn apply_action(
         "set_executor" => {
             let work = action["work"].as_str().context("`work` required")?;
             let executor = action["executor"].as_str().context("`executor` required")?;
-            let executor = if executor == "-" { None } else { Some(executor) };
+            let executor = if executor == "-" {
+                None
+            } else {
+                Some(executor)
+            };
             let acting = acting_manager(store)?;
             store.set_work_executor(&acting, work, executor)?;
-            Ok(format!("station {work} executor → {}", executor.unwrap_or("(user station)")))
+            Ok(format!(
+                "station {work} executor → {}",
+                executor.unwrap_or("(user station)")
+            ))
         }
         "mission_create" => {
             let template = action["template"].as_str().context("`template` required")?;
             let key = action["key"].as_str().context("`key` required")?;
-            let template_path = workspace.join(".im").join("templates").join(format!("{template}.yaml"));
+            let template_path = workspace
+                .join(".im")
+                .join("templates")
+                .join(format!("{template}.yaml"));
             let bytes = std::fs::read(&template_path)
                 .with_context(|| format!("template '{template}' not found"))?;
             let parsed = crate::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
             let acting = acting_manager(store)?;
+            let source = crate::mission::TemplateSource {
+                template: &parsed,
+                path: format!(".im/templates/{template}.yaml"),
+                bytes: &bytes,
+            };
             let outcome = store.create_mission(
                 &acting,
-                &parsed,
-                &format!(".im/templates/{template}.yaml"),
-                &bytes,
+                &source,
                 key,
                 action["name"].as_str(),
                 action["objective"].as_str(),
             )?;
             Ok(format!(
                 "{} mission {}",
-                if outcome.existed { "existing" } else { "created" },
+                if outcome.existed {
+                    "existing"
+                } else {
+                    "created"
+                },
                 outcome.mission_id
             ))
         }
@@ -285,18 +301,18 @@ pub fn apply_action(
                 })
                 .unwrap_or_default();
             let acting = acting_manager(store)?;
-            let result = store.submit_mission(
-                &acting,
-                mission,
-                revision,
-                outcome,
-                action["next_node"].as_str(),
-                action["reason"].as_str(),
-                action["feedback"].as_str(),
-                &receipts,
-            )?;
+            let submission = crate::mission::RoundSubmission {
+                next_node: action["next_node"].as_str(),
+                reason: action["reason"].as_str(),
+                feedback: action["feedback"].as_str(),
+                receipt_ids: &receipts,
+            };
+            let result = store.submit_mission(&acting, mission, revision, outcome, &submission)?;
             if result.mission_ended {
-                Ok(format!("mission {mission} ended (revision {})", result.revision))
+                Ok(format!(
+                    "mission {mission} ended (revision {})",
+                    result.revision
+                ))
             } else {
                 Ok(format!(
                     "mission {mission} → {} (revision {})",
@@ -307,8 +323,14 @@ pub fn apply_action(
         }
         "work_create" => {
             let work = action["work"].as_str().context("`work` required")?;
-            let executor = action["executor"].as_str().context("`executor` required (\"-\" for a user station)")?;
-            let executor = if executor == "-" { None } else { Some(executor) };
+            let executor = action["executor"]
+                .as_str()
+                .context("`executor` required (\"-\" for a user station)")?;
+            let executor = if executor == "-" {
+                None
+            } else {
+                Some(executor)
+            };
             let acting = acting_manager(store)?;
             store.create_work(
                 &acting,
@@ -354,7 +376,11 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
     println!("Ctrl-C stops the server; it also exits after {IDLE_TIMEOUT_SECS}s with no requests.");
 
     if !no_open {
-        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
         let _ = std::process::Command::new(opener).arg(&url).spawn();
     }
 
@@ -441,7 +467,7 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
     Ok(())
 }
 
-fn handle(mut stream: TcpStream, workspace: &PathBuf) -> Result<()> {
+fn handle(mut stream: TcpStream, workspace: &Path) -> Result<()> {
     let request = match read_request(&mut stream) {
         Ok(request) => request,
         Err(_) => return Ok(()),
@@ -449,7 +475,12 @@ fn handle(mut stream: TcpStream, workspace: &PathBuf) -> Result<()> {
     let db_path = workspace.join(".im").join("im.db");
 
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/") => respond(&mut stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
+        ("GET", "/") => respond(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            PAGE.as_bytes(),
+        ),
         ("GET", "/api/state") => {
             let store = crate::store::Store::open(&db_path)?;
             let templates = list_templates(workspace);
@@ -480,21 +511,30 @@ fn handle(mut stream: TcpStream, workspace: &PathBuf) -> Result<()> {
                     &mut stream,
                     "200 OK",
                     "application/json",
-                    json!({ "ok": true, "message": message }).to_string().as_bytes(),
+                    json!({ "ok": true, "message": message })
+                        .to_string()
+                        .as_bytes(),
                 ),
                 Err(err) => respond(
                     &mut stream,
                     "200 OK",
                     "application/json",
-                    json!({ "ok": false, "error": err.to_string() }).to_string().as_bytes(),
+                    json!({ "ok": false, "error": err.to_string() })
+                        .to_string()
+                        .as_bytes(),
                 ),
             }
         }
-        _ => respond(&mut stream, "404 Not Found", "text/plain; charset=utf-8", b"not found"),
+        _ => respond(
+            &mut stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            b"not found",
+        ),
     }
 }
 
-fn list_templates(workspace: &PathBuf) -> Vec<String> {
+fn list_templates(workspace: &Path) -> Vec<String> {
     let dir = workspace.join(".im").join("templates");
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .into_iter()

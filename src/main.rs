@@ -354,7 +354,10 @@ fn cmd_history(args: Vec<String>) -> Result<()> {
             .map(|ts| ts.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| msg.created_at.to_string());
         let flag = if msg.read { "" } else { " (unread)" };
-        println!("[{stamp}] {} -> {}:{flag} {}", msg.from_agent, msg.to_agent, msg.content);
+        println!(
+            "[{stamp}] {} -> {}:{flag} {}",
+            msg.from_agent, msg.to_agent, msg.content
+        );
     }
     Ok(())
 }
@@ -573,7 +576,8 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
         .first()
         .context("Usage: im mission create <op> --template <name> --key <unique-key>")?;
     let template_name = flag_value(&args[1..], "--template")?.context("--template is required")?;
-    let idem_key = flag_value(&args[1..], "--key")?.context("--key (idempotency key) is required")?;
+    let idem_key =
+        flag_value(&args[1..], "--key")?.context("--key (idempotency key) is required")?;
     let name = flag_value(&args[1..], "--name")?;
     let objective = flag_value(&args[1..], "--objective")?;
 
@@ -587,11 +591,14 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
         .with_context(|| format!("template '{template_name}' not found in .im/templates/"))?;
     let template = im::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
 
+    let source = im::mission::TemplateSource {
+        template: &template,
+        path: format!(".im/templates/{template_name}.yaml"),
+        bytes: &bytes,
+    };
     let outcome = store.create_mission(
         manager,
-        &template,
-        &format!(".im/templates/{template_name}.yaml"),
-        &bytes,
+        &source,
         &idem_key,
         name.as_deref(),
         objective.as_deref(),
@@ -603,8 +610,15 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
         );
     } else {
         let mission = store.get_mission(&outcome.mission_id)?;
-        println!("Created mission {} — started at station '{}'", outcome.mission_id, mission.at.unwrap_or_default());
-        println!("  Next: im mission show {} --for <agent>", outcome.mission_id);
+        println!(
+            "Created mission {} — started at station '{}'",
+            outcome.mission_id,
+            mission.at.unwrap_or_default()
+        );
+        println!(
+            "  Next: im mission show {} --for <agent>",
+            outcome.mission_id
+        );
     }
     Ok(())
 }
@@ -617,17 +631,30 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
         let _ = agent;
     }
     let view = store.run_view(mission_id, for_agent)?;
-    println!("[mission {}] {} — {}", view.mission_id, view.name, view.status);
+    println!(
+        "[mission {}] {} — {}",
+        view.mission_id, view.name, view.status
+    );
     if !view.objective.is_empty() {
         println!("  objective: {}", view.objective);
     }
     match &view.at {
-        Some(at) => println!("  at station: {at} (iteration {})", view.iteration.unwrap_or(1)),
+        Some(at) => println!(
+            "  at station: {at} (iteration {})",
+            view.iteration.unwrap_or(1)
+        ),
         None => println!("  ended: {}", view.ended_note()),
     }
     println!("  revision: {}  ← submit must carry this", view.revision);
     if for_agent.is_some() {
-        println!("  on duty: {}", if view.on_duty { "YES — you hold this station" } else { "no (another executor or user station)" });
+        println!(
+            "  on duty: {}",
+            if view.on_duty {
+                "YES — you hold this station"
+            } else {
+                "no (another executor or user station)"
+            }
+        );
     }
     if let Some(prompt) = &view.prompt {
         println!("  prompt: {prompt}");
@@ -665,7 +692,10 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
                 .as_deref()
                 .map(|r| format!(" receipt={r}"))
                 .unwrap_or_default();
-            println!("    {} ({}) {}{} [{}]", doc.id, doc.kind, doc.path, receipt, rights);
+            println!(
+                "    {} ({}) {}{} [{}]",
+                doc.id, doc.kind, doc.path, receipt, rights
+            );
         }
     }
     Ok(())
@@ -685,25 +715,30 @@ fn cmd_mission_submit(args: &[String]) -> Result<()> {
     let reason = flag_value(&args[2..], "--reason")?;
     let feedback = flag_value(&args[2..], "--feedback")?;
     let receipts: Vec<String> = flag_value(&args[2..], "--receipts")?
-        .map(|raw| raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|raw| {
+            raw.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     ensure_agent(&store, agent)?;
     check_session(&workspace, &store, agent)?;
-    let outcome = store.submit_mission(
-        agent,
-        mission_id,
-        revision,
-        &outcome,
-        next_node.as_deref(),
-        reason.as_deref(),
-        feedback.as_deref(),
-        &receipts,
-    )?;
+    let submission = im::mission::RoundSubmission {
+        next_node: next_node.as_deref(),
+        reason: reason.as_deref(),
+        feedback: feedback.as_deref(),
+        receipt_ids: &receipts,
+    };
+    let outcome = store.submit_mission(agent, mission_id, revision, &outcome, &submission)?;
     if outcome.mission_ended {
-        println!("Mission {} ended (revision {}).", outcome.mission_id, outcome.revision);
+        println!(
+            "Mission {} ended (revision {}).",
+            outcome.mission_id, outcome.revision
+        );
     } else {
         println!(
             "Routed {} → {} (iteration {}, revision {}).",
@@ -717,7 +752,9 @@ fn cmd_mission_submit(args: &[String]) -> Result<()> {
 }
 
 fn cmd_mission_abandon(args: &[String]) -> Result<()> {
-    let agent = args.first().context("Usage: im mission abandon <agent> <ms> --revision <N> [--reason <text>]")?;
+    let agent = args
+        .first()
+        .context("Usage: im mission abandon <agent> <ms> --revision <N> [--reason <text>]")?;
     let mission_id = args.get(1).context("mission id is required")?;
     let revision: i64 = flag_value(&args[2..], "--revision")?
         .context("--revision is required")?
@@ -727,17 +764,23 @@ fn cmd_mission_abandon(args: &[String]) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     ensure_agent(&store, agent)?;
+    let submission = im::mission::RoundSubmission {
+        next_node: None,
+        reason: reason.as_deref(),
+        feedback: None,
+        receipt_ids: &[],
+    };
     let outcome = store.submit_mission(
         agent,
         mission_id,
         revision,
         im::contract::ABANDON,
-        None,
-        reason.as_deref(),
-        None,
-        &[],
+        &submission,
     )?;
-    println!("Mission {} abandoned (revision {}).", outcome.mission_id, outcome.revision);
+    println!(
+        "Mission {} abandoned (revision {}).",
+        outcome.mission_id, outcome.revision
+    );
     Ok(())
 }
 
@@ -849,8 +892,7 @@ fn cmd_inbox() -> Result<()> {
         println!("  → im mission show {}", mission.mission_id);
         println!(
             "  → resolve it: im mission submit <op> {} --revision {} --outcome <outcome>",
-            mission.mission_id,
-            mission.revision
+            mission.mission_id, mission.revision
         );
     }
     Ok(())
@@ -871,14 +913,27 @@ fn cmd_doctor() -> Result<()> {
         .collect();
     let orphaned: Vec<String> = stations
         .iter()
-        .filter(|work| work.executor.as_ref().map(|e| archived.contains(e)).unwrap_or(false))
-        .map(|work| format!("{} (held by {})", work.work_key, work.executor.clone().unwrap_or_default()))
+        .filter(|work| {
+            work.executor
+                .as_ref()
+                .map(|e| archived.contains(e))
+                .unwrap_or(false)
+        })
+        .map(|work| {
+            format!(
+                "{} (held by {})",
+                work.work_key,
+                work.executor.clone().unwrap_or_default()
+            )
+        })
         .collect();
     if orphaned.is_empty() {
         println!("OK: no archived agents guarding stations");
     } else {
         for entry in &orphaned {
-            println!("WARN: archived executor still on duty: {entry} — rebind with im work set-executor");
+            println!(
+                "WARN: archived executor still on duty: {entry} — rebind with im work set-executor"
+            );
         }
     }
 
@@ -919,7 +974,11 @@ fn cmd_ui(args: Vec<String>) -> Result<()> {
         match args[i].as_str() {
             "--port" => {
                 let value = args.get(i + 1).context("--port requires a value")?;
-                port = Some(value.parse().with_context(|| format!("invalid --port value: {value}"))?);
+                port = Some(
+                    value
+                        .parse()
+                        .with_context(|| format!("invalid --port value: {value}"))?,
+                );
                 i += 2;
             }
             "--no-open" => no_open = true,

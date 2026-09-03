@@ -26,15 +26,29 @@ fn state_json_exposes_the_console_data_contract() {
             .set_agent_tier("workspace", "boss", im::records::Tier::Manage)
             .unwrap();
     }
-    im(ws).args(["work", "create", "boss", "make", "--executor", "worker"]).assert().success();
-    im(ws).args(["work", "create", "boss", "approve"]).assert().success();
+    im(ws)
+        .args(["work", "create", "boss", "make", "--executor", "worker"])
+        .assert()
+        .success();
+    im(ws)
+        .args(["work", "create", "boss", "approve"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: make\nworks:\n  make:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  approve:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: make, when: done, to: approve}\n",
     )
     .unwrap();
     im(ws)
-        .args(["mission", "create", "boss", "--template", "t", "--key", "k1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "t",
+            "--key",
+            "k1",
+        ])
         .assert()
         .success();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
@@ -46,7 +60,18 @@ fn state_json_exposes_the_console_data_contract() {
 
     // Hop onto the user station so the inbox has a row.
     im(ws)
-        .args(["mission", "submit", "worker", &mission_id, "--revision", "1", "--outcome", "done", "--reason", "sign-off needed"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &mission_id,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+            "--reason",
+            "sign-off needed",
+        ])
         .assert()
         .success();
 
@@ -62,10 +87,18 @@ fn state_json_exposes_the_console_data_contract() {
         })
         .collect::<Vec<_>>();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
-    let state = im::ui::state_json(&store, &ws.to_str().unwrap(), &templates).unwrap();
+    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &templates).unwrap();
 
     // Top-level sections the page renders.
-    for key in ["workspace", "agents", "works", "missions", "inbox", "events", "templates"] {
+    for key in [
+        "workspace",
+        "agents",
+        "works",
+        "missions",
+        "inbox",
+        "events",
+        "templates",
+    ] {
         assert!(state.get(key).is_some(), "state_json missing {key}");
     }
     // The managers array retired with the tier ladder.
@@ -84,10 +117,16 @@ fn state_json_exposes_the_console_data_contract() {
 
     // Works carry executor and a holding count for the stations board.
     let works = state["works"].as_array().unwrap();
-    let make = works.iter().find(|w| w["work_key"] == "make").expect("make station");
+    let make = works
+        .iter()
+        .find(|w| w["work_key"] == "make")
+        .expect("make station");
     assert_eq!(make["executor"].as_str().unwrap(), "worker");
     assert_eq!(make["holding"].as_i64().unwrap(), 0, "mailbox moved on");
-    let approve = works.iter().find(|w| w["work_key"] == "approve").expect("user station");
+    let approve = works
+        .iter()
+        .find(|w| w["work_key"] == "approve")
+        .expect("user station");
     assert!(approve["executor"].is_null());
 
     // Missions carry at/revision; the inbox row carries the human reason.
@@ -106,7 +145,10 @@ fn state_json_exposes_the_console_data_contract() {
 
     // Events feed the delivery-history timeline.
     let events = state["events"].as_array().unwrap();
-    assert!(events.len() >= 2, "expected created+routed events, got {events:?}");
+    assert!(
+        events.len() >= 2,
+        "expected created+routed events, got {events:?}"
+    );
 }
 
 #[test]
@@ -127,8 +169,14 @@ fn console_can_set_the_first_manage_member_and_delete_one() {
         &ws,
     )
     .unwrap();
-    assert!(message.contains("set cursor → manage tier"), "got: {message}");
-    assert_eq!(store.agent_tier("cursor").unwrap(), Some(im::records::Tier::Manage));
+    assert!(
+        message.contains("set cursor → manage tier"),
+        "got: {message}"
+    );
+    assert_eq!(
+        store.agent_tier("cursor").unwrap(),
+        Some(im::records::Tier::Manage)
+    );
 
     // Bootstrap is enough for the rest of the console (create a station —
     // a user station, so the member stays deletable below).
@@ -144,7 +192,10 @@ fn console_can_set_the_first_manage_member_and_delete_one() {
         &ws,
     )
     .unwrap();
-    assert!(created.contains("station staging created"), "got: {created}");
+    assert!(
+        created.contains("station staging created"),
+        "got: {created}"
+    );
 
     // Console delete keeps full power over a manage-tier member.
     im::ui::apply_action(
@@ -187,7 +238,10 @@ fn state_json_lists_work_presets_for_the_create_modal() {
     assert_eq!(keys, vec!["design", "plan", "build", "review"]);
     for preset in presets {
         assert!(
-            preset["prompt"].as_str().unwrap().contains("{mission.objective}"),
+            preset["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("{mission.objective}"),
             "{}",
             preset["key"]
         );

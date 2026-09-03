@@ -17,7 +17,9 @@ pub const ANY: &str = "any";
 fn valid_work_key(key: &str) -> bool {
     !key.is_empty()
         && key.chars().next().unwrap().is_ascii_lowercase()
-        && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !key.contains("--")
         && !key.starts_with('-')
         && !key.ends_with('-')
@@ -25,7 +27,7 @@ fn valid_work_key(key: &str) -> bool {
 
 // --- Compiled contract (stored as contract_json on the mission) ---
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct Completion {
     pub outcomes: Vec<String>,
     pub terminal: Vec<String>,
@@ -60,7 +62,11 @@ pub struct RequireRef {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct Carry {
-    #[serde(rename = "feedbackFrom", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "feedbackFrom",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub feedback_from: Option<String>,
     #[serde(default)]
     pub documents: Vec<String>,
@@ -73,7 +79,11 @@ pub struct PathEdge {
     pub to: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carry: Option<Carry>,
-    #[serde(rename = "iterationPolicy", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "iterationPolicy",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub iteration_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<RequireRef>,
@@ -130,16 +140,6 @@ pub struct TemplateWork {
     pub document_rights: DocumentRights,
 }
 
-impl Default for Completion {
-    fn default() -> Self {
-        Completion {
-            outcomes: Vec::new(),
-            terminal: Vec::new(),
-            feedback_required_on: Vec::new(),
-        }
-    }
-}
-
 pub fn parse_template(text: &str) -> Result<MissionTemplate> {
     let template: MissionTemplate =
         serde_yaml::from_str(text).context("template is not valid YAML for the expected schema")?;
@@ -160,7 +160,11 @@ pub fn digest_hex(bytes: &[u8]) -> String {
 /// Compile a parsed template into the immutable contract carried by the
 /// mission. Structural self-validation only (vocabulary, paths, documents);
 /// station existence is checked against the project at create time.
-pub fn compile(template: &MissionTemplate, template_path: &str, template_bytes: &[u8]) -> Result<MissionContract> {
+pub fn compile(
+    template: &MissionTemplate,
+    template_path: &str,
+    template_bytes: &[u8],
+) -> Result<MissionContract> {
     let contract = MissionContract {
         template: Some(TemplateProvenance {
             path: template_path.to_string(),
@@ -189,10 +193,16 @@ pub fn compile(template: &MissionTemplate, template_path: &str, template_bytes: 
 
 pub fn validate_contract(contract: &MissionContract) -> Result<()> {
     if !valid_work_key(&contract.entry) {
-        bail!("entry work key {:?} is not a valid work key", contract.entry);
+        bail!(
+            "entry work key {:?} is not a valid work key",
+            contract.entry
+        );
     }
     if !contract.works.contains_key(&contract.entry) {
-        bail!("entry station {:?} has no discipline in this contract", contract.entry);
+        bail!(
+            "entry station {:?} has no discipline in this contract",
+            contract.entry
+        );
     }
 
     let declared: std::collections::BTreeSet<&str> =
@@ -202,7 +212,11 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
         if !valid_work_key(key) {
             bail!("work key {key:?} is not valid (lowercase kebab-case)");
         }
-        if discipline.completion.outcomes.contains(&ABANDON.to_string()) {
+        if discipline
+            .completion
+            .outcomes
+            .contains(&ABANDON.to_string())
+        {
             bail!("work {key}: outcome \"abandon\" is reserved and cannot be declared");
         }
         if discipline.completion.outcomes.is_empty() {
@@ -234,13 +248,23 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
 
     for edge in &contract.paths {
         if !contract.works.contains_key(&edge.from) {
-            bail!("path from {:?}: station has no discipline in this contract", edge.from);
+            bail!(
+                "path from {:?}: station has no discipline in this contract",
+                edge.from
+            );
         }
         if !contract.works.contains_key(&edge.to) {
-            bail!("path to {:?}: station has no discipline in this contract", edge.to);
+            bail!(
+                "path to {:?}: station has no discipline in this contract",
+                edge.to
+            );
         }
         if edge.when == ABANDON {
-            bail!("path {:?} -> {:?}: \"abandon\" is reserved", edge.from, edge.to);
+            bail!(
+                "path {:?} -> {:?}: \"abandon\" is reserved",
+                edge.from,
+                edge.to
+            );
         }
         let source = &contract.works[&edge.from].completion;
         if edge.when != ANY && !source.outcomes.contains(&edge.when) {
@@ -259,7 +283,10 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
         }
         if let Some(policy) = &edge.iteration_policy {
             if policy != "increment" && policy != "first" {
-                bail!("path from {:?}: iterationPolicy must be increment|first", edge.from);
+                bail!(
+                    "path from {:?}: iterationPolicy must be increment|first",
+                    edge.from
+                );
             }
         }
         for require in &edge.requires {
@@ -283,12 +310,18 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
         if let Some(carry) = &edge.carry {
             for id in &carry.documents {
                 if !declared.contains(id.as_str()) {
-                    bail!("path from {:?}: carry references undeclared document {id:?}", edge.from);
+                    bail!(
+                        "path from {:?}: carry references undeclared document {id:?}",
+                        edge.from
+                    );
                 }
             }
             if let Some(from) = &carry.feedback_from {
                 if !contract.works.contains_key(from) {
-                    bail!("path from {:?}: carry.feedbackFrom references unknown station {from:?}", edge.from);
+                    bail!(
+                        "path from {:?}: carry.feedbackFrom references unknown station {from:?}",
+                        edge.from
+                    );
                 }
             }
         }
@@ -320,12 +353,18 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
                     bail!("document {:?}: file paths never end in /", document.id);
                 }
                 if document.index.is_some() {
-                    bail!("document {:?}: only collections may declare an index", document.id);
+                    bail!(
+                        "document {:?}: only collections may declare an index",
+                        document.id
+                    );
                 }
             }
             _ => {
                 if !path.ends_with('/') {
-                    bail!("document {:?}: collection paths always end in /", document.id);
+                    bail!(
+                        "document {:?}: collection paths always end in /",
+                        document.id
+                    );
                 }
                 if let Some(index) = &document.index {
                     if index != "README.md" {
@@ -345,7 +384,9 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
 pub fn routes_for(contract: &MissionContract, work_key: &str) -> Vec<RouteRow> {
     let discipline = contract.works.get(work_key);
     let mut rows = Vec::new();
-    let outcomes = discipline.map(|d| d.completion.outcomes.clone()).unwrap_or_default();
+    let outcomes = discipline
+        .map(|d| d.completion.outcomes.clone())
+        .unwrap_or_default();
     for outcome in outcomes {
         let to: Vec<String> = contract
             .paths

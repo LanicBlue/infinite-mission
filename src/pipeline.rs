@@ -58,11 +58,9 @@ pub fn seed_pipeline_works(store: &crate::store::Store) -> Result<Vec<String>> {
         let key = preset.key;
         let exists: Option<i64> = store
             .conn
-            .query_row(
-                "SELECT 1 FROM works WHERE work_key = ?1",
-                [key],
-                |row| row.get(0),
-            )
+            .query_row("SELECT 1 FROM works WHERE work_key = ?1", [key], |row| {
+                row.get(0)
+            })
             .optional()?;
         if exists.is_none() {
             store.conn.execute(

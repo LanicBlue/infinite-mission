@@ -15,8 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::contract::{self, MissionContract, RouteRow};
 use crate::records::{
-    DocumentReceiptRecord, MissionEventRecord, MissionRecord, Tier, WorkNoteRecord,
-    WorkRecord,
+    DocumentReceiptRecord, MissionEventRecord, MissionRecord, Tier, WorkNoteRecord, WorkRecord,
 };
 use crate::store::Store;
 
@@ -137,7 +136,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_work_description(&self, manager: &str, work_key: &str, description: &str) -> Result<()> {
+    pub fn set_work_description(
+        &self,
+        manager: &str,
+        work_key: &str,
+        description: &str,
+    ) -> Result<()> {
         self.require_tier(manager, Tier::Manage)?;
         self.get_work(work_key)?;
         self.conn.execute(
@@ -206,9 +210,7 @@ impl Store {
     /// (mission_id, at, referenced stations) for every active mission. The
     /// reference set is entry ∪ works keys ∪ path endpoints (a mission's
     /// `at` always sits inside it).
-    fn active_mission_references(
-        &self,
-    ) -> Result<Vec<(String, Option<String>, BTreeSet<String>)>> {
+    fn active_mission_references(&self) -> Result<MissionReferences> {
         let mut stmt = self.conn.prepare(
             "SELECT mission_id, at, contract_json FROM missions WHERE status = 'active'",
         )?;
@@ -243,7 +245,9 @@ impl Store {
 fn contract_work_key(key: &str) -> bool {
     !key.is_empty()
         && key.chars().next().unwrap().is_ascii_lowercase()
-        && key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !key.contains("--")
         && !key.starts_with('-')
         && !key.ends_with('-')
@@ -273,15 +277,13 @@ impl Store {
     pub fn create_mission(
         &self,
         manager: &str,
-        template: &contract::MissionTemplate,
-        template_path: &str,
-        template_bytes: &[u8],
+        source: &TemplateSource,
         idempotency_key: &str,
         name_override: Option<&str>,
         objective_override: Option<&str>,
     ) -> Result<MissionCreateOutcome> {
         self.require_tier(manager, Tier::Publish)?;
-        let contract = contract::compile(template, template_path, template_bytes)?;
+        let contract = contract::compile(source.template, &source.path, source.bytes)?;
 
         // Station reference validation: every referenced station must exist
         // and be active — referenced stations are editable but not deletable
@@ -316,13 +318,16 @@ impl Store {
         }
 
         let name = name_override
-            .or(template.name.as_deref())
+            .or(source.template.name.as_deref())
             .unwrap_or("mission");
         let objective = objective_override
-            .or(template.objective.as_deref())
+            .or(source.template.objective.as_deref())
             .unwrap_or("");
         let workspace_id = self.workspace_id()?;
-        let mission_id = format!("ms_{}", &sha256_hex(&[&workspace_id, idempotency_key])[..32]);
+        let mission_id = format!(
+            "ms_{}",
+            &sha256_hex(&[&workspace_id, idempotency_key])[..32]
+        );
         let created = now();
 
         let tx = self.conn.unchecked_transaction()?;
@@ -356,11 +361,17 @@ impl Store {
                 "entry": contract.entry,
                 "name": name,
                 "objective": objective,
-                "template": {"path": template_path, "digest": contract.template.as_ref().map(|t| t.digest.clone()).unwrap_or_default()},
+                "template": {"path": source.path, "digest": contract.template.as_ref().map(|t| t.digest.clone()).unwrap_or_default()},
             }),
             created,
         )?;
-        insert_arrival_note(&tx, &contract.entry, &mission_id, &format!("[{mission_id}] {name}"), created)?;
+        insert_arrival_note(
+            &tx,
+            &contract.entry,
+            &mission_id,
+            &format!("[{mission_id}] {name}"),
+            created,
+        )?;
         tx.commit()?;
         Ok(MissionCreateOutcome {
             mission_id,
@@ -406,7 +417,11 @@ impl Store {
 
     /// Iteration is derived from routed events, never stored: scan newest
     /// first for the first delivery to this station.
-    pub fn standing_iteration(&self, mission: &MissionRecord, work_key: &str) -> Result<Option<i64>> {
+    pub fn standing_iteration(
+        &self,
+        mission: &MissionRecord,
+        work_key: &str,
+    ) -> Result<Option<i64>> {
         let events = self.mission_events(&mission.mission_id)?;
         for event in events.iter().rev() {
             if event.kind != EVENT_ROUTED {
@@ -477,18 +492,22 @@ impl Store {
         mission_id: &str,
         expected_revision: i64,
         outcome: &str,
-        next_node: Option<&str>,
-        reason: Option<&str>,
-        feedback: Option<&str>,
-        receipt_ids: &[String],
+        submission: &RoundSubmission,
     ) -> Result<SubmitOutcome> {
         self.require_active_agent(agent_id)?;
         let mission = self.get_mission(mission_id)?;
         if mission.status == "ended" {
-            bail!("Mission has already ended (disposition: {})",
-                mission.ended_disposition.unwrap_or_else(|| "unknown".to_string()));
+            bail!(
+                "Mission has already ended (disposition: {})",
+                mission
+                    .ended_disposition
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
         }
-        let at = mission.at.clone().context("active mission has no station")?;
+        let at = mission
+            .at
+            .clone()
+            .context("active mission has no station")?;
         if expected_revision != mission.revision {
             bail!(
                 "Mission state was superseded (current revision: {}); re-read the mission and retry",
@@ -512,14 +531,13 @@ impl Store {
             );
         }
         let contract = parse_contract(&mission.contract_json)?;
-        let discipline = contract
-            .works
-            .get(&at)
-            .with_context(|| format!("station '{at}' has no discipline in this mission's contract"))?;
+        let discipline = contract.works.get(&at).with_context(|| {
+            format!("station '{at}' has no discipline in this mission's contract")
+        })?;
 
         // Receipts: minted at THIS station, inside its write rights.
         let mut frozen_receipts = Vec::new();
-        for receipt_id in receipt_ids {
+        for receipt_id in submission.receipt_ids {
             let key_hash = receipt_id
                 .strip_prefix("document:")
                 .unwrap_or(receipt_id.as_str());
@@ -532,7 +550,11 @@ impl Store {
             if receipt.work_key != at {
                 bail!("receipt {receipt_id} was minted at another station");
             }
-            if !discipline.document_rights.write.contains(&receipt.document_id) {
+            if !discipline
+                .document_rights
+                .write
+                .contains(&receipt.document_id)
+            {
                 bail!(
                     "receipt {receipt_id} covers document {:?} which station '{at}' may not write",
                     receipt.document_id
@@ -545,15 +567,24 @@ impl Store {
 
         // abandon: always legal on an open round, never carries a next node.
         if outcome == contract::ABANDON {
-            if next_node.is_some() {
+            if submission.next_node.is_some() {
                 bail!("abandon does not accept a next node");
             }
-            if let Some(reason_text) = reason {
+            if let Some(reason_text) = submission.reason {
                 if reason_text.trim().is_empty() {
                     bail!("reason must be non-empty when given");
                 }
             }
-            return self.end_mission_tx(&mission, "abandoned", Some(&at), outcome, agent_id, reason, &frozen_receipts, user_station);
+            return self.end_mission_tx(
+                &mission,
+                "abandoned",
+                Some(&at),
+                outcome,
+                agent_id,
+                submission.reason,
+                &frozen_receipts,
+                user_station,
+            );
         }
 
         if !discipline.completion.outcomes.iter().any(|o| o == outcome) {
@@ -564,13 +595,18 @@ impl Store {
                 permitted.join(", ")
             );
         }
-        if discipline.completion.feedback_required_on.iter().any(|o| o == outcome) {
-            let feedback_text = feedback.unwrap_or("");
+        if discipline
+            .completion
+            .feedback_required_on
+            .iter()
+            .any(|o| o == outcome)
+        {
+            let feedback_text = submission.feedback.unwrap_or("");
             if feedback_text.trim().is_empty() {
                 bail!("outcome '{outcome}' requires non-empty feedback");
             }
         }
-        if let Some(reason_text) = reason {
+        if let Some(reason_text) = submission.reason {
             if reason_text.len() > 2000 || reason_text.trim().is_empty() {
                 bail!("reason must be 1..=2000 chars when given");
             }
@@ -584,13 +620,22 @@ impl Store {
             .collect();
 
         if terminal {
-            if next_node.is_some() {
+            if submission.next_node.is_some() {
                 bail!("terminal outcome '{outcome}' does not accept a next node");
             }
-            return self.end_mission_tx(&mission, "completed", Some(&at), outcome, agent_id, reason, &frozen_receipts, user_station);
+            return self.end_mission_tx(
+                &mission,
+                "completed",
+                Some(&at),
+                outcome,
+                agent_id,
+                submission.reason,
+                &frozen_receipts,
+                user_station,
+            );
         }
 
-        let chosen = match next_node {
+        let chosen = match submission.next_node {
             None => match edges.len() {
                 0 => bail!(
                     "outcome '{outcome}' has no contract continuation — choose a terminal outcome instead"
@@ -620,19 +665,30 @@ impl Store {
 
         // requires admission: every referenced round must have happened.
         for require in &chosen.requires {
-            let satisfied = self.round_completed(&mission.mission_id, &require.work_key, &require.outcome)?;
+            let satisfied =
+                self.round_completed(&mission.mission_id, &require.work_key, &require.outcome)?;
             if !satisfied {
                 bail!(
                     "edge to '{}' requires {} to have completed with outcome '{}' first",
-                    chosen.to, require.work_key, require.outcome
+                    chosen.to,
+                    require.work_key,
+                    require.outcome
                 );
             }
         }
 
         // A hop onto a user station requires a reason for the human.
         let destination = self.get_work(&chosen.to)?;
-        if destination.executor.is_none() && reason.map(|r| r.trim().is_empty()).unwrap_or(true) {
-            bail!("routing to user station '{}' requires a non-empty --reason", chosen.to);
+        if destination.executor.is_none()
+            && submission
+                .reason
+                .map(|r| r.trim().is_empty())
+                .unwrap_or(true)
+        {
+            bail!(
+                "routing to user station '{}' requires a non-empty --reason",
+                chosen.to
+            );
         }
 
         let target_standing = self.standing_iteration(&mission, &chosen.to)?.unwrap_or(0);
@@ -648,18 +704,32 @@ impl Store {
             "iteration": self.standing_iteration(&mission, &at)?.unwrap_or(1),
             "outcome": outcome,
             "resolvedBy": {"executorRef": agent_id, "plane": if user_station { "manager" } else { "agent" }},
-            "reason": reason,
-            "feedback": feedback,
+            "reason": submission.reason,
+            "feedback": submission.feedback,
             "documentReceipts": frozen_receipts,
         });
-        append_event(&tx, &mission.mission_id, EVENT_ROUND, round_payload, created)?;
+        append_event(
+            &tx,
+            &mission.mission_id,
+            EVENT_ROUND,
+            round_payload,
+            created,
+        )?;
         let new_revision = mission.revision + 1;
         let updated = tx.execute(
             "UPDATE missions SET at = ?1, revision = ?2 WHERE mission_id = ?3 AND revision = ?4",
-            params![chosen.to, new_revision, mission.mission_id, mission.revision],
+            params![
+                chosen.to,
+                new_revision,
+                mission.mission_id,
+                mission.revision
+            ],
         )?;
         if updated != 1 {
-            bail!("Mission state was superseded (current revision: {}); re-read and retry", mission.revision + 1);
+            bail!(
+                "Mission state was superseded (current revision: {}); re-read and retry",
+                mission.revision + 1
+            );
         }
         append_event(
             &tx,
@@ -678,7 +748,10 @@ impl Store {
             &tx,
             &chosen.to,
             &mission.mission_id,
-            &format!("[{}] {} → {} (round: {})", mission.mission_id, at, chosen.to, outcome),
+            &format!(
+                "[{}] {} → {} (round: {})",
+                mission.mission_id, at, chosen.to, outcome
+            ),
             created,
         )?;
         tx.commit()?;
@@ -698,11 +771,16 @@ impl Store {
             if event.kind != EVENT_ROUND {
                 return false;
             }
-            let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap_or_default();
-            payload["workKey"] == serde_json::json!(work_key) && payload["outcome"] == serde_json::json!(outcome)
+            let payload: serde_json::Value =
+                serde_json::from_str(&event.payload).unwrap_or_default();
+            payload["workKey"] == serde_json::json!(work_key)
+                && payload["outcome"] == serde_json::json!(outcome)
         }))
     }
 
+    /// Private adjudication plumbing: the parameter list mirrors the end
+    /// stages one to one (disposition → attribution → receipts → plane).
+    #[allow(clippy::too_many_arguments)]
     fn end_mission_tx(
         &self,
         mission: &MissionRecord,
@@ -809,7 +887,12 @@ impl Store {
     }
 
     /// Manager delete: disposition=deleted, not attributed to any round.
-    pub fn delete_mission(&self, manager: &str, mission_id: &str, reason: Option<&str>) -> Result<()> {
+    pub fn delete_mission(
+        &self,
+        manager: &str,
+        mission_id: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
         self.require_tier(manager, Tier::Manage)?;
         let mission = self.get_mission(mission_id)?;
         if mission.status == "ended" {
@@ -914,6 +997,28 @@ pub struct SubmitOutcome {
     pub mission_ended: bool,
 }
 
+/// Round payload beyond the identity/CAS core: where the round's findings
+/// go. Mirrors the submit CLI flags one to one.
+pub struct RoundSubmission<'a> {
+    pub next_node: Option<&'a str>,
+    pub reason: Option<&'a str>,
+    pub feedback: Option<&'a str>,
+    pub receipt_ids: &'a [String],
+}
+
+/// The loaded template: parsed model, its display path, and the exact bytes
+/// the contract hashes.
+pub struct TemplateSource<'a> {
+    pub template: &'a contract::MissionTemplate,
+    pub path: String,
+    pub bytes: &'a [u8],
+}
+
+/// (mission_id, at, referenced stations) per active mission. The reference
+/// set is entry ∪ works keys ∪ path endpoints; a mission's `at` always
+/// sits inside it.
+pub type MissionReferences = Vec<(String, Option<String>, BTreeSet<String>)>;
+
 fn map_mission_row(row: &rusqlite::Row) -> rusqlite::Result<MissionRecord> {
     Ok(MissionRecord {
         mission_id: row.get(0)?,
@@ -1011,7 +1116,9 @@ impl Store {
             .documents
             .iter()
             .find(|d| d.id == document_id)
-            .with_context(|| format!("document id {document_id:?} is not declared by the mission contract"))?;
+            .with_context(|| {
+                format!("document id {document_id:?} is not declared by the mission contract")
+            })?;
         if !discipline.document_rights.write.contains(&declaration.id) {
             bail!(
                 "station '{at}' may not write document {:?} (not in its documentRights.write)",
@@ -1023,7 +1130,10 @@ impl Store {
 
         let content_sha = {
             let digest = Sha256::digest(content);
-            digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         let key_hash = sha256_hex(&[mission_id, &declaration.path, &content_sha]);
 
@@ -1085,12 +1195,7 @@ impl Store {
     /// Document access follows the station's on-duty rule: the bound
     /// executor, or — at a user station — any manage-tier member (mirroring
     /// run_view's on-duty projection and submit's resolution of user stations).
-    fn require_doc_on_duty(
-        &self,
-        agent_id: &str,
-        work: &WorkRecord,
-        action: &str,
-    ) -> Result<()> {
+    fn require_doc_on_duty(&self, agent_id: &str, work: &WorkRecord, action: &str) -> Result<()> {
         match work.executor.as_deref() {
             None => self.require_tier(agent_id, Tier::Manage).with_context(|| {
                 format!(
@@ -1099,9 +1204,9 @@ impl Store {
                 )
             }),
             Some(executor) if executor == agent_id => Ok(()),
-            Some(executor) => bail!(
-                "Document {action}s belong to the station's on-duty executor ({executor})"
-            ),
+            Some(executor) => {
+                bail!("Document {action}s belong to the station's on-duty executor ({executor})")
+            }
         }
     }
 
@@ -1170,7 +1275,8 @@ impl Store {
                 let discipline = contract.works.get(at);
                 let iteration = self.standing_iteration(&mission, at)?;
                 let reason = self.last_round_reason(&mission.mission_id)?;
-                let from = self.last_routed_from(&mission.mission_id)
+                let from = self
+                    .last_routed_from(&mission.mission_id)
                     .unwrap_or_else(|| mission.created_by.clone());
                 let prompt = if work.prompt.is_empty() {
                     None

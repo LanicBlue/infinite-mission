@@ -96,13 +96,27 @@ fn setup() -> (Fixture, String) {
     )
     .unwrap();
     im(&workspace)
-        .args(["mission", "create", "boss", "--template", "review", "--key", "v1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "review",
+            "--key",
+            "v1",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Created mission ms_"));
 
     let mission_id = first_mission_id(&workspace);
-    (Fixture { _tmp: tmp, workspace }, mission_id)
+    (
+        Fixture {
+            _tmp: tmp,
+            workspace,
+        },
+        mission_id,
+    )
 }
 
 /// Seed a member tier directly (console path; the bare CLI grant retired).
@@ -127,12 +141,22 @@ fn mission_create_is_idempotent_by_key() {
     let ws = fixture.workspace;
     // Same key → same mission, no duplicate.
     im(&ws)
-        .args(["mission", "create", "boss", "--template", "review", "--key", "v1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "review",
+            "--key",
+            "v1",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("already exists"));
     let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
-    let count: i64 = db.query_row("SELECT COUNT(*) FROM missions", [], |r| r.get(0)).unwrap();
+    let count: i64 = db
+        .query_row("SELECT COUNT(*) FROM missions", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(count, 1);
     let _ = mission_id;
 }
@@ -156,7 +180,17 @@ fn templates_are_validated_fail_closed() {
     for (index, (body, expected)) in cases.iter().enumerate() {
         std::fs::write(templates.join(format!("bad{index}.yaml")), body).unwrap();
         im(&ws)
-            .args(["mission", "create", "boss", "--project", "demo", "--template", &format!("bad{index}"), "--key", &format!("k{index}")])
+            .args([
+                "mission",
+                "create",
+                "boss",
+                "--project",
+                "demo",
+                "--template",
+                &format!("bad{index}"),
+                "--key",
+                &format!("k{index}"),
+            ])
             .assert()
             .failure()
             .stderr(predicate::str::contains(*expected));
@@ -173,7 +207,17 @@ fn unknown_station_references_are_rejected() {
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "create", "boss", "--project", "demo", "--template", "ghost", "--key", "g1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--project",
+            "demo",
+            "--template",
+            "ghost",
+            "--key",
+            "g1",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown stations: ghost"));
@@ -186,35 +230,86 @@ fn submit_adjudication_matrix() {
 
     // CAS: stale revision is rejected with the current one surfaced.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "9", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "9",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Mission state was superseded (current revision: 1)"));
+        .stderr(predicate::str::contains(
+            "Mission state was superseded (current revision: 1)",
+        ));
 
     // Attribution: an agent who is not on duty is rejected.
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Mission belongs to another executor"));
+        .stderr(predicate::str::contains(
+            "Mission belongs to another executor",
+        ));
 
     // Vocabulary: outcome outside the station language is rejected with permitted list.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "pass"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "pass",
+        ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("permitted: done, need-rework, abandon"));
+        .stderr(predicate::str::contains(
+            "permitted: done, need-rework, abandon",
+        ));
 
     // Auto-follow: exactly one edge → no --next-node needed.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Routed"));
 
     // feedbackRequiredOn: fail without feedback is rejected.
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "2", "--outcome", "fail"])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "fail",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires non-empty feedback"));
@@ -226,14 +321,29 @@ fn submit_adjudication_matrix() {
     // an outcome lacking an exact edge: pass is terminal so use approval side.
     // Instead verify explicit next-node rejection for a non-candidate.
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "2", "--outcome", "fail", "--feedback", "fix it", "--next-node", "make"])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "fail",
+            "--feedback",
+            "fix it",
+            "--next-node",
+            "make",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("iteration 2"));
 
     // Receipts minted at another station are rejected.
     im(&ws)
-        .args(["mission", "doc", "write", "worker", &ms, "--id", "impl", "--file", "-"])
+        .args([
+            "mission", "doc", "write", "worker", &ms, "--id", "impl", "--file", "-",
+        ])
         .write_stdin("v2 content")
         .assert()
         .success();
@@ -247,25 +357,67 @@ fn submit_adjudication_matrix() {
         .unwrap()
     };
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "3", "--outcome", "done", "--receipts", &format!("document:{receipt}")])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "3",
+            "--outcome",
+            "done",
+            "--receipts",
+            &format!("document:{receipt}"),
+        ])
         .assert()
         .success();
 
     // Inspector submits a bogus receipt → rejected (minted at build, not review).
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "4", "--outcome", "fail", "--feedback", "again", "--receipts", &format!("document:{receipt}")])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "4",
+            "--outcome",
+            "fail",
+            "--feedback",
+            "again",
+            "--receipts",
+            &format!("document:{receipt}"),
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("minted at another station"));
 
     // Terminal outcome ends the mission.
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "4", "--outcome", "pass"])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "4",
+            "--outcome",
+            "pass",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("ended"));
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "5", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "5",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("Mission has already ended"));
@@ -279,14 +431,31 @@ fn abandon_and_manager_delete_endings() {
     // Abandon via the dedicated verb requires the current revision and is
     // always legal.
     im(&ws)
-        .args(["mission", "abandon", "worker", &ms, "--revision", "1", "--reason", "blocked on spec"])
+        .args([
+            "mission",
+            "abandon",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--reason",
+            "blocked on spec",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("abandoned"));
 
     // Second mission: manager delete path.
     im(&ws)
-        .args(["mission", "create", "boss", "--template", "review", "--key", "v2"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "review",
+            "--key",
+            "v2",
+        ])
         .assert()
         .success();
     let ms2 = {
@@ -316,7 +485,9 @@ fn documents_are_content_addressed_and_right_scoped() {
 
     // Same bytes → same receipt.
     let first = im(&ws)
-        .args(["mission", "doc", "write", "worker", &ms, "--id", "impl", "--file", "-"])
+        .args([
+            "mission", "doc", "write", "worker", &ms, "--id", "impl", "--file", "-",
+        ])
         .write_stdin("hello")
         .assert()
         .success()
@@ -324,22 +495,31 @@ fn documents_are_content_addressed_and_right_scoped() {
         .stdout
         .clone();
     let second = im(&ws)
-        .args(["mission", "doc", "write", "worker", &ms, "--id", "impl", "--file", "-"])
+        .args([
+            "mission", "doc", "write", "worker", &ms, "--id", "impl", "--file", "-",
+        ])
         .write_stdin("hello")
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
-    assert_eq!(String::from_utf8_lossy(&first), String::from_utf8_lossy(&second));
+    assert_eq!(
+        String::from_utf8_lossy(&first),
+        String::from_utf8_lossy(&second)
+    );
 
     // Undeclared document id is rejected; the contract fixes the path.
     im(&ws)
-        .args(["mission", "doc", "write", "worker", &ms, "--id", "ghost", "--file", "-"])
+        .args([
+            "mission", "doc", "write", "worker", &ms, "--id", "ghost", "--file", "-",
+        ])
         .write_stdin("x")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not declared by the mission contract"));
+        .stderr(predicate::str::contains(
+            "not declared by the mission contract",
+        ));
 
     // Write right ≠ read right: worker wrote impl but may not read it.
     im(&ws)
@@ -360,7 +540,16 @@ fn documents_are_content_addressed_and_right_scoped() {
     // Mailbox moves on → the former executor loses the read. Review holds
     // read:impl, but worker is not review's executor anymore.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .success();
     im(&ws)
@@ -376,7 +565,16 @@ fn documents_are_content_addressed_and_right_scoped() {
         .stdout(predicate::str::contains("hello"));
     // After the mission ends, reads close for everyone.
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "2", "--outcome", "pass"])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "pass",
+        ])
         .assert()
         .success();
     im(&ws)
@@ -400,12 +598,32 @@ fn rebind_is_a_pointer_move_not_a_migration() {
 
     // Old identity can no longer submit; new one can, same mission, same revision.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Mission belongs to another executor"));
+        .stderr(predicate::str::contains(
+            "Mission belongs to another executor",
+        ));
     im(&ws)
-        .args(["mission", "submit", "worker-2", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker-2",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .success();
 
@@ -420,8 +638,14 @@ fn rebind_is_a_pointer_move_not_a_migration() {
             .clone(),
     )
     .unwrap();
-    assert!(inbox.contains(&ms[..12]), "arrival note missing for worker-2: {inbox}");
-    assert!(inbox.contains("station"), "note should name the station: {inbox}");
+    assert!(
+        inbox.contains(&ms[..12]),
+        "arrival note missing for worker-2: {inbox}"
+    );
+    assert!(
+        inbox.contains("station"),
+        "note should name the station: {inbox}"
+    );
 }
 
 #[test]
@@ -433,8 +657,14 @@ fn user_stations_need_a_reason_and_surface_in_inbox() {
     im(&ws).args(["join", "worker"]).assert().success();
     seed_tier(&ws, "boss", "manage");
     // make has an executor; approve is a USER station (no executor).
-    im(&ws).args(["work", "create", "boss", "make", "--executor", "worker"]).assert().success();
-    im(&ws).args(["work", "create", "boss", "approve"]).assert().success();
+    im(&ws)
+        .args(["work", "create", "boss", "make", "--executor", "worker"])
+        .assert()
+        .success();
+    im(&ws)
+        .args(["work", "create", "boss", "approve"])
+        .assert()
+        .success();
 
     std::fs::write(
         ws.join(".im").join("templates").join("handoff.yaml"),
@@ -456,26 +686,56 @@ paths:
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "create", "boss", "--template", "handoff", "--key", "h1"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "handoff",
+            "--key",
+            "h1",
+        ])
         .assert()
         .success();
     let ms = first_mission_id(&ws);
 
     // Hop onto the user station without a reason → rejected.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires a non-empty --reason"));
 
     // With a reason it lands; the inbox shows it waiting for a human.
     im(&ws)
-        .args(["mission", "doc", "write", "worker", &ms, "--id", "spec", "--file", "-"])
+        .args([
+            "mission", "doc", "write", "worker", &ms, "--id", "spec", "--file", "-",
+        ])
         .write_stdin("handoff spec")
         .assert()
         .success();
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done", "--reason", "needs your sign-off"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+            "--reason",
+            "needs your sign-off",
+        ])
         .assert()
         .success();
     im(&ws)
@@ -501,7 +761,16 @@ paths:
 
     // A non-manager may NOT resolve a user station.
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "2", "--outcome", "ok"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "ok",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("resolved by a manage-tier member"));
@@ -509,7 +778,16 @@ paths:
     // The manager resolves it; the terminal outcome ends the mission, and
     // the round records the manager plane.
     im(&ws)
-        .args(["mission", "submit", "boss", &ms, "--revision", "2", "--outcome", "ok"])
+        .args([
+            "mission",
+            "submit",
+            "boss",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "ok",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("ended"));
@@ -530,11 +808,33 @@ fn events_are_the_history_and_iteration_derives() {
     let (fixture, ms) = setup();
     let ws = fixture.workspace;
     im(&ws)
-        .args(["mission", "submit", "worker", &ms, "--revision", "1", "--outcome", "done"])
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "done",
+        ])
         .assert()
         .success();
     im(&ws)
-        .args(["mission", "submit", "inspector", &ms, "--revision", "2", "--outcome", "fail", "--feedback", "redo", "--next-node", "make"])
+        .args([
+            "mission",
+            "submit",
+            "inspector",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "fail",
+            "--feedback",
+            "redo",
+            "--next-node",
+            "make",
+        ])
         .assert()
         .success();
     let events = String::from_utf8(
@@ -566,9 +866,12 @@ fn events_are_the_history_and_iteration_derives() {
 #[test]
 fn pipeline_template_compiles_and_holds_the_designed_routing() {
     let template = im::contract::parse_template(im::pipeline::PIPELINE_TEMPLATE).unwrap();
-    let contract =
-        im::contract::compile(&template, "pipeline.yaml", im::pipeline::PIPELINE_TEMPLATE.as_bytes())
-            .unwrap();
+    let contract = im::contract::compile(
+        &template,
+        "pipeline.yaml",
+        im::pipeline::PIPELINE_TEMPLATE.as_bytes(),
+    )
+    .unwrap();
 
     assert_eq!(contract.entry, "design");
     // The grill happens in the design session conversation, not in mission
@@ -577,11 +880,18 @@ fn pipeline_template_compiles_and_holds_the_designed_routing() {
     assert!(!contract.works.contains_key("owner"));
     assert_eq!(
         design.completion.outcomes,
-        vec!["spec-ready".to_string(), "accept".to_string(), "reject".to_string()]
+        vec![
+            "spec-ready".to_string(),
+            "accept".to_string(),
+            "reject".to_string()
+        ]
     );
     // accept is terminal at design and carries no out-edge.
     assert!(design.completion.terminal.contains(&"accept".to_string()));
-    assert!(!contract.paths.iter().any(|e| e.from == "design" && e.when == "accept"));
+    assert!(!contract
+        .paths
+        .iter()
+        .any(|e| e.from == "design" && e.when == "accept"));
     // The final gate: review approved routes back to design with increment.
     let approved = contract
         .paths
@@ -591,10 +901,17 @@ fn pipeline_template_compiles_and_holds_the_designed_routing() {
     assert_eq!(approved.to, "design");
     assert_eq!(approved.iteration_policy.as_deref(), Some("increment"));
     // Rights: build works from the goal only, never the spec.
-    assert!(!contract.works["build"].document_rights.read.contains(&"spec".to_string()));
+    assert!(!contract.works["build"]
+        .document_rights
+        .read
+        .contains(&"spec".to_string()));
     // Every preset charter keeps the interpolation slots.
     for preset in im::pipeline::PRESETS {
-        assert!(preset.prompt.contains("{mission.objective}"), "{}", preset.key);
+        assert!(
+            preset.prompt.contains("{mission.objective}"),
+            "{}",
+            preset.key
+        );
         assert!(preset.prompt.contains("{mission.reason}"), "{}", preset.key);
     }
 }
@@ -609,18 +926,39 @@ fn setup_pipeline() -> (Fixture, String) {
         im(&workspace).args(["join", id]).assert().success();
     }
     seed_tier(&workspace, "boss", "manage");
-    for (work, agent) in [("design", "arch"), ("plan", "strategist"), ("build", "coder"), ("review", "auditor")] {
+    for (work, agent) in [
+        ("design", "arch"),
+        ("plan", "strategist"),
+        ("build", "coder"),
+        ("review", "auditor"),
+    ] {
         im(&workspace)
             .args(["work", "set-executor", "boss", work, agent])
             .assert()
             .success();
     }
     im(&workspace)
-        .args(["mission", "create", "boss", "--template", "pipeline", "--key", "p1", "--objective", "ship the widget"])
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "pipeline",
+            "--key",
+            "p1",
+            "--objective",
+            "ship the widget",
+        ])
         .assert()
         .success();
     let mission_id = first_mission_id(&workspace);
-    (Fixture { _tmp: tmp, workspace }, mission_id)
+    (
+        Fixture {
+            _tmp: tmp,
+            workspace,
+        },
+        mission_id,
+    )
 }
 
 #[test]
@@ -632,7 +970,9 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
     // design parking the frozen SPEC (receipt) and forwarding to plan.
     let spec_receipt = String::from_utf8(
         im(&ws)
-            .args(["mission", "doc", "write", "arch", &ms, "--id", "spec", "--file", "-"])
+            .args([
+                "mission", "doc", "write", "arch", &ms, "--id", "spec", "--file", "-",
+            ])
             .write_stdin("# SPEC\nfixed")
             .assert()
             .success()
@@ -642,13 +982,36 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "submit", "arch", &ms, "--revision", "1", "--outcome", "spec-ready", "--receipts", spec_receipt.trim(), "--reason", "spec frozen from the session conversation"])
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "spec-ready",
+            "--receipts",
+            spec_receipt.trim(),
+            "--reason",
+            "spec frozen from the session conversation",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("→ plan"));
     let goal_receipt = String::from_utf8(
         im(&ws)
-            .args(["mission", "doc", "write", "strategist", &ms, "--id", "goal", "--file", "-"])
+            .args([
+                "mission",
+                "doc",
+                "write",
+                "strategist",
+                &ms,
+                "--id",
+                "goal",
+                "--file",
+                "-",
+            ])
             .write_stdin("# GOAL\n- [ ] widget ships")
             .assert()
             .success()
@@ -658,12 +1021,25 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "submit", "strategist", &ms, "--revision", "2", "--outcome", "goal-ready", "--receipts", goal_receipt.trim()])
+        .args([
+            "mission",
+            "submit",
+            "strategist",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "goal-ready",
+            "--receipts",
+            goal_receipt.trim(),
+        ])
         .assert()
         .success();
     let impl_receipt = String::from_utf8(
         im(&ws)
-            .args(["mission", "doc", "write", "coder", &ms, "--id", "impl", "--file", "-"])
+            .args([
+                "mission", "doc", "write", "coder", &ms, "--id", "impl", "--file", "-",
+            ])
             .write_stdin("# RECEIPT\nbaseline: abc123\ncriterion 1: satisfied (test)")
             .assert()
             .success()
@@ -673,19 +1049,43 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "submit", "coder", &ms, "--revision", "3", "--outcome", "done", "--receipts", impl_receipt.trim(), "--reason", "widget built"])
+        .args([
+            "mission",
+            "submit",
+            "coder",
+            &ms,
+            "--revision",
+            "3",
+            "--outcome",
+            "done",
+            "--receipts",
+            impl_receipt.trim(),
+            "--reason",
+            "widget built",
+        ])
         .assert()
         .success();
 
     // review requires feedback on rework — the findings channel.
     im(&ws)
-        .args(["mission", "submit", "auditor", &ms, "--revision", "4", "--outcome", "rework"])
+        .args([
+            "mission",
+            "submit",
+            "auditor",
+            &ms,
+            "--revision",
+            "4",
+            "--outcome",
+            "rework",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires non-empty feedback"));
     let review_receipt = String::from_utf8(
         im(&ws)
-            .args(["mission", "doc", "write", "auditor", &ms, "--id", "review", "--file", "-"])
+            .args([
+                "mission", "doc", "write", "auditor", &ms, "--id", "review", "--file", "-",
+            ])
             .write_stdin("# REVIEW\nF1: no test for the widget")
             .assert()
             .success()
@@ -695,7 +1095,22 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
     )
     .unwrap();
     im(&ws)
-        .args(["mission", "submit", "auditor", &ms, "--revision", "4", "--outcome", "rework", "--feedback", "F1: no test for the widget", "--reason", "F1", "--receipts", review_receipt.trim()])
+        .args([
+            "mission",
+            "submit",
+            "auditor",
+            &ms,
+            "--revision",
+            "4",
+            "--outcome",
+            "rework",
+            "--feedback",
+            "F1: no test for the widget",
+            "--reason",
+            "F1",
+            "--receipts",
+            review_receipt.trim(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("iteration 2"));
@@ -707,11 +1122,33 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
         .success()
         .stdout(predicate::str::contains("F1"));
     im(&ws)
-        .args(["mission", "submit", "coder", &ms, "--revision", "5", "--outcome", "done", "--reason", "F1 fixed"])
+        .args([
+            "mission",
+            "submit",
+            "coder",
+            &ms,
+            "--revision",
+            "5",
+            "--outcome",
+            "done",
+            "--reason",
+            "F1 fixed",
+        ])
         .assert()
         .success();
     im(&ws)
-        .args(["mission", "submit", "auditor", &ms, "--revision", "6", "--outcome", "approved", "--reason", "criterion 1 satisfied with test"])
+        .args([
+            "mission",
+            "submit",
+            "auditor",
+            &ms,
+            "--revision",
+            "6",
+            "--outcome",
+            "approved",
+            "--reason",
+            "criterion 1 satisfied with test",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("iteration 2"));
@@ -723,7 +1160,18 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
         .success()
         .stdout(predicate::str::contains("criterion 1 satisfied"));
     im(&ws)
-        .args(["mission", "submit", "arch", &ms, "--revision", "7", "--outcome", "accept", "--reason", "delivery honors the spec"])
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "7",
+            "--outcome",
+            "accept",
+            "--reason",
+            "delivery honors the spec",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("ended"));
@@ -749,44 +1197,316 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
     let ws = fixture.workspace;
 
     // plan finds the spec uncompilable → spec-gap returns to design.
-    im(&ws).args(["mission", "submit", "arch", &ms, "--revision", "1", "--outcome", "spec-ready", "--reason", "spec v0"]).assert().success();
     im(&ws)
-        .args(["mission", "submit", "strategist", &ms, "--revision", "2", "--outcome", "spec-gap", "--feedback", "no decision on the data model", "--reason", "gap: data model"])
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "spec-ready",
+            "--reason",
+            "spec v0",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "strategist",
+            &ms,
+            "--revision",
+            "2",
+            "--outcome",
+            "spec-gap",
+            "--feedback",
+            "no decision on the data model",
+            "--reason",
+            "gap: data model",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("→ design"));
     // design revises → plan recompiles → build blocks on the goal → plan.
-    im(&ws).args(["mission", "submit", "arch", &ms, "--revision", "3", "--outcome", "spec-ready", "--reason", "spec v1"]).assert().success();
-    im(&ws).args(["mission", "submit", "strategist", &ms, "--revision", "4", "--outcome", "goal-ready", "--reason", "goal v1"]).assert().success();
     im(&ws)
-        .args(["mission", "submit", "coder", &ms, "--revision", "5", "--outcome", "blocked", "--feedback", "goal step 2 contradicts step 1", "--reason", "blocked at step 2"])
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "3",
+            "--outcome",
+            "spec-ready",
+            "--reason",
+            "spec v1",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "strategist",
+            &ms,
+            "--revision",
+            "4",
+            "--outcome",
+            "goal-ready",
+            "--reason",
+            "goal v1",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "coder",
+            &ms,
+            "--revision",
+            "5",
+            "--outcome",
+            "blocked",
+            "--feedback",
+            "goal step 2 contradicts step 1",
+            "--reason",
+            "blocked at step 2",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("→ plan"));
     // plan recompiles → build delivers → review finds the goal itself wrong.
-    im(&ws).args(["mission", "submit", "strategist", &ms, "--revision", "6", "--outcome", "goal-ready", "--reason", "goal v2"]).assert().success();
-    im(&ws).args(["mission", "submit", "coder", &ms, "--revision", "7", "--outcome", "done", "--reason", "built per goal v2"]).assert().success();
     im(&ws)
-        .args(["mission", "submit", "auditor", &ms, "--revision", "8", "--outcome", "spec-gap", "--feedback", "criteria assume the old API", "--reason", "goal wrong: old API"])
+        .args([
+            "mission",
+            "submit",
+            "strategist",
+            &ms,
+            "--revision",
+            "6",
+            "--outcome",
+            "goal-ready",
+            "--reason",
+            "goal v2",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "coder",
+            &ms,
+            "--revision",
+            "7",
+            "--outcome",
+            "done",
+            "--reason",
+            "built per goal v2",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "auditor",
+            &ms,
+            "--revision",
+            "8",
+            "--outcome",
+            "spec-gap",
+            "--feedback",
+            "criteria assume the old API",
+            "--reason",
+            "goal wrong: old API",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("→ design"));
     // The full close: re-freeze → re-compile → build → approved → the gate
     // rejects (implementation deviation) → build repairs → gate accepts.
-    im(&ws).args(["mission", "submit", "arch", &ms, "--revision", "9", "--outcome", "spec-ready", "--reason", "spec v2"]).assert().success();
-    im(&ws).args(["mission", "submit", "strategist", &ms, "--revision", "10", "--outcome", "goal-ready", "--reason", "goal v3"]).assert().success();
-    im(&ws).args(["mission", "submit", "coder", &ms, "--revision", "11", "--outcome", "done", "--reason", "built per goal v3"]).assert().success();
-    im(&ws).args(["mission", "submit", "auditor", &ms, "--revision", "12", "--outcome", "approved", "--reason", "criteria met"]).assert().success();
     im(&ws)
-        .args(["mission", "submit", "arch", &ms, "--revision", "13", "--outcome", "reject", "--feedback", "1) deviates from spec v2 section 2", "--reason", "deviation at section 2"])
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "9",
+            "--outcome",
+            "spec-ready",
+            "--reason",
+            "spec v2",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "strategist",
+            &ms,
+            "--revision",
+            "10",
+            "--outcome",
+            "goal-ready",
+            "--reason",
+            "goal v3",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "coder",
+            &ms,
+            "--revision",
+            "11",
+            "--outcome",
+            "done",
+            "--reason",
+            "built per goal v3",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "auditor",
+            &ms,
+            "--revision",
+            "12",
+            "--outcome",
+            "approved",
+            "--reason",
+            "criteria met",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "13",
+            "--outcome",
+            "reject",
+            "--feedback",
+            "1) deviates from spec v2 section 2",
+            "--reason",
+            "deviation at section 2",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("→ build"));
-    im(&ws).args(["mission", "submit", "coder", &ms, "--revision", "14", "--outcome", "done", "--reason", "fixed section 2"]).assert().success();
-    im(&ws).args(["mission", "submit", "auditor", &ms, "--revision", "15", "--outcome", "approved", "--reason", "all green"]).assert().success();
     im(&ws)
-        .args(["mission", "submit", "arch", &ms, "--revision", "16", "--outcome", "accept", "--reason", "honors spec v2"])
+        .args([
+            "mission",
+            "submit",
+            "coder",
+            &ms,
+            "--revision",
+            "14",
+            "--outcome",
+            "done",
+            "--reason",
+            "fixed section 2",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "auditor",
+            &ms,
+            "--revision",
+            "15",
+            "--outcome",
+            "approved",
+            "--reason",
+            "all green",
+        ])
+        .assert()
+        .success();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "arch",
+            &ms,
+            "--revision",
+            "16",
+            "--outcome",
+            "accept",
+            "--reason",
+            "honors spec v2",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("ended"));
+}
+
+#[test]
+fn concurrent_same_revision_submits_admit_exactly_one() {
+    let (fixture, ms) = setup();
+    let ws = std::sync::Arc::new(fixture.workspace.clone());
+    let ms = std::sync::Arc::new(ms);
+
+    // Two processes race the SAME revision on the SAME mission: the
+    // UPDATE ... WHERE revision = ? guard must admit exactly one and
+    // reject the other as stale, whatever the interleaving.
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let ws = ws.clone();
+            let ms = ms.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                std::process::Command::new(env!("CARGO_BIN_EXE_im"))
+                    .current_dir(&*ws)
+                    .args([
+                        "mission",
+                        "submit",
+                        "worker",
+                        &ms,
+                        "--revision",
+                        "1",
+                        "--outcome",
+                        "done",
+                    ])
+                    .status()
+                    .unwrap()
+                    .success()
+            })
+        })
+        .collect();
+    let outcomes: Vec<bool> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let winners = outcomes.iter().filter(|won| **won).count();
+    assert_eq!(winners, 1, "exactly one submit may win: {outcomes:?}");
+
+    // The winner's effect landed exactly once: mission at audit, revision 2.
+    let show = String::from_utf8(
+        im(&fixture.workspace)
+            .args(["mission", "show", &ms])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        show.contains("at station: audit"),
+        "single apply must route once: {show}"
+    );
+    assert!(show.contains("revision: 2"), "{show}");
 }

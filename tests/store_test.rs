@@ -30,7 +30,10 @@ fn schema_creates_all_domain_tables() {
         "mission_documents",
         "work_notes",
     ] {
-        assert!(names.iter().any(|n| n == expected), "missing table {expected}: {names:?}");
+        assert!(
+            names.iter().any(|n| n == expected),
+            "missing table {expected}: {names:?}"
+        );
     }
     // The managers table retired with the tier ladder — never create it.
     assert!(
@@ -88,14 +91,16 @@ fn peer_notes_are_rejected() {
 fn notices_to_archived_identities_are_preserved() {
     let (_tmp, store) = open();
     store.register_agent_unique("bob").unwrap();
-    store.set_agent_tier("workspace", "bob", Tier::Manage).unwrap();
+    store
+        .set_agent_tier("workspace", "bob", Tier::Manage)
+        .unwrap();
 
     store.unregister_agent("bob").unwrap();
     // The row survives; has_unread still reports it for history consumers.
     let all = store.all_messages(Some("bob")).unwrap();
     assert_eq!(all.len(), 1);
     assert!(all[0].content.contains("tier was set to manage"));
-    assert_eq!(all[0].read, false);
+    assert!(!all[0].read);
 }
 
 #[test]
@@ -109,17 +114,25 @@ fn tier_ladder_gates_and_refusals() {
     assert_eq!(store.agent_tier("worker").unwrap(), Some(Tier::Execute));
 
     // set_agent_tier is the console path: ungated, any tier (manage included).
-    store.set_agent_tier("workspace", "boss", Tier::Manage).unwrap();
+    store
+        .set_agent_tier("workspace", "boss", Tier::Manage)
+        .unwrap();
     assert_eq!(store.agent_tier("boss").unwrap(), Some(Tier::Manage));
 
     // require_tier follows the linear ladder: manage passes everything,
     // execute passes only itself.
     assert!(store.require_tier("boss", Tier::Manage).is_ok());
     assert!(store.require_tier("worker", Tier::Execute).is_ok());
-    let err = store.require_tier("worker", Tier::Publish).unwrap_err().to_string();
+    let err = store
+        .require_tier("worker", Tier::Publish)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("below publish tier"), "got: {err}");
     assert!(err.contains("boss"), "hint names the manage member: {err}");
-    let err = store.require_tier("worker", Tier::Manage).unwrap_err().to_string();
+    let err = store
+        .require_tier("worker", Tier::Manage)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("below manage tier"), "got: {err}");
 
     // grant_publish: manage operator only.
@@ -147,10 +160,16 @@ fn tier_ladder_gates_and_refusals() {
     // operator-tier action on them names the console.
     for action in [
         store.grant_publish("boss", "boss").unwrap_err().to_string(),
-        store.revoke_publish("boss", "boss").unwrap_err().to_string(),
+        store
+            .revoke_publish("boss", "boss")
+            .unwrap_err()
+            .to_string(),
         store.delete_member("boss", "boss").unwrap_err().to_string(),
     ] {
-        assert!(action.contains("console"), "manage target refused via console hint: {action}");
+        assert!(
+            action.contains("console"),
+            "manage target refused via console hint: {action}"
+        );
     }
 
     // delete_member: manage-tier operator deletes a plain member.
@@ -162,7 +181,10 @@ fn tier_ladder_gates_and_refusals() {
 fn require_tier_hint_points_to_the_console_when_no_manage_member_exists() {
     let (_tmp, store) = open();
     store.register_agent_unique("lone").unwrap();
-    let err = store.require_tier("lone", Tier::Manage).unwrap_err().to_string();
+    let err = store
+        .require_tier("lone", Tier::Manage)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("below manage tier"), "got: {err}");
     assert!(err.contains("console Members page"), "got: {err}");
 }
@@ -172,7 +194,8 @@ fn work_notes_are_consumed_only_by_the_bound_executor() {
     let (_tmp, store) = open();
     store.register_agent_unique("worker").unwrap();
     store.register_agent_unique("inspector").unwrap();
-    store.conn
+    store
+        .conn
         .execute_batch(
             "INSERT INTO works (work_key, description, executor, prompt, created_at)
                  VALUES ('build', '', 'worker', '', 0);
@@ -257,7 +280,11 @@ fn revision_cas_guard_rejects_stale_writes() {
     assert_eq!(stale, 0);
     let revision: i64 = store
         .conn
-        .query_row("SELECT revision FROM missions WHERE mission_id = 'ms_a'", [], |r| r.get(0))
+        .query_row(
+            "SELECT revision FROM missions WHERE mission_id = 'ms_a'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(revision, 2);
 }
@@ -330,7 +357,9 @@ fn membership_actions_deliver_inbox_notices() {
     for id in ["boss", "worker"] {
         store.register_agent_unique(id).unwrap();
     }
-    store.set_agent_tier("workspace", "boss", Tier::Manage).unwrap();
+    store
+        .set_agent_tier("workspace", "boss", Tier::Manage)
+        .unwrap();
     store.grant_publish("boss", "worker").unwrap();
     store.revoke_publish("boss", "worker").unwrap();
     store.delete_agent("workspace", "worker").unwrap();
@@ -397,10 +426,17 @@ fn legacy_works_table_gains_the_description_column() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(has_description, 1, "migration must add the description column");
+    assert_eq!(
+        has_description, 1,
+        "migration must add the description column"
+    );
     let summary: String = store
         .conn
-        .query_row("SELECT description FROM works WHERE work_key = 'legacy'", [], |r| r.get(0))
+        .query_row(
+            "SELECT description FROM works WHERE work_key = 'legacy'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(summary, "", "backfilled descriptions start empty");
 }
@@ -462,4 +498,48 @@ fn concurrent_opens_migrate_a_legacy_db_safely() {
         .query_row("SELECT tier FROM agents WHERE id = 'a1'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(tier, "manage");
+}
+
+#[test]
+fn a_legacy_binary_resurrecting_the_managers_table_is_refolded() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("im.db");
+    {
+        let store = Store::open(&db_path).unwrap();
+        store.register_agent_unique("a1").unwrap();
+        // Fully migrated: the managers table is already gone.
+    }
+
+    // An overnight old-binary waiter re-creates the retired table via its
+    // CREATE TABLE IF NOT EXISTS schema — empty shell, tier data intact.
+    // (This exact sequence killed a live waiter with "no such table".)
+    rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE managers (
+                agent_id TEXT PRIMARY KEY,
+                granted_at INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+
+    // Re-open folds the empty shell away silently; tiers untouched.
+    let store = Store::open(&db_path).unwrap();
+    let managers_tables: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'managers'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        managers_tables, 0,
+        "the resurrected table must be dropped again"
+    );
+    let tier: String = store
+        .conn
+        .query_row("SELECT tier FROM agents WHERE id = 'a1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tier, "execute");
 }
