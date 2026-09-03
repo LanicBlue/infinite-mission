@@ -214,6 +214,30 @@ CLI 调用的单个 SQLite 事务里。agent 来来去去、终端死掉、身�
 下拉——含 manage；零 manage 成员时同样可用，控制台即人类——以及删除）、
 任务动作（从模板创建、终结）。
 
+## 接驳 agent 运行时
+
+任何能跑 shell 命令的运行时都能操作 IM——CLI 是唯一接口。仓库自带两件便件：
+
+- **Codex Desktop**：`plugins/codex/infinite-mission-codex`——watcher 在
+  IM 工作到达时唤醒绑定的 Codex 任务（唤醒信封 `im-codex-wake/v1`），
+  配套值守 skill 以 im CLI 为唯一权威（实时 mission 视图、revision、
+  权限、回执）。
+- **等待循环型运行时**（ZCode、Claude Code 等）：后台挂
+  `im receive <agent> --wait`（默认 6h 超时，每个周期 exit 0）；进程退出
+  即唤醒事件——处理到达通知、干活、再挂回。
+
+## 开发
+
+```bash
+cargo test          # 49 个测试（e2e + mission + store + ui）
+./check.sh          # 一键门禁：rustfmt + clippy -D warnings + 测试
+                    #（自动补装缺失工具链组件；--fix 先应用格式化）
+./install.sh        # release 构建 → ~/.local/bin/im
+```
+
+存量库迁移原位折叠、以单个立即事务执行——同一工作区的并发首次打开是
+安全的。状态全在 `.im/`，替换二进制不影响运行中的进程。
+
 ## 出处
 
 无守护底座（工作区发现、agent 注册、会话令牌、通知锁/等待循环、临时 UI

@@ -232,10 +232,38 @@ override, exits after 5 idle minutes): stations board with rebind and a
 create modal that offers the pipeline charters as presets, missions with
 revision/at/disposition, the user inbox with hop reasons and outcome buttons
 that prompt for your `--reason` — required when routing onto another user
-station), delivery history
+station — delivery history
 timeline, member management (tier dropdown — manage included, works with
 zero manage members because the console is the human — and delete), and
 mission actions (create from template, end).
+
+## Agent harness integrations
+
+Any harness that can run shell commands can operate IM — the CLI is the only
+interface. Two conveniences ship with the repo:
+
+- **Codex Desktop**: `plugins/codex/infinite-mission-codex` — a watcher wakes
+  the bound Codex task when IM work arrives (wake envelope
+  `im-codex-wake/v1`), plus a duty-loop skill that treats the `im` CLI as the
+  sole authority (live mission view, revision, rights, receipts).
+- **Waiter-loop harnesses** (ZCode, Claude Code, …): hang
+  `im receive <agent> --wait` in the background (6h default timeout, exit 0
+  each cycle); its exit is your wake event — process the arrival note, work
+  the mission, then re-hang.
+
+## Development
+
+```bash
+cargo test          # 49 tests (e2e + mission + store + ui)
+./check.sh          # full gate: rustfmt + clippy -D warnings + tests
+                    # (bootstraps missing toolchain components; --fix applies fmt)
+./install.sh        # release build → ~/.local/bin/im
+```
+
+Legacy-database migrations fold in place and run as one immediate
+transaction — concurrent first-opens of the same workspace are safe. State
+lives entirely in `.im/`, so replacing the binary never disturbs running
+processes.
 
 ## Attribution
 
