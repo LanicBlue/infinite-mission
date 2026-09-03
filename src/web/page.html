@@ -179,6 +179,7 @@ const ago = ts => {
 let state = null, lastRaw = "";
 let pane = "inbox";        // inbox | works | missions | members | settings
 let expanded = new Set();  // expanded mission ids
+let hideEnded = localStorage.getItem("missions-hide-ended") !== "0"; // filter ended missions
 
 function toast(msg, ok) {
 	const box = $("#toast");
@@ -299,6 +300,15 @@ function worksPane() {
 	</article>`).join("");
 }
 
+function missionCreateModal() {
+	const templates = state.templates || [];
+	openModal(`
+		<div class="modal-head"><h3>新建任务</h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<label class="field"><span>模板 —— 位于 <code>.im/templates/*.yaml</code></span><select data-f="template">${templates.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
+		<label class="field"><span>幂等 key —— 同 key 重复创建幂等（返回已有任务）</span><input data-f="key" placeholder="v1"></label>
+		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="mission-create">创建</button></div>`);
+}
+
 function workCreateModal() {
 	const agents = (state.agents || []).filter(a => a.status !== "archived");
 	const presets = state.presets || [];
@@ -339,18 +349,19 @@ function workDetailModal(key) {
 }
 
 function missionsPane() {
-	const templates = state.templates || [];
-	const create = `<details class="form card"><summary>＋ 从模板新建任务</summary>
-		<div class="form-grid">
-			<label>模板 <select data-f="template">${templates.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
-			<label>幂等 key <input data-f="key" placeholder="v1" size="8"></label>
-			<span class="spacer"></span>
-			<button class="btn primary small" data-act="mission-create">创建</button>
+	const all = state.missions || [];
+	const endedN = all.filter(m => m.status !== "active").length;
+	const list = hideEnded ? all.filter(m => m.status === "active") : all;
+	const header = `<header class="detail-header">
+		<div><h2>任务</h2><p class="meta">自带合同与投递史的一次性邮件</p></div>
+		<div class="header-actions">
+			${endedN ? `<button class="btn small" data-act="missions-filter" title="过滤已终结任务">${hideEnded ? `已终结已隐藏 ${endedN} · 显示` : "隐藏已终结"}</button>` : ""}
+			<button class="btn primary" data-act="open-mission-create">＋ 新建任务</button>
 		</div>
-		<p class="hint" style="margin:4px 0 0">模板位于 <code>.im/templates/*.yaml</code>；同 key 重复创建幂等（返回已有任务）</p></details>`;
-	const list = state.missions || [];
-	if (!list.length) return paneHeader("任务", "自带合同与投递史的一次性邮件") + create + `<div class="empty">还没有任务<br><br><span class="hint">模板放在 <code>.im/templates/*.yaml</code>（<code>im init</code> 已写 example），在上方选模板 + 幂等 key 创建</span></div>`;
-	return paneHeader("任务", "自带合同与投递史的一次性邮件") + create + list.map(m => {
+	</header>`;
+	if (!all.length) return header + `<div class="empty">还没有任务<br><br><span class="hint">点右上角「＋ 新建任务」创建；模板放在 <code>.im/templates/*.yaml</code>（<code>im init</code> 已写 example）</span></div>`;
+	if (!list.length) return header + `<div class="empty">${endedN} 个已终结任务被过滤<br><br><span class="hint">点上方「已终结已隐藏」按钮显示它们</span></div>`;
+	return header + list.map(m => {
 		const open = expanded.has(m.mission_id);
 		const evs = open ? eventsOf(m.mission_id) : [];
 		return `<article class="card" style="${m.status!=="active" ? "opacity:.68" : ""}">
@@ -440,10 +451,12 @@ document.addEventListener("click", async e => {
 			break;
 		}
 		case "work-delete": if (confirm(`删除工位 ${d.work}？物理删除；被活跃 mission 合同引用的工位会被锁定拒删。`)) await act({ type: "work_delete", work: d.work }); break;
+		case "open-mission-create": missionCreateModal(); break;
+		case "missions-filter": hideEnded = !hideEnded; localStorage.setItem("missions-hide-ended", hideEnded ? "1" : "0"); render(); break;
 		case "mission-create": {
 			const key = field("key");
 			if (!key) { toast("幂等 key 必填", false); break; }
-			await act({ type: "mission_create", template: field("template"), key });
+			if (await act({ type: "mission_create", template: field("template"), key })) closeModal();
 			break;
 		}
 		case "toggle": expanded.has(d.mission) ? expanded.delete(d.mission) : expanded.add(d.mission); render(); break;
