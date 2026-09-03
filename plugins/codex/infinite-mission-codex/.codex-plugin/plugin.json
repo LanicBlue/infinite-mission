@@ -1,0 +1,20 @@
+{
+  "name": "infinite-mission-codex",
+  "version": "0.1.0+codex.20260903013752",
+  "description": "Wake and operate InfiniteMission agents from Codex Desktop.",
+  "author": {
+    "name": "InfiniteMission"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "InfiniteMission for Codex",
+    "shortDescription": "Wake Codex Desktop when InfiniteMission work arrives.",
+    "longDescription": "Adds the Codex-side workflow and watcher used to receive InfiniteMission notifications, wake the bound Codex task, process live mission state, and wait again.",
+    "developerName": "InfiniteMission",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "$infinite-mission-codex Check my current InfiniteMission assignment and handle it."
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "InfiniteMission for Codex"
+  short_description: "Handle IM work and re-arm Desktop wakeups"
+  default_prompt: "$infinite-mission-codex Check my current InfiniteMission assignment and handle it."

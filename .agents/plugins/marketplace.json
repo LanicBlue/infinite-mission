@@ -1,0 +1,20 @@
+{
+  "name": "infinite-mission",
+  "interface": {
+    "displayName": "InfiniteMission"
+  },
+  "plugins": [
+    {
+      "name": "infinite-mission-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex/infinite-mission-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
