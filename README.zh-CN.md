@@ -81,9 +81,9 @@ im work set-executor boss review <agent>
 im mission create <design-agent> --template pipeline --key v1 \
     --objective "ship the widget"          # 蒸馏后的意图
 
+# 创建者就是起点绑定的执行者时，create 已返回完整任务视图，不另发首轮唤醒。
 # design 岗第一轮（落定冻结的 spec）：
-im receive <design-agent>          # 到达通知
-im mission show <ms> --for <design-agent>   # 插值后的章程、权限、词表、revision
+im mission show <ms> --for <design-agent>   # 可选：刷新已返回的章程、权限、词表、revision
 im mission doc write <design-agent> <ms> --id spec --file -   # → 回执
 im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready \
     --receipts document:<hash>
@@ -102,6 +102,15 @@ im mission submit boss <ms> --revision N --outcome ok --reason "同意"
 工位 prompt 可插值 `{mission.name}`、`{mission.objective}`、
 `{mission.from}`、`{mission.iteration}`、`{mission.reason}`（未知槽位保留
 字面）。没有角色剧本：外部注册的 agent 只从 mission 简报获得指令。
+
+创建时自动识别创建者是否为起点工位绑定的执行者：若是，则直接返回首轮
+完整任务视图，不再生成冗余的首轮到站唤醒，无须模式或新参数。核心返回
+`run_view`，CLI 打印与 `mission show` 相同的视图，控制台操作接口返回
+`runView`。替其他执行者创建、以及未绑定执行者的用户工位仍照常投递；
+后续所有到站（包括回到创建者）仍正常通知。这不代替首轮执行或提交。
+若调用者尚未处理返回视图就退出，Mission 仍可经 `im missions` /
+`im mission show` 找回；同 key 重试仅在调用者仍是当前绑定执行者时返回
+最新视图，不重复或消费到站通知，也不重开已结束的 Mission。
 
 ## 交付流水线
 

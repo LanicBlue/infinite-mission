@@ -268,6 +268,11 @@ fn map_work_row(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
 pub struct MissionCreateOutcome {
     pub mission_id: String,
     pub existed: bool,
+    /// Direct handoff when the caller is the bound executor of the current
+    /// station. On idempotent retries this is a fresh view, never revision 1
+    /// replayed from creation. An absent view does not grant execution rights.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_view: Option<RunView>,
 }
 
 impl Store {
@@ -347,9 +352,12 @@ impl Store {
             ],
         )?;
         if inserted == 0 {
+            let run_view = self.creator_run_view(&mission_id, manager)?;
+            tx.commit()?;
             return Ok(MissionCreateOutcome {
                 mission_id,
                 existed: true,
+                run_view,
             });
         }
         append_event(
@@ -365,18 +373,38 @@ impl Store {
             }),
             created,
         )?;
-        insert_arrival_note(
-            &tx,
-            &contract.entry,
-            &mission_id,
-            &format!("[{mission_id}] {name}"),
-            created,
-        )?;
+        // The creating executor receives the first round synchronously. Make
+        // that decision and its view in the same transaction as creation, so
+        // a concurrent receive cannot consume a redundant first arrival.
+        // Ordinary routing below still emits every later arrival unchanged.
+        let run_view = self.creator_run_view(&mission_id, manager)?;
+        if run_view.is_none() {
+            insert_arrival_note(
+                &tx,
+                &contract.entry,
+                &mission_id,
+                &format!("[{mission_id}] {name}"),
+                created,
+            )?;
+        }
         tx.commit()?;
         Ok(MissionCreateOutcome {
             mission_id,
             existed: false,
+            run_view,
         })
+    }
+
+    fn creator_run_view(&self, mission_id: &str, creator: &str) -> Result<Option<RunView>> {
+        let mission = self.get_mission(mission_id)?;
+        if let Some(at) = mission.at.as_deref() {
+            // Manage authority at an unbound user station is NOT an executor
+            // match. Publishing a mission for someone else must still notify.
+            if self.get_work(at)?.executor.as_deref() == Some(creator) {
+                return self.run_view(mission_id, Some(creator)).map(Some);
+            }
+        }
+        Ok(None)
     }
 
     pub fn get_mission(&self, mission_id: &str) -> Result<MissionRecord> {

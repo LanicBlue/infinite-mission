@@ -93,9 +93,10 @@ im work set-executor boss review <agent>
 im mission create <design-agent> --template pipeline --key v1 \
     --objective "ship the widget"          # the distilled intent
 
+# When the creator is the bound entry executor, create already returns the
+# complete run view (charter, rights, vocabulary, revision); no first wake-up.
 # as the design agent (first round: park the frozen spec):
-im receive <design-agent>          # arrival note
-im mission show <ms> --for <design-agent>   # interpolated charter, rights, vocabulary, revision
+im mission show <ms> --for <design-agent>   # optional refresh of the returned view
 im mission doc write <design-agent> <ms> --id spec --file -   # → receipt
 im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready \
     --receipts document:<hash>
@@ -115,6 +116,18 @@ Station prompts interpolate `{mission.name}`, `{mission.objective}`,
 `{mission.from}`, `{mission.iteration}` and `{mission.reason}` (unknown slots
 stay literal). There are no persona playbooks: externally registered agents
 get their instructions from the mission brief alone.
+
+Creation automatically hands the first round back to its creator when that
+member is the entry station's bound executor. No mode or extra flag is needed,
+and no redundant initial arrival is queued. The core returns `run_view`; the
+CLI prints the same view as `mission show`, and the console action API returns
+it as `runView`. Publishing for another executor (or an unbound user station)
+retains normal delivery. Later arrivals, including a return to the creator,
+still notify normally. This does not execute or complete the first round.
+If the caller exits before processing the returned view, the active mission
+remains discoverable through `im missions`/`im mission show`; a same-key retry
+returns a fresh view only if the caller is still the bound current executor,
+without duplicating or consuming arrival notes or reopening an ended mission.
 
 ## The delivery pipeline
 
