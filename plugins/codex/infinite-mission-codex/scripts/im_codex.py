@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Codex Desktop lifecycle adapter for InfiniteMission.
 
-Normal IM commands stay on the real `im` CLI. This helper only arms, inspects,
-and stops a detached one-shot receive watcher. Runtime state lives outside the
-IM workspace under ~/.codex/infinite-mission by default.
+Normal IM commands stay on the real `im` CLI. This helper registers and arms,
+or inspects and stops, a detached receive watcher. Runtime state lives outside
+the IM workspace under ~/.codex/infinite-mission by default.
 """
 
 from __future__ import annotations
@@ -215,6 +215,48 @@ def require_thread(explicit: str | None) -> str:
 
 def wait_command(agent: str) -> str:
     return shlex.join(["im", "receive", agent, "--wait"])
+
+
+def joined_agent(output: str) -> str:
+    match = re.search(r"(?:^|\n).*Joined as ([^\r\n]+)\.(?:\n|$)", output)
+    if not match:
+        raise AdapterError(
+            "IM registration succeeded, but its assigned agent id could not be read; "
+            "the Codex watcher was not armed."
+        )
+    return match.group(1)
+
+
+def command_join(args: argparse.Namespace) -> int:
+    workspace = find_workspace(Path(args.workspace) if args.workspace else Path.cwd())
+    thread = require_thread(args.thread)
+    im_bin = resolve_im(args.im_bin)
+    codex_bin = resolve_codex(args.codex_bin)
+    result = subprocess.run(
+        [im_bin, "join", args.agent],
+        cwd=workspace,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.returncode != 0:
+        return result.returncode
+
+    actual_agent = joined_agent(result.stdout)
+    return command_wait(
+        argparse.Namespace(
+            agent=actual_agent,
+            workspace=str(workspace),
+            thread=thread,
+            timeout=args.timeout,
+            im_bin=im_bin,
+            codex_bin=codex_bin,
+        )
+    )
 
 
 def command_wait(args: argparse.Namespace) -> int:
@@ -562,14 +604,18 @@ def parser() -> argparse.ArgumentParser:
     )
     commands = result.add_subparsers(dest="command", required=True)
 
-    wait = commands.add_parser("wait", help="arm or retarget the one-shot watcher")
-    wait.add_argument("agent")
-    wait.add_argument("--workspace")
-    wait.add_argument("--thread")
-    wait.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
-    wait.add_argument("--im-bin")
-    wait.add_argument("--codex-bin")
-    wait.set_defaults(handler=command_wait)
+    for name, help_text, handler in (
+        ("join", "register with IM and automatically arm the watcher", command_join),
+        ("wait", "arm or retarget the watcher", command_wait),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("agent")
+        command.add_argument("--workspace")
+        command.add_argument("--thread")
+        command.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
+        command.add_argument("--im-bin")
+        command.add_argument("--codex-bin")
+        command.set_defaults(handler=handler)
 
     for name, help_text, handler in (
         ("status", "show watcher state", command_status),

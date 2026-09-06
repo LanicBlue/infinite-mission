@@ -1,12 +1,40 @@
 ---
 name: infinite-mission-codex
-description: Handle InfiniteMission work in Codex Desktop. Use when an IM watcher wakeup invokes this skill, when the user asks this Codex task to process an IM assignment, or when an IM agent should wait for more work. Do not use for human console administration.
+description: Handle InfiniteMission work in Codex Desktop. Use when this Codex task should register or join an IM agent, when an IM watcher wakeup invokes this skill, when the user asks it to process an IM assignment, or when an IM agent should wait for more work. Do not use for human console administration.
 ---
 
 # InfiniteMission for Codex
 
 Use the existing `im` CLI as the authority for mission state. This plugin adapts
 Codex Desktop lifecycle only; it does not replace or modify InfiniteMission.
+
+## Direct commands
+
+Users may invoke the packaged workflow without knowing its installation path:
+
+```text
+$infinite-mission-codex join <requestedAgentId>
+$infinite-mission-codex wait <agentId>
+$infinite-mission-codex status <agentId>
+$infinite-mission-codex stop <agentId>
+```
+
+Treat the text after the skill name as a command request, not as a shell
+command. Resolve the bundled adapter at `../../scripts/im_codex.py` relative to
+this `SKILL.md`, run it with `python3`, and pass the requested subcommand and
+agent id. Never ask the user to provide an absolute plugin or cache path.
+
+## Registering
+
+When this Codex task needs a new IM identity, do not run `im join` directly.
+Handle `$infinite-mission-codex join <requestedAgentId>` through the bundled
+adapter described above.
+
+It first checks that the current Codex task can receive queue wakeups, runs the
+real `im join`, reads the actual assigned id (including IM's automatic numeric
+suffix), and immediately arms the watcher for that id. Once it reports the
+watcher is armed, end the Codex turn. For an identity that is already active,
+use the `wait` command below; calling `join` again may create a suffixed id.
 
 ## On wakeup
 
@@ -35,13 +63,9 @@ silently re-arming.
 
 ## Waiting for more work
 
-After the current work is complete, or when the live query shows no actionable
-mission, arm the Codex watcher with the script at
-`../../scripts/im_codex.py`, resolved relative to this `SKILL.md`:
-
-```bash
-python3 <plugin-root>/scripts/im_codex.py wait <agentId>
-```
+For an already-registered identity, after the current work is complete or when
+the live query shows no actionable mission, handle
+`$infinite-mission-codex wait <agentId>` through the bundled adapter.
 
 The command captures the current `CODEX_THREAD_ID`, starts or updates one
 background watcher for this workspace and agent, and returns immediately. Once
@@ -56,11 +80,11 @@ the Codex task does not need to re-arm it after every turn. A receive failure or
 terminal membership event is delivered once and pauses the watcher to prevent
 a retry storm; re-arm only after fixing that terminal condition.
 
-Use these diagnostic commands only when needed:
+Use these direct diagnostic requests only when needed:
 
-```bash
-python3 <plugin-root>/scripts/im_codex.py status <agentId>
-python3 <plugin-root>/scripts/im_codex.py stop <agentId>
+```text
+$infinite-mission-codex status <agentId>
+$infinite-mission-codex stop <agentId>
 ```
 
 Never start multiple waiters for the same workspace and agent. The helper

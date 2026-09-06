@@ -18,6 +18,139 @@ class ImCodexTest(unittest.TestCase):
         path.write_text(f"#!{sys.executable}\n{body}")
         path.chmod(0o755)
 
+    def test_join_arms_actual_auto_suffixed_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / ".im").mkdir()
+            receive_started = root / "receive-started"
+
+            fake_im = root / "im"
+            self.make_executable(
+                fake_im,
+                "import os, pathlib, sys, time\n"
+                "if sys.argv[1:] == ['join', 'worker']:\n"
+                "    print(\"Id 'worker' was taken. Joined as worker-2.\")\n"
+                "    print('Work content arrives with each mission.')\n"
+                "    raise SystemExit(0)\n"
+                "assert sys.argv[1:4] == ['receive', 'worker-2', '--wait']\n"
+                "pathlib.Path(os.environ['RECEIVE_STARTED']).write_text('worker-2')\n"
+                "time.sleep(10)\n",
+            )
+            fake_codex = root / "codex"
+            self.make_executable(
+                fake_codex,
+                "import sys\n"
+                "if sys.argv[1:] == ['queue', '--help']:\n"
+                "    print('queue --thread THREAD --message TEXT')\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(1)\n",
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CODEX_THREAD_ID": "thread-test",
+                    "IM_CODEX_STATE_DIR": str(root / "state"),
+                    "IM_CODEX_IM_BIN": str(fake_im),
+                    "IM_CODEX_CODEX_BIN": str(fake_codex),
+                    "RECEIVE_STARTED": str(receive_started),
+                }
+            )
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), "join", "worker", "--timeout", "20"],
+                    cwd=workspace,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("Joined as worker-2.", result.stdout)
+                self.assertIn("im receive worker-2 --wait", result.stdout)
+
+                deadline = time.monotonic() + 3
+                while not receive_started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(receive_started.exists(), "join did not start the watcher")
+                self.assertEqual(receive_started.read_text(), "worker-2")
+
+                status = subprocess.run(
+                    [sys.executable, str(SCRIPT), "status", "worker-2"],
+                    cwd=workspace,
+                    env=environment,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                self.assertEqual(status.returncode, 0, status.stdout)
+                state = json.loads(status.stdout)
+                self.assertEqual(state["agentId"], "worker-2")
+                self.assertEqual(state["threadId"], "thread-test")
+                self.assertTrue(state["watcherAlive"])
+            finally:
+                subprocess.run(
+                    [sys.executable, str(SCRIPT), "stop", "worker-2"],
+                    cwd=workspace,
+                    env=environment,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+
+    def test_join_failure_does_not_arm_a_watcher(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / ".im").mkdir()
+            calls = root / "calls"
+
+            fake_im = root / "im"
+            self.make_executable(
+                fake_im,
+                "import os, pathlib, sys\n"
+                "pathlib.Path(os.environ['CALLS']).write_text(' '.join(sys.argv[1:]))\n"
+                "print('registration failed')\n"
+                "raise SystemExit(7)\n",
+            )
+            fake_codex = root / "codex"
+            self.make_executable(
+                fake_codex,
+                "import sys\n"
+                "if sys.argv[1:] == ['queue', '--help']:\n"
+                "    print('queue --thread THREAD --message TEXT')\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(1)\n",
+            )
+            state_root = root / "state"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "CODEX_THREAD_ID": "thread-test",
+                    "IM_CODEX_STATE_DIR": str(state_root),
+                    "IM_CODEX_IM_BIN": str(fake_im),
+                    "IM_CODEX_CODEX_BIN": str(fake_codex),
+                    "CALLS": str(calls),
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "join", "worker"],
+                cwd=workspace,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 7, result.stdout)
+            self.assertIn("registration failed", result.stdout)
+            self.assertEqual(calls.read_text(), "join worker")
+            self.assertFalse(state_root.exists())
+
     def test_wait_rearms_after_timeout_and_after_delivered_event(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
