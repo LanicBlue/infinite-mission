@@ -59,6 +59,7 @@ fn main() -> Result<()> {
         "doctor" => cmd_doctor(),
         "clean" => cmd_clean(),
         "ui" => cmd_ui(args.collect()),
+        "workspaces" => cmd_workspaces(args.collect()),
         "help" | "--help" | "-h" => {
             print_usage();
             Ok(())
@@ -615,10 +616,18 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
             outcome.mission_id,
             mission.at.unwrap_or_default()
         );
-        println!(
-            "  Next: im mission show {} --for <agent>",
-            outcome.mission_id
-        );
+        if outcome.run_view.is_none() {
+            println!(
+                "  Next: im mission show {} --for <agent>",
+                outcome.mission_id
+            );
+        }
+    }
+    if let Some(view) = &outcome.run_view {
+        if !outcome.existed {
+            println!("  First round returned directly to its creator; no extra arrival wake-up.");
+        }
+        print_run_view(view, true);
     }
     Ok(())
 }
@@ -631,6 +640,11 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
         let _ = agent;
     }
     let view = store.run_view(mission_id, for_agent)?;
+    print_run_view(&view, for_agent.is_some());
+    Ok(())
+}
+
+fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
     println!(
         "[mission {}] {} — {}",
         view.mission_id, view.name, view.status
@@ -646,7 +660,7 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
         None => println!("  ended: {}", view.ended_note()),
     }
     println!("  revision: {}  ← submit must carry this", view.revision);
-    if for_agent.is_some() {
+    if show_duty {
         println!(
             "  on duty: {}",
             if view.on_duty {
@@ -698,7 +712,6 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
             );
         }
     }
-    Ok(())
 }
 
 fn cmd_mission_submit(args: &[String]) -> Result<()> {
@@ -963,6 +976,30 @@ fn cmd_clean() -> Result<()> {
         std::fs::create_dir_all(&notes_dir)?;
     }
     println!("Cleaned InfiniteMission state (templates kept).");
+    Ok(())
+}
+
+fn cmd_workspaces(args: Vec<String>) -> Result<()> {
+    let mut prune = false;
+    for arg in &args {
+        match arg.as_str() {
+            "--prune" => prune = true,
+            other => bail!("unknown workspaces flag: {other}"),
+        }
+    }
+    if prune {
+        let removed = im::registry::prune()?;
+        println!("pruned {removed} stale workspace(s)");
+        return Ok(());
+    }
+    let entries = im::registry::list_with_liveness()?;
+    if entries.is_empty() {
+        println!("no workspaces registered yet — `im init` registers one");
+        return Ok(());
+    }
+    for (path, live) in entries {
+        println!("  {} {}", if live { "✓" } else { "✗" }, path.display());
+    }
     Ok(())
 }
 

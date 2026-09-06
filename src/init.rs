@@ -26,6 +26,7 @@ pub fn run() -> Result<()> {
     let store = crate::store::Store::open(&dot.join("im.db"))?;
     let seeded = crate::pipeline::seed_pipeline_works(&store)?;
 
+    crate::registry::register(&workspace)?;
     append_if_missing(&workspace.join(".gitignore"), ".im/")?;
     for guide in ["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
         append_if_missing(

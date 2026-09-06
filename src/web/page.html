@@ -59,6 +59,8 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .brand h1 { margin: 0; font-size: 20px; color: var(--sidebar-fg-active); letter-spacing: .5px; }
 .brand .sub { margin: 2px 0 0; font-size: 12px; color: var(--ink-faint); }
 .brand .ws { margin: 6px 0 0; font-size: 11px; color: var(--ink-faint); word-break: break-all; }
+.brand select.ws { width: 100%; background: rgba(255,255,255,.06); color: var(--sidebar-fg); border: 1px solid rgba(255,255,255,.15); border-radius: 6px; padding: 3px 6px; cursor: pointer; }
+.brand select.ws option { background: var(--sidebar); color: var(--sidebar-fg); }
 .nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); padding: 8px 10px 4px; }
 .nav-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: none; border-radius: var(--radius-sm); color: var(--sidebar-fg); padding: 7px 10px; }
@@ -153,7 +155,8 @@ details.form summary { cursor: pointer; color: var(--accent); font-size: 13px; p
 		<div class="brand">
 			<h1>用户面板</h1>
 			<p class="sub">InfiniteMission</p>
-			<p class="ws mono" id="ws-path"></p>
+			<select class="ws mono" id="ws-path" title="切换工作区"></select>
+			<p class="ws mono" id="ws-full"></p>
 		</div>
 		<nav class="nav" id="nav" aria-label="主导航"></nav>
 		<div class="nav-foot" id="nav-foot"></div>
@@ -239,7 +242,24 @@ function renderSidebar() {
 	].map(([id, label, n, title]) =>
 		`<button class="nav-item${pane===id ? " active" : ""}" data-nav="${id}">${label}${n ? `<span class="count"${title?` title="${title}"`:""}>${n}</span>` : ""}</button>`
 	).join("");
-	$("#ws-path").textContent = state.workspace || "";
+	const wsSel = $("#ws-path");
+	if (wsSel) {
+		const list = (state.workspaces && state.workspaces.length) ? state.workspaces : [state.workspace];
+		// 选项用目录短名；重名时带上一级消歧（projects/AutoPrinter）。
+		const shortName = p => {
+			const parts = String(p).replace(/\/+$/, "").split("/");
+			const name = parts[parts.length - 1] || String(p);
+			const dup = list.filter(x => String(x).replace(/\/+$/, "").split("/").pop() === name).length > 1;
+			return dup ? parts.slice(-2).join("/") : name;
+		};
+		const sig = list.join("|") + "||" + state.workspace;
+		if (wsSel.dataset.sig !== sig) {
+			wsSel.innerHTML = list.map(p => `<option value="${esc(p)}"${p===state.workspace?" selected":""}>${esc(shortName(p))}</option>`).join("");
+			wsSel.dataset.sig = sig;
+		} else { wsSel.value = state.workspace || ""; }
+	}
+	const wsFull = $("#ws-full");
+	if (wsFull) wsFull.textContent = state.workspace || "";
 	$("#nav-foot").innerHTML = `
 		<button class="nav-item${pane==="members" ? " active" : ""}" data-nav="members">👤 成员</button>
 		<button class="nav-item${pane==="settings" ? " active" : ""}" data-nav="settings">⚙ 工作区</button>`;
@@ -483,8 +503,16 @@ document.addEventListener("change", async e => {
 		return;
 	}
 	const s = e.target.closest('select[data-act="rebind"]');
-	if (!s) return;
-	await act({ type: "set_executor", work: s.dataset.work, executor: s.value });
+	if (s) { await act({ type: "set_executor", work: s.dataset.work, executor: s.value }); return; }
+	const wsSel = e.target.closest('select#ws-path');
+	if (!wsSel) return;
+	if (wsSel.value && wsSel.value !== state.workspace) {
+		try {
+			await fetch("/api/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: wsSel.value }) });
+			toast("已切换工作区：" + wsSel.value, true);
+		} catch (err) { toast("切换失败：" + err, false); }
+		await refresh(true);
+	}
 });
 
 /* ---------------- polling ---------------- */
@@ -495,7 +523,7 @@ async function refresh(force) {
 		if (!force && raw === lastRaw) return;
 		// Don't clobber a form the user is typing into.
 		const focus = document.activeElement;
-		if (!force && focus && $("#main").contains(focus) && ["INPUT","SELECT"].includes(focus.tagName)) { lastRaw = raw; return; }
+		if (!force && focus && ($("#main").contains(focus) || focus.id === "ws-path") && ["INPUT","SELECT"].includes(focus.tagName)) { lastRaw = raw; return; }
 		lastRaw = raw;
 		state = JSON.parse(raw);
 		render();

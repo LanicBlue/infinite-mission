@@ -87,11 +87,13 @@ fn state_json_exposes_the_console_data_contract() {
         })
         .collect::<Vec<_>>();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
-    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &templates).unwrap();
+    let workspaces = vec![ws.to_str().unwrap().to_string()];
+    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &templates, &workspaces).unwrap();
 
     // Top-level sections the page renders.
     for key in [
         "workspace",
+        "workspaces",
         "agents",
         "works",
         "missions",
@@ -231,7 +233,7 @@ fn state_json_lists_work_presets_for_the_create_modal() {
     let ws = tmp.path();
     im(ws).arg("init").assert().success();
     let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
-    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &[]).unwrap();
+    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &[], &[]).unwrap();
 
     let presets = state["presets"].as_array().unwrap();
     let keys: Vec<&str> = presets.iter().map(|p| p["key"].as_str().unwrap()).collect();

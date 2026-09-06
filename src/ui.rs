@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const PAGE: &str = include_str!("web/page.html");
@@ -17,10 +17,19 @@ const PAGE: &str = include_str!("web/page.html");
 const DEFAULT_UI_PORT: u16 = 4600;
 const IDLE_TIMEOUT_SECS: u64 = 5 * 60;
 
+/// Workspaces the console may switch between: the global registry
+/// (`~/.im/workspaces.json`, maintained by `im init` / `im workspaces`)
+/// plus the one the server started in. Switching is restricted to this
+/// list, so the endpoint can never be pointed at an arbitrary path.
+pub fn discover_workspaces(current: &Path) -> Vec<PathBuf> {
+    crate::registry::discover(current)
+}
+
 pub fn state_json(
     store: &crate::store::Store,
     workspace: &str,
     templates: &[String],
+    workspaces: &[String],
 ) -> Result<Value> {
     let now_ts = chrono::Utc::now().timestamp();
     let agents: Vec<Value> = store
@@ -172,6 +181,7 @@ pub fn state_json(
 
     Ok(json!({
         "workspace": workspace,
+        "workspaces": workspaces,
         "templates": templates,
         "presets": crate::pipeline::PRESETS
             .iter()
@@ -206,8 +216,25 @@ pub fn apply_action(
     action: &Value,
     workspace: &Path,
 ) -> Result<String> {
+    let response = apply_action_response(store, action, workspace)?;
+    let mut message = response["message"].as_str().unwrap_or_default().to_string();
+    if let Some(view) = response.get("runView") {
+        message.push('\n');
+        message.push_str(&serde_json::to_string_pretty(view)?);
+    }
+    Ok(message)
+}
+
+/// Preserve the usual ok/message envelope and return the direct first-round
+/// handoff as structured data rather than dropping it in the console adapter.
+pub fn apply_action_response(
+    store: &crate::store::Store,
+    action: &Value,
+    workspace: &Path,
+) -> Result<Value> {
     let kind = action["type"].as_str().context("action needs a `type`")?;
-    match kind {
+    let mut run_view = None;
+    let message: Result<String> = match kind {
         "set_tier" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
             let tier_str = action["tier"].as_str().context("`tier` required")?;
@@ -272,6 +299,7 @@ pub fn apply_action(
                 action["name"].as_str(),
                 action["objective"].as_str(),
             )?;
+            run_view = outcome.run_view;
             Ok(format!(
                 "{} mission {}",
                 if outcome.existed {
@@ -348,7 +376,12 @@ pub fn apply_action(
             Ok(format!("station {work} deleted"))
         }
         other => bail!("unknown action type: {other}"),
+    };
+    let mut response = json!({ "ok": true, "message": message? });
+    if let Some(view) = run_view {
+        response["runView"] = serde_json::to_value(view)?;
     }
+    Ok(response)
 }
 
 pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
@@ -371,8 +404,18 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
         ))?;
     let addr = listener.local_addr()?;
     let url = format!("http://{addr}");
+    let discovered = discover_workspaces(&workspace);
     println!("im console: {url}");
     println!("workspace: {}", workspace.display());
+    println!(
+        "switchable workspaces ({}): {}",
+        discovered.len(),
+        discovered
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("Ctrl-C stops the server; it also exits after {IDLE_TIMEOUT_SECS}s with no requests.");
 
     if !no_open {
@@ -396,13 +439,17 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
         });
     }
 
+    // The active workspace is shared mutable state: the console may switch
+    // between discovered workspaces at runtime via POST /api/workspace.
+    let workspace = Arc::new(Mutex::new(workspace));
+
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
             Err(_) => continue,
         };
         let last_request = Arc::clone(&last_request);
-        let workspace = Arc::clone(&Arc::new(workspace.clone()));
+        let workspace = Arc::clone(&workspace);
         std::thread::spawn(move || {
             last_request.store(now_secs(), Ordering::Relaxed);
             let _ = handle(stream, &workspace);
@@ -467,11 +514,12 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
     Ok(())
 }
 
-fn handle(mut stream: TcpStream, workspace: &Path) -> Result<()> {
+fn handle(mut stream: TcpStream, current: &Mutex<PathBuf>) -> Result<()> {
     let request = match read_request(&mut stream) {
         Ok(request) => request,
         Err(_) => return Ok(()),
     };
+    let workspace = current.lock().expect("workspace lock poisoned").clone();
     let db_path = workspace.join(".im").join("im.db");
 
     match (request.method.as_str(), request.path.as_str()) {
@@ -483,13 +531,62 @@ fn handle(mut stream: TcpStream, workspace: &Path) -> Result<()> {
         ),
         ("GET", "/api/state") => {
             let store = crate::store::Store::open(&db_path)?;
-            let templates = list_templates(workspace);
-            let state = state_json(&store, &workspace.display().to_string(), &templates)?;
+            let templates = list_templates(&workspace);
+            let workspaces: Vec<String> = discover_workspaces(&workspace)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            let state = state_json(
+                &store,
+                &workspace.display().to_string(),
+                &templates,
+                &workspaces,
+            )?;
             respond(
                 &mut stream,
                 "200 OK",
                 "application/json",
                 serde_json::to_string(&state)?.as_bytes(),
+            )
+        }
+        ("POST", "/api/workspace") => {
+            let body: Value = match serde_json::from_slice(&request.body) {
+                Ok(body) => body,
+                Err(err) => {
+                    let err = json!({ "ok": false, "error": format!("invalid JSON body: {err}") });
+                    return respond(
+                        &mut stream,
+                        "400 Bad Request",
+                        "application/json",
+                        err.to_string().as_bytes(),
+                    );
+                }
+            };
+            let target = body["path"].as_str().context("`path` required")?;
+            let target_path = PathBuf::from(target);
+            // Switching is restricted to discovered workspaces — the endpoint
+            // can never be pointed at an arbitrary path.
+            let allowed = discover_workspaces(&workspace);
+            if !allowed.contains(&target_path) || !target_path.join(".im").is_dir() {
+                let err = json!({
+                    "ok": false,
+                    "error": format!("not a known workspace: {target}"),
+                });
+                return respond(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    err.to_string().as_bytes(),
+                );
+            }
+            *current.lock().expect("workspace lock poisoned") = target_path.clone();
+            respond(
+                &mut stream,
+                "200 OK",
+                "application/json",
+                json!({ "ok": true, "workspace": target })
+                    .to_string()
+                    .as_bytes(),
             )
         }
         ("POST", "/api/action") => {
@@ -506,14 +603,12 @@ fn handle(mut stream: TcpStream, workspace: &Path) -> Result<()> {
                 }
             };
             let store = crate::store::Store::open(&db_path)?;
-            match apply_action(&store, &action, workspace) {
-                Ok(message) => respond(
+            match apply_action_response(&store, &action, &workspace) {
+                Ok(response) => respond(
                     &mut stream,
                     "200 OK",
                     "application/json",
-                    json!({ "ok": true, "message": message })
-                        .to_string()
-                        .as_bytes(),
+                    response.to_string().as_bytes(),
                 ),
                 Err(err) => respond(
                     &mut stream,
