@@ -5,7 +5,19 @@ use tempfile::TempDir;
 fn im(workspace: &Path) -> Command {
     let mut cmd = Command::cargo_bin("im").unwrap();
     cmd.current_dir(workspace);
+    // 测试 HOME：把注册表写进一次性目录，绝不污染真实 ~/.im/workspaces.json
+    cmd.env("HOME", test_home());
     cmd
+}
+
+fn test_home() -> std::path::PathBuf {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let home = std::env::temp_dir().join(format!("im-test-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).ok();
+        home
+    })
+    .clone()
 }
 
 /// The console page is a static file driven entirely by `state_json`; this
@@ -94,6 +106,7 @@ fn state_json_exposes_the_console_data_contract() {
     for key in [
         "workspace",
         "workspaces",
+        "registeredWorkspaces",
         "agents",
         "works",
         "missions",
@@ -248,4 +261,99 @@ fn state_json_lists_work_presets_for_the_create_modal() {
             preset["key"]
         );
     }
+}
+
+/// Resident console child that must never outlive the test: it holds the
+/// inherited stdout pipe, so a leak hangs the outer `cargo test` pipeline
+/// forever (no idle exit to reap it anymore).
+struct UiGuard(std::process::Child);
+impl Drop for UiGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn console_workspace_selection_persists_and_validates() {
+    // 子进程隔离 HOME：注册表与持久化文件都落临时目录，不碰真实 ~/.im
+    let home = tempfile::TempDir::new().unwrap();
+    let ws = tempfile::TempDir::new().unwrap();
+    let other = tempfile::TempDir::new().unwrap();
+    let bin = env!("CARGO_BIN_EXE_im");
+    // 切换只认注册表：两个工作区都经 im init 入册（同一测试 HOME）。
+    // init 经 current_dir 入册的是真实路径（/private/var/...），TempDir
+    // 给的是符号链接形式，POST 必须发 canonicalize 后的路径才对得上。
+    let other_canon = std::fs::canonicalize(other.path()).unwrap();
+    for dir in [ws.path(), other.path()] {
+        let status = std::process::Command::new(bin)
+            .env("HOME", home.path())
+            .current_dir(dir)
+            .arg("init")
+            .status()
+            .unwrap();
+        assert!(status.success(), "im init failed in {}", dir.display());
+    }
+
+    // 1) ui 起在 ws，经 API 切到别的已注册工作区 → 状态文件记录选择
+    let mut ui = UiGuard(
+        std::process::Command::new(bin)
+            .env("HOME", home.path())
+            .current_dir(ws.path())
+            .args(["ui", "--no-open", "--port", "4699"])
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Ok(Some(status)) = ui.0.try_wait() {
+            panic!("console exited early ({status}) — is port 4699 busy?");
+        }
+        if std::net::TcpStream::connect("127.0.0.1:4699").is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "console did not come up on 4699"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let resp = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--noproxy",
+            "*",
+            "-X",
+            "POST",
+            "http://127.0.0.1:4699/api/workspace",
+            "-d",
+            &format!(r#"{{"path":"{}"}}"#, other_canon.display()),
+        ])
+        .output()
+        .unwrap();
+    let body = String::from_utf8_lossy(&resp.stdout);
+    assert!(body.contains("\"ok\":true"), "switch failed: {body}");
+    let state = std::fs::read_to_string(home.path().join(".im/console-state.json")).unwrap();
+    assert!(
+        state.contains(other_canon.display().to_string().as_str()),
+        "{state}"
+    );
+
+    // 2) 指向未注册路径被拒（不会写入）
+    let bad = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--noproxy",
+            "*",
+            "-X",
+            "POST",
+            "http://127.0.0.1:4699/api/workspace",
+            "-d",
+            r#"{"path":"/nonexistent/ws"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("not a known workspace"));
+    // 守卫 Drop 时收尾；常驻进程没有闲置自退，这里显式确认已可停止
+    drop(ui);
 }

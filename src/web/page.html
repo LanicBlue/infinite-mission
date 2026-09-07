@@ -430,7 +430,14 @@ function settingsPane() {
 	</p></div>
 	<div class="card"><h3>权限阶梯</h3><p class="objective">${manage.length ? manage.map(o => `<span class="chip accent mono">${esc(o.id)}</span>`).join(" ") : "暂无 manage 成员 —— 在「成员」页 tier 下拉设置"}<br><span class="hint">execute ⊂ publish ⊂ manage：execute 只执行任务；publish 可建 mission；manage 另管工位与成员。manage 只能由控制台设置</span></p></div>
 	<div class="card"><h3>任务模板</h3><p class="objective">${(state.templates||[]).map(t => `<span class="chip mono">${esc(t)}</span>`).join(" ") || "无"}</p>
-	<p class="hint">控制台是临时进程：仅绑 127.0.0.1，闲置 300 秒自动退出；每 2 秒轮询。</p></div>`;
+	<p class="hint">控制台常驻：仅绑 127.0.0.1（对外经网关隧道）；每 2 秒轮询。im 本体仍是无服务 CLI。</p></div>
+	<div class="card"><h3>全局注册表</h3>
+	<div class="table-wrap"><table><thead><tr><th>工作区</th><th>状态</th><th></th></tr></thead><tbody>
+	${(state.registeredWorkspaces||[]).map(w => `<tr><td class="mono">${esc(w.path)}</td>
+	<td>${w.live ? '<span class="chip accent">✓ 在册可用</span>' : '<span class="chip danger">✗ 目录已不存在</span>'}</td>
+	<td><button class="btn small danger" data-act="remove-workspace" data-path="${esc(w.path)}" title="从注册表移除（不删目录）">移除</button></td></tr>`).join("") || '<tr><td colspan="3" class="meta">注册表为空</td></tr>'}
+	</tbody></table></div>
+	<p class="hint"><code>im init</code> 只追加；清理失效条目在这里按下或用 <code>im workspaces --prune</code>。 <button class="btn small" data-act="prune-workspaces">清理全部失效</button></p></div>`;
 }
 
 function render() {
@@ -453,6 +460,8 @@ document.addEventListener("click", async e => {
 	if (!btn) return;
 	const d = btn.dataset;
 	switch (d.act) {
+		case "remove-workspace": await act({ type: "remove_workspace", path: d.path }); break;
+		case "prune-workspaces": await act({ type: "prune_workspaces" }); break;
 		case "resolve": resolveModal(d.mission, Number(d.revision), d.outcome, d.reason); break;
 		case "resolve-confirm": {
 			const ok = await act({ type: "mission_submit", mission: d.mission, revision: Number(d.revision), outcome: d.outcome, reason: field("resolve-reason") });

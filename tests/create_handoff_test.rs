@@ -32,7 +32,19 @@ paths:
 fn cli(ws: &Path) -> Command {
     let mut cmd = Command::cargo_bin("im").unwrap();
     cmd.current_dir(ws);
+    // 测试 HOME：把注册表写进一次性目录，绝不污染真实 ~/.im/workspaces.json
+    cmd.env("HOME", test_home());
     cmd
+}
+
+fn test_home() -> std::path::PathBuf {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let home = std::env::temp_dir().join(format!("im-test-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).ok();
+        home
+    })
+    .clone()
 }
 
 fn setup(executor: Option<&str>) -> (TempDir, Store) {

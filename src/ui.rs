@@ -1,26 +1,51 @@
-//! The control plane console: an ephemeral local web server over the same
-//! static SQLite core. Binds 127.0.0.1 only, opens the browser, exits on
-//! Ctrl-C or after 5 idle minutes — nothing to keep alive.
+//! The control plane console: a resident local web server over the same
+//! static SQLite core. Binds 127.0.0.1 only (external access goes through
+//! the gateway in front of it) and runs until stopped — im itself stays a
+//! serverless CLI; the console is just a viewer over `.im/im.db` and its
+//! lifecycle never affects CLI usage.
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const PAGE: &str = include_str!("web/page.html");
 
 /// Fixed default console port so the URL is stable across runs.
 const DEFAULT_UI_PORT: u16 = 4600;
-const IDLE_TIMEOUT_SECS: u64 = 5 * 60;
 
 /// Workspaces the console may switch between: the global registry
 /// (`~/.im/workspaces.json`, maintained by `im init` / `im workspaces`)
 /// plus the one the server started in. Switching is restricted to this
 /// list, so the endpoint can never be pointed at an arbitrary path.
+/// Console workspace selection memory: survives the transient console
+/// process (idle exit + launchd respawn) so a restart lands where the user
+/// left off, not on the boot cwd.
+fn console_state_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("$HOME is not set")?;
+    Ok(Path::new(&home).join(".im").join("console-state.json"))
+}
+
+fn save_last_workspace(workspace: &Path) -> Result<()> {
+    let path = console_state_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path,
+        serde_json::json!({ "workspace": workspace.display().to_string() }).to_string(),
+    )
+    .with_context(|| format!("writing {}", path.display()))
+}
+
+fn load_last_workspace() -> Option<PathBuf> {
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(console_state_path().ok()?).ok()?).ok()?;
+    raw.get("workspace")?.as_str().map(PathBuf::from)
+}
+
 pub fn discover_workspaces(current: &Path) -> Vec<PathBuf> {
     crate::registry::discover(current)
 }
@@ -182,6 +207,11 @@ pub fn state_json(
     Ok(json!({
         "workspace": workspace,
         "workspaces": workspaces,
+        "registeredWorkspaces": crate::registry::list_with_liveness()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, live)| json!({ "path": path.display().to_string(), "live": live }))
+            .collect::<Vec<_>>(),
         "templates": templates,
         "presets": crate::pipeline::PRESETS
             .iter()
@@ -245,6 +275,28 @@ pub fn apply_action_response(
             // and may set manage itself.
             store.set_agent_tier("workspace", agent, tier)?;
             Ok(format!("set {agent} → {tier_str} tier"))
+        }
+        "prune_workspaces" => {
+            let removed = crate::registry::prune()?;
+            Ok(format!(
+                "pruned {removed} stale workspace entr{}",
+                if removed == 1 { "y" } else { "ies" }
+            ))
+        }
+        "remove_workspace" => {
+            let target = action["path"].as_str().context("`path` required")?;
+            let target = std::path::PathBuf::from(target);
+            if target == workspace {
+                return Err(anyhow::anyhow!(
+                    "当前工作区不能从注册表移除——先切换到别的工作区"
+                ));
+            }
+            let removed = crate::registry::remove(&target)?;
+            Ok(if removed {
+                format!("removed {target:?} from the registry")
+            } else {
+                format!("{target:?} was not registered")
+            })
         }
         "delete_agent" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
@@ -385,7 +437,7 @@ pub fn apply_action_response(
 }
 
 pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
-    let workspace: PathBuf = {
+    let mut workspace: PathBuf = {
         let mut dir = std::env::current_dir()?;
         loop {
             if dir.join(".im").exists() {
@@ -397,6 +449,12 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
         }
         dir
     };
+    // 重启恢复：上次选中的工作区仍在册（.im 存在）就回到它，否则用启动目录。
+    if let Some(last) = load_last_workspace() {
+        if last.join(".im").is_dir() {
+            workspace = last;
+        }
+    }
     let port = port.unwrap_or(DEFAULT_UI_PORT);
     let listener = TcpListener::bind(("127.0.0.1", port))
         .with_context(|| format!(
@@ -416,7 +474,9 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    println!("Ctrl-C stops the server; it also exits after {IDLE_TIMEOUT_SECS}s with no requests.");
+    println!(
+        "Resident console — stops on Ctrl-C / service stop. im itself stays a serverless CLI."
+    );
 
     if !no_open {
         let opener = if cfg!(target_os = "macos") {
@@ -425,18 +485,6 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
             "xdg-open"
         };
         let _ = std::process::Command::new(opener).arg(&url).spawn();
-    }
-
-    let last_request = Arc::new(AtomicU64::new(now_secs()));
-    {
-        let last_request = Arc::clone(&last_request);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(15));
-            if now_secs().saturating_sub(last_request.load(Ordering::Relaxed)) > IDLE_TIMEOUT_SECS {
-                println!("im console: idle timeout, exiting.");
-                std::process::exit(0);
-            }
-        });
     }
 
     // The active workspace is shared mutable state: the console may switch
@@ -448,21 +496,12 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
             Ok(stream) => stream,
             Err(_) => continue,
         };
-        let last_request = Arc::clone(&last_request);
         let workspace = Arc::clone(&workspace);
         std::thread::spawn(move || {
-            last_request.store(now_secs(), Ordering::Relaxed);
             let _ = handle(stream, &workspace);
         });
     }
     Ok(())
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 struct Request {
@@ -580,6 +619,9 @@ fn handle(mut stream: TcpStream, current: &Mutex<PathBuf>) -> Result<()> {
                 );
             }
             *current.lock().expect("workspace lock poisoned") = target_path.clone();
+            if let Err(err) = save_last_workspace(&target_path) {
+                eprintln!("im console: cannot persist workspace selection: {err}");
+            }
             respond(
                 &mut stream,
                 "200 OK",
