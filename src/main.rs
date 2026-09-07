@@ -551,8 +551,96 @@ fn cmd_template(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
-        _ => bail!("Usage: im template list"),
+        Some("install") if args.len() >= 3 => {
+            let manager = &args[1];
+            let source = PathBuf::from(&args[2]);
+            let name = flag_value(&args[3..], "--name")?.unwrap_or_else(|| {
+                source
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default()
+                    .to_string()
+            });
+            if !valid_template_name(&name) {
+                bail!("template name must be lowercase kebab-case");
+            }
+
+            // Identity and tier gate BEFORE touching the source file, same
+            // order as mission create — install must not double as a free
+            // contract linter for non-manage members.
+            let workspace = find_workspace()?;
+            let store = open_store(&workspace)?;
+            ensure_agent(&store, manager)?;
+            check_session(&workspace, &store, manager)?;
+            store.require_tier(manager, im::records::Tier::Manage)?;
+
+            let bytes = std::fs::read(&source)
+                .with_context(|| format!("cannot read template source {}", source.display()))?;
+            let parsed = im::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
+            let installed_path = format!(".im/templates/{name}.yaml");
+            // Compile before installing so every structural contract rule is
+            // enforced at the trusted boundary, not deferred until creation.
+            im::contract::compile(&parsed, &installed_path, &bytes)?;
+
+            let known: std::collections::BTreeSet<String> = store
+                .list_works()?
+                .into_iter()
+                .map(|work| work.work_key)
+                .collect();
+            let missing: Vec<&str> = parsed
+                .works
+                .keys()
+                .map(String::as_str)
+                .filter(|work| !known.contains(*work))
+                .collect();
+            if !missing.is_empty() {
+                bail!(
+                    "template references unknown stations: {}",
+                    missing.join(", ")
+                );
+            }
+
+            let destination = templates_dir(&workspace).join(format!("{name}.yaml"));
+            if destination.exists() {
+                let installed = std::fs::read(&destination)?;
+                if installed == bytes {
+                    println!("Template {name} already installed (identical bytes).");
+                    return Ok(());
+                }
+                bail!("template '{name}' already exists with different bytes; choose a new --name");
+            }
+
+            // The templates dir is only created by `im init`; install must
+            // work on workspaces whose .im was partially restored by hand.
+            std::fs::create_dir_all(templates_dir(&workspace)).with_context(|| {
+                format!("cannot create {}", templates_dir(&workspace).display())
+            })?;
+            let temporary = templates_dir(&workspace)
+                .join(format!(".{name}.yaml.{}.tmp", uuid::Uuid::new_v4()));
+            std::fs::write(&temporary, &bytes)
+                .with_context(|| format!("cannot write {}", temporary.display()))?;
+            let linked = std::fs::hard_link(&temporary, &destination);
+            let _ = std::fs::remove_file(&temporary);
+            linked.with_context(|| {
+                format!(
+                    "cannot install template {name} at {}",
+                    destination.display()
+                )
+            })?;
+            println!("Installed template {name} from {}.", source.display());
+            Ok(())
+        }
+        _ => bail!(
+            "Usage: im template <list | install <op> <source.yaml> [--name <lowercase-kebab>] >"
+        ),
     }
+}
+
+fn valid_template_name(name: &str) -> bool {
+    // Template names become file names under .im/templates/, so beyond the
+    // shared kebab-case rule they carry a length cap (a >208-char name dies
+    // on ENAMETOOLONG once the tmp suffix is appended).
+    im::contract::valid_work_key(name) && name.len() <= 64
 }
 
 // --- Missions ---
@@ -587,6 +675,9 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
     ensure_agent(&store, manager)?;
     check_session(&workspace, &store, manager)?;
 
+    if !valid_template_name(&template_name) {
+        bail!("template name must be lowercase kebab-case");
+    }
     let template_path = templates_dir(&workspace).join(format!("{template_name}.yaml"));
     let bytes = std::fs::read(&template_path)
         .with_context(|| format!("template '{template_name}' not found in .im/templates/"))?;
@@ -1054,6 +1145,8 @@ Member tiers (execute ⊂ publish ⊂ manage; manage is console-only)
              / set-prompt <op> <work> --preset <name> / set-description <op> <work> <text...>
              / delete <op> <work>
   im template list                          Mission templates in .im/templates/
+  im template install <op> <source.yaml> [--name <name>]
+                                             Validate + atomically install a versioned contract
 
 Missions (PS semantics)
   im mission create <op> --template <name> --key <unique-key> [--name] [--objective]

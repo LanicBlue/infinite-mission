@@ -187,6 +187,7 @@ Stations    im work create|list|set-executor|set-prompt|delete
             im work set-description <op> <work> <text...>
             # list shows executor, holding/en-route occupancy, and the one-line summary
 Templates   im template list           (.im/templates/*.yaml)
+            im template install <op> <source.yaml> [--name <name>]
 Missions    im mission create|show|events|end
             im mission submit <agent> <ms> --revision N --outcome O
                                  [--next-node] [--reason] [--feedback] [--receipts]

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 pub const ABANDON: &str = "abandon";
 pub const ANY: &str = "any";
 
-fn valid_work_key(key: &str) -> bool {
+pub fn valid_work_key(key: &str) -> bool {
     !key.is_empty()
         && key.chars().next().unwrap().is_ascii_lowercase()
         && key

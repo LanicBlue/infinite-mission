@@ -148,6 +148,147 @@ fn first_mission_id(workspace: &Path) -> String {
 }
 
 #[test]
+fn manager_can_validate_and_install_a_versioned_template_without_overwrite() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+    im(ws).arg("init").assert().success();
+    im(ws).args(["join", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
+
+    let source = ws.join("visual-gate.yaml");
+    std::fs::write(
+        &source,
+        "schemaVersion: 4\nname: visual-gate\nentry: design\nworks:\n  design:\n    completion: {outcomes: [accept], terminal: [accept], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
+
+    im(ws)
+        .args(["template", "install", "boss", "visual-gate.yaml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed template visual-gate"));
+    im(ws)
+        .args(["template", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("visual-gate"));
+
+    // Reinstalling identical bytes is idempotent; changed bytes never
+    // overwrite a previously installed immutable source contract.
+    im(ws)
+        .args(["template", "install", "boss", "visual-gate.yaml"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already installed"));
+    std::fs::write(
+        &source,
+        "schemaVersion: 4\nname: visual-gate\nentry: design\nworks:\n  design:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
+    im(ws)
+        .args(["template", "install", "boss", "visual-gate.yaml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "already exists with different bytes",
+        ));
+}
+
+#[test]
+fn template_install_gates_and_self_heals() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+    im(ws).arg("init").assert().success();
+    im(ws).args(["join", "boss"]).assert().success();
+    im(ws).args(["join", "peon"]).assert().success();
+    seed_tier(ws, "boss", "manage");
+
+    let source = ws.join("gate.yaml");
+    std::fs::write(
+        &source,
+        "schemaVersion: 4\nname: gate\nentry: design\nworks:\n  design:\n    completion: {outcomes: [accept], terminal: [accept], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
+
+    // Tier gates BEFORE the source is read: an execute member with a broken
+    // source file gets the tier error, not a parse report.
+    let broken = ws.join("broken.yaml");
+    std::fs::write(&broken, "not: [a template").unwrap();
+    im(ws)
+        .args(["template", "install", "peon", "broken.yaml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("below manage tier"));
+
+    // Names are whitelisted: traversal and bad kebab-case never reach path
+    // joining.
+    for bad in ["../evil", "Big", "a_b", "-x", "x-"] {
+        im(ws)
+            .args(["template", "install", "boss", "gate.yaml", "--name", bad])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("lowercase kebab-case"));
+    }
+
+    // Station references must exist in the workspace.
+    let stray = ws.join("stray.yaml");
+    std::fs::write(
+        &stray,
+        "schemaVersion: 4\nname: stray\nentry: nowhere\nworks:\n  nowhere:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
+    im(ws)
+        .args(["template", "install", "boss", "stray.yaml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown stations: nowhere"));
+
+    // A hand-pruned .im/templates must not break install.
+    std::fs::remove_dir_all(ws.join(".im").join("templates")).unwrap();
+    im(ws)
+        .args([
+            "template",
+            "install",
+            "boss",
+            "gate.yaml",
+            "--name",
+            "renamed",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed template renamed"));
+    im(ws)
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "renamed",
+            "--key",
+            "gate-1",
+        ])
+        .assert()
+        .success();
+
+    // mission create applies the same name whitelist — no ../ escape out of
+    // .im/templates/, even for a file that actually exists.
+    std::fs::write(ws.join(".im").join("evil.yaml"), "").unwrap();
+    im(ws)
+        .args([
+            "mission",
+            "create",
+            "boss",
+            "--template",
+            "../evil",
+            "--key",
+            "gate-2",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("lowercase kebab-case"));
+}
+
+#[test]
 fn mission_create_is_idempotent_by_key() {
     let (fixture, mission_id) = setup();
     let ws = fixture.workspace;
