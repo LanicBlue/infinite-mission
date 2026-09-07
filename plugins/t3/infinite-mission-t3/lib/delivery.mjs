@@ -92,6 +92,20 @@ export class Delivery {
   }
 
   /**
+   * Does a live thread already exist for this mission? Ground truth the
+   * reconcile sweep uses for "a round already reached T3" — deterministic
+   * thread ids keep the probe stateless across bridge restarts.
+   */
+  async hasThread(missionId) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const snapshot = await this.t3.threadDetail(threadIdFor(missionId, attempt));
+      const thread = snapshot?.thread;
+      if (thread && !thread.deletedAt) return true;
+    }
+    return false;
+  }
+
+  /**
    * Resolve where a mission's thread lives. `create` means the base id is
    * free; `followup` means the thread exists (the same mission returned for
    * another round — inject into it rather than forking).

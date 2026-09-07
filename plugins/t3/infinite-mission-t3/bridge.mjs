@@ -146,6 +146,7 @@ export class Bridge {
     }
 
     await this.#flushRetries();
+    await this.#sweepUndelivered(workspaces, members);
     await this.#pollWatchers();
   }
 
@@ -255,9 +256,15 @@ export class Bridge {
   }
 
   async #handleArrival(workspace, member, arrival, tag) {
-    const { station, missionId } = arrival;
-    // The note is only a trigger: re-read the mission from the authority
-    // before acting. A failed show means the mission moved on — drop it.
+    await this.#tryDeliver(workspace, member, arrival.station, arrival.missionId, tag);
+  }
+
+  /**
+   * Deliver a mission to T3: the note (or sweep) is only a trigger, so
+   * re-read the mission from the authority first. A failed show means the
+   * mission moved on — drop it.
+   */
+  async #tryDeliver(workspace, member, station, missionId, tag) {
     let show;
     try {
       show = await this.runner.missionShow(workspace, missionId, member.id);
@@ -282,6 +289,48 @@ export class Bridge {
     } catch (err) {
       this.log(tag, `delivery failed for ${missionId}@${station}: ${err.message} (queued for retry)`);
       this.retryQueue.push({ workspace, member, station, missionId, attempts: 0 });
+    }
+  }
+
+  /**
+   * Reconcile sweep: a mission parked at an enabled member's station with no
+   * live T3 thread never reached T3 — its arrival note was consumed by a
+   * delivery that failed past the retry budget, or the bridge restarted
+   * around it. Deliver it again; a live thread (deterministic id) is the
+   * ground truth that a round already arrived, so delivered missions —
+   * including follow-up rounds into their existing threads — are skipped.
+   */
+  async #sweepUndelivered(workspaces, members) {
+    if (!this.t3) return;
+    const queued = new Set(this.retryQueue.map((i) => `${i.workspace}\0${i.member.id}\0${i.missionId}`));
+    const watched = new Set(this.watching.map((w) => `${w.workspace}\0${w.member.id}\0${w.missionId}`));
+    for (const workspace of workspaces) {
+      for (const member of members) {
+        if (!member.enabled) continue;
+        if (this.muted.has(this.key(workspace, member.id))) continue;
+        let entries;
+        try {
+          entries = await this.runner.missionsAt(workspace, member.id);
+        } catch (err) {
+          this.log(this.tag(workspace, member.id), `sweep: im missions failed (${err.message})`);
+          continue;
+        }
+        for (const { id: missionId, station } of entries) {
+          const dedupe = `${workspace}\0${member.id}\0${missionId}`;
+          if (queued.has(dedupe) || watched.has(dedupe)) continue;
+          let arrived;
+          try {
+            arrived = await this.delivery.hasThread(missionId);
+          } catch (err) {
+            // T3 unreachable — retries own recovery; re-probe next tick.
+            this.log("bridge", `sweep aborted (T3 probe failed): ${err.message}`);
+            return;
+          }
+          if (arrived) continue;
+          this.log(this.tag(workspace, member.id), `sweep: ${missionId}@${station} has no T3 thread — delivering`);
+          await this.#tryDeliver(workspace, member, station, missionId, this.tag(workspace, member.id));
+        }
+      }
     }
   }
 
@@ -341,9 +390,14 @@ export class Bridge {
     for (const item of pending) {
       item.attempts += 1;
       if (item.attempts > this.config.maxDeliverAttempts) {
+        // Park instead of dropping: a dropped item is a mission stranded at
+        // its station (its arrival note was already consumed). The counter
+        // resets and later reconciles keep trying — T3 coming back heals it.
+        item.attempts = 0;
+        this.retryQueue.push(item);
         this.log(
           this.tag(item.workspace, item.member.id),
-          `giving up on ${item.missionId}@${item.station} after ${item.attempts - 1} attempt(s) — it will re-notify on the mission's next move`,
+          `parking ${item.missionId}@${item.station} after ${this.config.maxDeliverAttempts} attempt(s) — stays queued for later reconciles`,
         );
         continue;
       }
@@ -361,6 +415,7 @@ export class Bridge {
           brief: show.text,
         });
         this.log(this.tag(item.workspace, item.member.id), `retry delivered ${item.missionId}@${item.station} → ${threadId}`);
+        this.watching.push({ workspace: item.workspace, member: item.member, missionId: item.missionId, threadId });
       } catch (err) {
         this.log(this.tag(item.workspace, item.member.id), `retry ${item.attempts} failed for ${item.missionId}: ${err.message}`);
         this.retryQueue.push(item);

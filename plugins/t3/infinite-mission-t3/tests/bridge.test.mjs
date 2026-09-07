@@ -53,6 +53,12 @@ class ScriptedRunner {
     this.calls.missions.push([workspace, memberId]);
     return typeof this.missionsSource === "function" ? this.missionsSource(memberId) : this.missionsSource;
   }
+  async missionsAt(workspace, memberId) {
+    this.calls.missionsAt = this.calls.missionsAt || [];
+    this.calls.missionsAt.push([workspace, memberId]);
+    const source = typeof this.missionsSource === "function" ? this.missionsSource(memberId) : this.missionsSource;
+    return source.map((entry) => (typeof entry === "string" ? { id: entry, station: "build" } : entry));
+  }
   async workspaces() {
     this.calls.workspaces += 1;
     return [WS];
@@ -63,7 +69,9 @@ class FakeDelivery {
   constructor() {
     this.deliverCalls = [];
     this.settleCalls = [];
+    this.hasThreadCalls = [];
     this.failDeliver = false;
+    this.threadExists = async () => true;
   }
   async deliver(args) {
     if (this.failDeliver) throw new Error("t3 unreachable");
@@ -73,6 +81,10 @@ class FakeDelivery {
   async settle(missionId) {
     this.settleCalls.push(missionId);
     return true;
+  }
+  async hasThread(missionId) {
+    this.hasThreadCalls.push(missionId);
+    return this.threadExists(missionId);
   }
 }
 
@@ -350,4 +362,76 @@ test("watcher keeps watching while the turn is still running", async (t) => {
   await bridge.reconcile();
   assert.equal(delivery.settleCalls.length, 0);
   assert.equal(bridge.watching.length, 1); // still watching
+});
+
+test("sweep delivers a station mission that has no T3 thread, once", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missionShow: () => ({ ok: true, text: "[mission ms_dddddddddddddddd] Swept — active\n  revision: 3" }),
+    missions: [{ id: "ms_dddddddddddddddd", station: "audit" }],
+  });
+  const delivery = new FakeDelivery();
+  delivery.threadExists = async () => false;
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 1);
+  assert.equal(delivery.deliverCalls[0].missionId, "ms_dddddddddddddddd");
+  assert.equal(delivery.deliverCalls[0].station, "audit");
+  assert.equal(bridge.watching.length, 1);
+  await bridge.reconcile(); // already watching → no duplicate
+  assert.equal(delivery.deliverCalls.length, 1);
+});
+
+test("sweep skips missions whose thread already exists (follow-up rounds included)", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missions: [{ id: "ms_aaaabbbbccccdddd", station: "build" }],
+  });
+  const delivery = new FakeDelivery(); // threadExists → true by default
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.equal(delivery.hasThreadCalls.length, 1);
+  assert.equal(delivery.deliverCalls.length, 0);
+});
+
+test("sweep aborts cleanly when the T3 probe fails", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missions: [{ id: "ms_aaaabbbbccccdddd", station: "build" }],
+  });
+  const delivery = new FakeDelivery();
+  delivery.threadExists = async () => {
+    throw new Error("connection refused");
+  };
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile(); // must not throw
+  assert.equal(delivery.deliverCalls.length, 0);
+});
+
+test("exhausted retries park in the queue instead of dropping; healing delivers and watches", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL("ms_cccccccccccccccc") }],
+    missionShow: () => ({ ok: true, text: "[mission ms_cccccccccccccccc] Parked — active" }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  delivery.failDeliver = true;
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig({ maxDeliverAttempts: 1 }), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => runner.calls.missionShow.length === 1)); // arrival consumed, delivery failed
+  await bridge.reconcile(); // attempt 1 of 1 → fails again, stays queued
+  assert.equal(bridge.retryQueue.length, 1);
+  await bridge.reconcile(); // over budget → parked, still queued
+  assert.equal(bridge.retryQueue.length, 1);
+  assert.equal(bridge.retryQueue[0].attempts, 0);
+  delivery.failDeliver = false;
+  await bridge.reconcile(); // parked item retries → delivers
+  assert.equal(bridge.retryQueue.length, 0);
+  assert.equal(delivery.deliverCalls.length, 1);
+  assert.equal(bridge.watching.length, 1); // retry delivery gets a turn watcher too
 });

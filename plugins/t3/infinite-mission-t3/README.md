@@ -129,18 +129,22 @@ on the launcher links to it.
   remove it from the config.
 - **runtimeMode** — `full-access` (default) runs missions unattended. Pick a
   stricter mode per member if the workspace deserves it.
-- **Known gap (inherited from the DSH design)** — a delivery that fails after
-  all retries, or an arrival that lands while the bridge process is down,
-  relies on the mission's next move to re-notify. The im console's station
-  holding counters make such missions visible.
+- **Reconcile sweep** — every reconcile tick re-scans active missions at
+  enabled members' stations and re-delivers any that has no live T3 thread
+  (deterministic `im-<missionId>` ids are the ground truth, so follow-up
+  rounds into existing threads are never re-fired). A delivery that exhausts
+  its retry budget is parked in the queue rather than dropped, so a T3
+  outage longer than the retry window no longer strands the mission —
+  recovery is automatic once T3 is reachable again.
 
 ## Tests
 
 ```sh
-node --test tests/
+node --test "tests/"*.test.mjs
 ```
 
 Covers the note parser (closed shapes + garbage), config validation,
 delivery decision paths (create / follow-up / unarchive / create-race
 fallback / settle), and bridge lifecycle (guard-join, suffix landing,
-archived respect, membership-end mute, retry healing, config toggle).
+archived respect, membership-end mute, retry healing + parking, reconcile
+sweep, config toggle).

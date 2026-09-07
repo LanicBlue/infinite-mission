@@ -5,7 +5,7 @@ import { runCapture } from "./spawn.mjs";
 
 const ROSTER_LINE = /^  (.+?) — (.+?) \[(execute|publish|manage)\]$/;
 const WORKSPACE_LINE = /^  ([✓✗]) (.+)$/;
-const MISSIONS_LINE = /^\[mission (ms_[0-9a-f]{6,64})\] at /;
+const MISSIONS_LINE = /^\[mission (ms_[0-9a-f]{6,64})\] at (\S+)/;
 
 export class ProcessImRunner {
   constructor({ imBin = "im" } = {}) {
@@ -61,18 +61,29 @@ export class ProcessImRunner {
     return { ok: res.code === 0, text: res.stdout };
   }
 
-  /** Active mission ids at the member's stations. */
-  async missions(workspace, memberId) {
+  /** Active missions at the member's stations, with the station key. */
+  async #missionsEntries(workspace, memberId) {
     const res = await this.#run(["missions", memberId], workspace);
     if (res.code !== 0) {
       throw new Error(`im missions ${memberId} failed (exit ${res.code}): ${res.stderr.trim().slice(0, 200)}`);
     }
-    const ids = [];
+    const entries = [];
     for (const line of res.stdout.split("\n")) {
       const match = line.match(MISSIONS_LINE);
-      if (match) ids.push(match[1]);
+      if (match) entries.push({ id: match[1], station: match[2] });
     }
-    return ids;
+    return entries;
+  }
+
+  /** Active mission ids at the member's stations. */
+  async missions(workspace, memberId) {
+    const entries = await this.#missionsEntries(workspace, memberId);
+    return entries.map((entry) => entry.id);
+  }
+
+  /** Active missions as `{ id, station }` — the reconcile sweep's input. */
+  async missionsAt(workspace, memberId) {
+    return this.#missionsEntries(workspace, memberId);
   }
 
   /** Live workspace paths from the global registry. */
