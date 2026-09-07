@@ -136,7 +136,35 @@ impl Store {
         }
         let mut conn = Connection::open(path)
             .with_context(|| format!("failed to open database: {}", path.display()))?;
-        conn.execute_batch(&schema())?;
+        // Install the busy handler BEFORE the schema batch: its first
+        // statement switches journal_mode to WAL, which needs exclusive
+        // access — concurrent first-opens of a legacy (rollback-journal)
+        // db used to fail with "database is locked" before the batch ever
+        // reached its own PRAGMA busy_timeout.
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+        // journal_mode=WAL needs exclusive access and never invokes the
+        // busy handler, so concurrent first-opens of a legacy
+        // (rollback-journal) db still bounce off each other — retry the
+        // idempotent schema batch for a bounded window instead of dying.
+        let mut attempt = 0;
+        loop {
+            match conn.execute_batch(&schema()) {
+                Ok(()) => break,
+                Err(err) => {
+                    let busy = matches!(
+                        &err,
+                        rusqlite::Error::SqliteFailure(e, _)
+                            if e.code == rusqlite::ErrorCode::DatabaseBusy
+                                || e.code == rusqlite::ErrorCode::DatabaseLocked
+                    );
+                    attempt += 1;
+                    if !busy || attempt >= 50 {
+                        return Err(err.into());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
         // Legacy-schema migrations run as ONE immediate transaction. The
         // probe-then-patch steps must be atomic against concurrent opens:
         // two processes first-opening the same legacy DB race otherwise
