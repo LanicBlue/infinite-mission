@@ -62,15 +62,16 @@ function types(t3) {
   return t3.dispatched.map((command) => command.type);
 }
 
-test("threadIdFor determinism and suffixes", () => {
-  assert.equal(threadIdFor("ms_abc"), "im-ms_abc");
-  assert.equal(threadIdFor("ms_abc", 1), "im-ms_abc-2");
-  assert.equal(threadIdFor("ms_abc", 2), "im-ms_abc-3");
+test("threadIdFor determinism, per-member scope, and suffixes", () => {
+  assert.equal(threadIdFor("t3-codex", "ms_abc"), "im-t3-codex-ms_abc");
+  assert.equal(threadIdFor("t3-codex", "ms_abc", 1), "im-t3-codex-ms_abc-2");
+  assert.equal(threadIdFor("t3-codex", "ms_abc", 2), "im-t3-codex-ms_abc-3");
+  assert.notEqual(threadIdFor("t3-kimi", "ms_abc"), threadIdFor("t3-codex", "ms_abc"));
 });
 
-test("titleFromBrief extracts the mission name", () => {
-  assert.equal(titleFromBrief(BRIEF, "build", "ms_x"), "im/build: Smoke mission");
-  assert.equal(titleFromBrief("garbage\nmore", "review", "ms_abc123def"), "im/review: ms_abc123def");
+test("titleFromBrief extracts the mission name with the member prefix", () => {
+  assert.equal(titleFromBrief(BRIEF, "t3-codex", "build", "ms_x"), "im/t3-codex@build: Smoke mission");
+  assert.equal(titleFromBrief("garbage\nmore", "t3-codex", "review", "ms_abc123def"), "im/t3-codex@review: ms_abc123def");
 });
 
 test("modelSelectionOf passes options through", () => {
@@ -102,12 +103,12 @@ test("first delivery creates the project and thread, then starts the turn", asyn
       missionId: "ms_aaaabbbbccccdddd",
       brief: BRIEF,
     });
-    assert.equal(threadId, "im-ms_aaaabbbbccccdddd");
+    assert.equal(threadId, "im-t3-codex-ms_aaaabbbbccccdddd");
     assert.deepEqual(types(t3), ["project.create", "thread.create", "thread.turn.start"]);
     const project = t3.dispatched[0];
     assert.equal(project.workspaceRoot, fs.realpathSync(dir));
     const thread = t3.dispatched[1];
-    assert.equal(thread.title, "im/build: Smoke mission");
+    assert.equal(thread.title, "im/t3-codex@build: Smoke mission");
     assert.deepEqual(thread.modelSelection, { instanceId: "codex", model: "gpt-5.6-luna" });
     assert.equal(thread.runtimeMode, "full-access");
     const turn = t3.dispatched[2];
@@ -136,7 +137,7 @@ test("existing project with the same real root is reused (no project.create)", a
     });
     assert.deepEqual(types(t3), ["thread.create", "thread.turn.start"]);
     assert.equal(t3.dispatched[0].projectId, "p-existing");
-    assert.equal(threadId, "im-ms_aaaabbbbccccdddd");
+    assert.equal(threadId, "im-t3-codex-ms_aaaabbbbccccdddd");
   } finally {
     cleanup();
   }
@@ -147,7 +148,7 @@ test("follow-up arrival injects into the existing thread without creating", asyn
   const t3 = new FakeT3({
     projects: [{ id: "p-existing", workspaceRoot: dir }],
     threads: new Map([
-      ["im-ms_aaaabbbbccccdddd", { id: "im-ms_aaaabbbbccccdddd", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null }],
+      ["im-t3-codex-ms_aaaabbbbccccdddd", { id: "im-t3-codex-ms_aaaabbbbccccdddd", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null }],
     ]),
   });
   const delivery = new Delivery(t3);
@@ -160,7 +161,7 @@ test("follow-up arrival injects into the existing thread without creating", asyn
       brief: BRIEF,
     });
     assert.deepEqual(types(t3), ["thread.turn.start"]);
-    assert.equal(threadId, "im-ms_aaaabbbbccccdddd");
+    assert.equal(threadId, "im-t3-codex-ms_aaaabbbbccccdddd");
   } finally {
     cleanup();
   }
@@ -171,7 +172,7 @@ test("archived thread is unarchived before the follow-up turn", async () => {
   const t3 = new FakeT3({
     projects: [{ id: "p-existing", workspaceRoot: dir }],
     threads: new Map([
-      ["im-ms_aaaabbbbccccdddd", { id: "im-ms_aaaabbbbccccdddd", archivedAt: "2026-09-01T00:00:00Z", deletedAt: null, settledAt: null, settledOverride: null }],
+      ["im-t3-codex-ms_aaaabbbbccccdddd", { id: "im-t3-codex-ms_aaaabbbbccccdddd", archivedAt: "2026-09-01T00:00:00Z", deletedAt: null, settledAt: null, settledOverride: null }],
     ]),
   });
   const delivery = new Delivery(t3);
@@ -201,7 +202,7 @@ test("thread.create failure falls back to a suffixed thread id once", async () =
       missionId: "ms_aaaabbbbccccdddd",
       brief: BRIEF,
     });
-    assert.match(threadId, /^im-ms_aaaabbbbccccdddd-[0-9a-f]{8}$/);
+    assert.match(threadId, /^im-t3-codex-ms_aaaabbbbccccdddd-[0-9a-f]{8}$/);
     // the first create threw (not recorded by FakeT3) — only the fallback landed
     const creates = t3.dispatched.filter((c) => c.type === "thread.create");
     assert.equal(creates.length, 1);
@@ -216,16 +217,68 @@ test("thread.create failure falls back to a suffixed thread id once", async () =
 test("settle marks the mission thread settled; already-settled and absent threads are no-ops", async () => {
   const t3 = new FakeT3({
     threads: new Map([
-      ["im-ms_1111111111111111", { id: "im-ms_1111111111111111", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null }],
-      ["im-ms_2222222222222222", { id: "im-ms_2222222222222222", archivedAt: null, deletedAt: null, settledAt: "2026-09-01T00:00:00Z", settledOverride: null }],
+      ["im-t3-codex-ms_1111111111111111", { id: "im-t3-codex-ms_1111111111111111", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null }],
+      ["im-t3-codex-ms_2222222222222222", { id: "im-t3-codex-ms_2222222222222222", archivedAt: null, deletedAt: null, settledAt: "2026-09-01T00:00:00Z", settledOverride: null }],
     ]),
   });
   const delivery = new Delivery(t3);
 
-  assert.equal(await delivery.settle("ms_1111111111111111"), true);
+  assert.equal(await delivery.settle("t3-codex", "ms_1111111111111111"), true);
   assert.deepEqual(types(t3), ["thread.settle"]);
 
-  assert.equal(await delivery.settle("ms_2222222222222222"), false);
-  assert.equal(await delivery.settle("ms_3333333333333333"), false);
+  assert.equal(await delivery.settle("t3-codex", "ms_2222222222222222"), false);
+  assert.equal(await delivery.settle("t3-codex", "ms_3333333333333333"), false);
   assert.deepEqual(types(t3), ["thread.settle"]);
+});
+
+test("hasThread is member-scoped: another member's thread does not count", async () => {
+  const t3 = new FakeT3({
+    threads: new Map([
+      ["im-t3-grok-ms_aaaabbbbccccdddd", { id: "im-t3-grok-ms_aaaabbbbccccdddd", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null }],
+    ]),
+  });
+  const delivery = new Delivery(t3);
+  assert.equal(await delivery.hasThread("t3-kimi", "ms_aaaabbbbccccdddd"), false);
+  assert.equal(await delivery.hasThread("t3-grok", "ms_aaaabbbbccccdddd"), true);
+});
+
+test("hasThread ignores deleted and settled threads (a revisit round is undelivered)", async () => {
+  const t3 = new FakeT3({
+    threads: new Map([
+      ["im-t3-codex-ms_1111111111111111", { id: "im-t3-codex-ms_1111111111111111", archivedAt: null, deletedAt: "2026-09-01T00:00:00Z", settledAt: null, settledOverride: null }],
+      ["im-t3-codex-ms_2222222222222222", { id: "im-t3-codex-ms_2222222222222222", archivedAt: null, deletedAt: null, settledAt: "2026-09-01T00:00:00Z", settledOverride: null }],
+      ["im-t3-codex-ms_3333333333333333", { id: "im-t3-codex-ms_3333333333333333", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: "settled" }],
+      ["im-t3-codex-ms_4444444444444444", { id: "im-t3-codex-ms_4444444444444444", archivedAt: null, deletedAt: null, settledAt: null, settledOverride: null }],
+    ]),
+  });
+  const delivery = new Delivery(t3);
+  assert.equal(await delivery.hasThread("t3-codex", "ms_1111111111111111"), false);
+  assert.equal(await delivery.hasThread("t3-codex", "ms_2222222222222222"), false);
+  assert.equal(await delivery.hasThread("t3-codex", "ms_3333333333333333"), false);
+  assert.equal(await delivery.hasThread("t3-codex", "ms_4444444444444444"), true);
+});
+
+test("two members delivering the same mission get separate threads with their own models", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const t3 = new FakeT3({ projects: [{ id: "p-existing", workspaceRoot: dir }] });
+  const delivery = new Delivery(t3);
+  const grok = { id: "t3-grok", instance: "grok", model: "grok-4-fast", runtimeMode: "full-access" };
+  const kimi = { id: "t3-kimi", instance: "kimi", model: "k2-0905", runtimeMode: "full-access" };
+  try {
+    const grokThread = await delivery.deliver({
+      workspacePath: dir, member: grok, station: "cni-ui-audit", missionId: "ms_aaaabbbbccccdddd", brief: BRIEF,
+    });
+    const kimiThread = await delivery.deliver({
+      workspacePath: dir, member: kimi, station: "cni-visual-design", missionId: "ms_aaaabbbbccccdddd", brief: BRIEF,
+    });
+    assert.equal(grokThread, "im-t3-grok-ms_aaaabbbbccccdddd");
+    assert.equal(kimiThread, "im-t3-kimi-ms_aaaabbbbccccdddd");
+    const creates = t3.dispatched.filter((c) => c.type === "thread.create");
+    assert.deepEqual(creates.map((c) => c.modelSelection.instanceId), ["grok", "kimi"]);
+    const turns = t3.dispatched.filter((c) => c.type === "thread.turn.start");
+    assert.deepEqual(turns.map((c) => c.modelSelection.instanceId), ["grok", "kimi"]);
+    assert.deepEqual(turns.map((c) => c.threadId), [grokThread, kimiThread]);
+  } finally {
+    cleanup();
+  }
 });

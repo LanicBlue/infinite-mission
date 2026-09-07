@@ -242,7 +242,7 @@ export class Bridge {
 
       for (const missionId of notes.ended) {
         try {
-          const settled = await this.delivery.settle(missionId);
+          const settled = await this.delivery.settle(member.id, missionId);
           this.log(tag, `mission ${missionId} ended — thread ${settled ? "settled" : "already settled or absent"}`);
         } catch (err) {
           this.log(tag, `settle failed for ${missionId}: ${err.message}`);
@@ -320,7 +320,7 @@ export class Bridge {
           if (queued.has(dedupe) || watched.has(dedupe)) continue;
           let arrived;
           try {
-            arrived = await this.delivery.hasThread(missionId);
+            arrived = await this.delivery.hasThread(member.id, missionId);
           } catch (err) {
             // T3 unreachable — retries own recovery; re-probe next tick.
             this.log("bridge", `sweep aborted (T3 probe failed): ${err.message}`);
@@ -368,7 +368,7 @@ export class Bridge {
       }
       if (!activeMissionIds.includes(watch.missionId)) {
         try {
-          await this.delivery.settle(watch.missionId);
+          await this.delivery.settle(watch.member.id, watch.missionId);
           this.log(tag, `turn ${state} and mission ${watch.missionId} closed — thread settled`);
         } catch (err) {
           this.log(tag, `settle failed for ${watch.missionId}: ${err.message}`);

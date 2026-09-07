@@ -78,13 +78,13 @@ class FakeDelivery {
     this.deliverCalls.push(args);
     return `im-${args.missionId}`;
   }
-  async settle(missionId) {
-    this.settleCalls.push(missionId);
+  async settle(memberId, missionId) {
+    this.settleCalls.push([memberId, missionId]);
     return true;
   }
-  async hasThread(missionId) {
-    this.hasThreadCalls.push(missionId);
-    return this.threadExists(missionId);
+  async hasThread(memberId, missionId) {
+    this.hasThreadCalls.push([memberId, missionId]);
+    return this.threadExists(memberId, missionId);
   }
 }
 
@@ -260,7 +260,7 @@ test("mission ended → settle called; failed delivery is retried on the next re
   const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
   await bridge.reconcile();
   assert.ok(await waitFor(() => delivery.settleCalls.length === 1));
-  assert.equal(delivery.settleCalls[0], "ms_1111111111111111");
+  assert.deepEqual(delivery.settleCalls[0], ["t3-codex", "ms_1111111111111111"]);
   assert.ok(await waitFor(() => runner.calls.missionShow.filter(([_, ms]) => ms === "ms_aaaabbbbccccdddd").length === 1));
 
   // First delivery failed → queued. Heal on the next reconcile.
@@ -316,7 +316,7 @@ test("watcher settles the thread when the turn ends and the mission left the mem
   assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
   assert.equal(bridge.watching.length, 1);
   await bridge.reconcile(); // poll watchers
-  assert.deepEqual(delivery.settleCalls, ["ms_aaaabbbbccccdddd"]);
+  assert.deepEqual(delivery.settleCalls, [["t3-codex", "ms_aaaabbbbccccdddd"]]);
   assert.equal(bridge.watching.length, 0);
 });
 

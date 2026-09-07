@@ -2,19 +2,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-// Deterministic thread ids make delivery idempotent-ish across bridge
-// restarts: the thread for a mission is found by probing `im-<missionId>`
-// (then suffixed variants) instead of remembering state.
-export function threadIdFor(missionId, attempt = 0) {
-  return attempt > 0 ? `im-${missionId}-${attempt + 1}` : `im-${missionId}`;
+// Deterministic per-member thread ids: each member gets its own thread for a
+// mission (`im-<memberId>-<missionId>`), so the thread's model/instance is
+// the member's and watchers never collide across members. Probing the
+// deterministic ids (then suffixed variants) replaces remembering state.
+export function threadIdFor(memberId, missionId, attempt = 0) {
+  return attempt > 0 ? `im-${memberId}-${missionId}-${attempt + 1}` : `im-${memberId}-${missionId}`;
 }
 
 /** `[mission ms_x] NAME — status` → a T3 display title (missionId as fallback). */
-export function titleFromBrief(brief, station, missionId) {
+export function titleFromBrief(brief, memberId, station, missionId) {
   const firstLine = String(brief).split("\n", 1)[0] ?? "";
   const header = firstLine.match(/^\[mission ms_[0-9a-f]{6,64}\] (.*)$/);
   const name = header ? header[1].split(" — ")[0].trim() : "";
-  return `im/${station}: ${name || missionId}`;
+  return `im/${memberId}@${station}: ${name || missionId}`;
 }
 
 export function modelSelectionOf(member) {
@@ -92,15 +93,18 @@ export class Delivery {
   }
 
   /**
-   * Does a live thread already exist for this mission? Ground truth the
-   * reconcile sweep uses for "a round already reached T3" — deterministic
-   * thread ids keep the probe stateless across bridge restarts.
+   * Does a live thread already exist for this member's round on this
+   * mission? Ground truth the reconcile sweep uses for "the current round
+   * already reached T3". A settled thread does not count: T3 auto-unsettles
+   * on activity, so a revisit round injects right back into it.
    */
-  async hasThread(missionId) {
+  async hasThread(memberId, missionId) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const snapshot = await this.t3.threadDetail(threadIdFor(missionId, attempt));
+      const snapshot = await this.t3.threadDetail(threadIdFor(memberId, missionId, attempt));
       const thread = snapshot?.thread;
-      if (thread && !thread.deletedAt) return true;
+      if (thread && !thread.deletedAt && !thread.settledAt && thread.settledOverride !== "settled") {
+        return true;
+      }
     }
     return false;
   }
@@ -108,18 +112,19 @@ export class Delivery {
   /**
    * Resolve where a mission's thread lives. `create` means the base id is
    * free; `followup` means the thread exists (the same mission returned for
-   * another round — inject into it rather than forking).
+   * another round — inject into it rather than forking). A settled thread is
+   * still a valid followup target: the server un-settles it on the next turn.
    */
-  async #resolveTarget(missionId) {
+  async #resolveTarget(memberId, missionId) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const threadId = threadIdFor(missionId, attempt);
+      const threadId = threadIdFor(memberId, missionId, attempt);
       const snapshot = await this.t3.threadDetail(threadId);
       if (!snapshot?.thread) return { mode: "create", threadId };
       const thread = snapshot.thread;
       if (thread.deletedAt) continue;
       return { mode: "followup", threadId, thread };
     }
-    return { mode: "create", threadId: `im-${missionId}-${randomUUID().slice(0, 8)}` };
+    return { mode: "create", threadId: `im-${memberId}-${missionId}-${randomUUID().slice(0, 8)}` };
   }
 
   /**
@@ -128,7 +133,7 @@ export class Delivery {
    */
   async deliver({ workspacePath, member, station, missionId, brief }) {
     const projectId = await this.ensureProject(workspacePath);
-    const target = await this.#resolveTarget(missionId);
+    const target = await this.#resolveTarget(member.id, missionId);
 
     if (target.mode === "create") {
       await this.#createThread({ target, projectId, member, station, missionId, brief });
@@ -150,6 +155,9 @@ export class Delivery {
         text: `${dutyPreamble(member.id, workspacePath)}\n${brief}`,
         attachments: [],
       },
+      // Each turn restates the member's selection, so the runtime identity
+      // is carried by the turn itself, not just the thread's creation.
+      modelSelection: modelSelectionOf(member),
       runtimeMode: member.runtimeMode,
       interactionMode: "default",
       createdAt: new Date().toISOString(),
@@ -163,7 +171,7 @@ export class Delivery {
       commandId: randomUUID(),
       threadId,
       projectId,
-      title: titleFromBrief(brief, station, missionId),
+      title: titleFromBrief(brief, member.id, station, missionId),
       modelSelection: modelSelectionOf(member),
       runtimeMode: member.runtimeMode,
       interactionMode: "default",
@@ -176,16 +184,16 @@ export class Delivery {
     } catch (err) {
       // The probe said free but creation lost a race (or the id stream was
       // reused) — retry once on an unguessable suffix instead of dropping.
-      const fallback = `im-${missionId}-${randomUUID().slice(0, 8)}`;
+      const fallback = `im-${member.id}-${missionId}-${randomUUID().slice(0, 8)}`;
       await this.t3.dispatch(make(fallback));
       target.threadId = fallback;
       void err;
     }
   }
 
-  /** Mark the mission's thread settled when the mission ends. Best-effort. */
-  async settle(missionId) {
-    const target = await this.#resolveTarget(missionId);
+  /** Mark the member's thread for the mission settled. Best-effort. */
+  async settle(memberId, missionId) {
+    const target = await this.#resolveTarget(memberId, missionId);
     if (target.mode !== "followup") return false;
     const { thread } = target;
     if (thread.settledAt || thread.settledOverride === "settled") return false;

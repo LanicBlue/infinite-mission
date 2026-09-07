@@ -35,11 +35,15 @@ tool path (im is a local CLI over SQLite).
 - **Per (workspace × member) receive loop** — one `im receive --wait` child,
   re-hung after every cycle (delivery and timeout both exit 0).
 - **Arrival → thread turn** — ensures a T3 project exists for the im
-  workspace (matched by real path), creates the thread `im-<missionId>` on
-  first arrival (one thread per mission), and starts a user turn whose text
-  is the duty preamble followed by the verbatim `mission show` brief. A later
-  round of the same mission injects into the same thread (unarchiving it if
-  needed); it never forks a second thread.
+  workspace (matched by real path), creates the thread
+  `im-<memberId>-<missionId>` on first arrival (one thread per member per
+  mission), and starts a user turn whose text is the duty preamble followed
+  by the verbatim `mission show` brief. The thread's model/instance (and each
+  turn's `modelSelection`) is the delivering member's, so a mission routed
+  across members never runs on the first member's runtime. A later round of
+  the same mission at the same member injects into that member's thread
+  (unarchiving if needed; T3 auto-unsettles a settled thread on the new
+  turn).
 - **Thread settling, two paths** —
   1. *Ended notice*: im tells past round resolvers when someone else ends a
      mission (manage delete, another participant). The bridge settles that
@@ -131,7 +135,7 @@ on the launcher links to it.
   stricter mode per member if the workspace deserves it.
 - **Reconcile sweep** — every reconcile tick re-scans active missions at
   enabled members' stations and re-delivers any that has no live T3 thread
-  (deterministic `im-<missionId>` ids are the ground truth, so follow-up
+  (deterministic `im-<memberId>-<missionId>` ids are the ground truth, so follow-up
   rounds into existing threads are never re-fired). A delivery that exhausts
   its retry budget is parked in the queue rather than dropped, so a T3
   outage longer than the retry window no longer strands the mission —
