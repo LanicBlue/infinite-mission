@@ -16,6 +16,7 @@ export class HttpT3Client {
   #origin = null;
   #token = null;
   #expiresAtMs = 0;
+  #onIssue = null;
 
   constructor({
     origin = null,
@@ -24,6 +25,7 @@ export class HttpT3Client {
     label = "im-t3-bridge",
     tokenTtl = "30d",
     fetchImpl = globalThis.fetch?.bind(globalThis),
+    onIssue = null,
   } = {}) {
     this.configOrigin = origin;
     this.bin = Array.isArray(bin) ? bin : [bin];
@@ -31,6 +33,7 @@ export class HttpT3Client {
     this.label = label;
     this.tokenTtl = tokenTtl;
     this.#fetchImpl = fetchImpl;
+    this.#onIssue = onIssue;
   }
 
   origin() {
@@ -76,9 +79,54 @@ export class HttpT3Client {
       throw new Error(`cannot parse issued session JSON: ${err.message}`);
     }
     if (!issued.token) throw new Error("issued session JSON has no token field");
+    // Tokens are long-lived (30d) and nothing sweeps bearer sessions, so every
+    // restart and 401-reissue would otherwise pile another `im-t3-bridge | bot`
+    // row into the T3 session list. Revoke the previously issued session (best
+    // effort — a missing/expired id just means nothing to clean) and remember
+    // the new one.
+    const issuedId = issued.sessionId ?? issued.id ?? null;
+    const previousId = this.#readPreviousSessionId();
+    if (previousId && previousId !== issuedId) {
+      await this.#revokeSession(previousId);
+    }
+    if (issuedId) this.#storeSessionId(issuedId);
     this.#token = issued.token;
     this.#expiresAtMs = Date.parse(issued.expiresAt ?? "") || 0;
     return this.#token;
+  }
+
+  #statePath() {
+    let home = this.home ?? path.join(process.env.HOME ?? ".", ".t3");
+    // Config files may carry an unexpanded `~` prefix; write next to the T3
+    // state, not into a literal `~` directory.
+    if (home === "~") home = process.env.HOME ?? ".";
+    else if (home.startsWith("~/")) home = path.join(process.env.HOME ?? ".", home.slice(2));
+    return path.join(home, `t3-bridge-session-${this.label}.json`);
+  }
+
+  #readPreviousSessionId() {
+    try {
+      const state = JSON.parse(fs.readFileSync(this.#statePath(), "utf8"));
+      return typeof state.sessionId === "string" ? state.sessionId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #storeSessionId(sessionId) {
+    try {
+      fs.writeFileSync(this.#statePath(), JSON.stringify({ sessionId }, null, 2));
+    } catch {
+      // State persistence is advisory: without it the bridge just stops
+      // revoking predecessors.
+    }
+  }
+
+  async #revokeSession(sessionId) {
+    const args = [...this.bin, "auth", "session", "revoke", sessionId];
+    const res = await runCapture(args[0], args.slice(1), { cwd: process.cwd() });
+    if (res.code !== 0) return; // already revoked/expired — nothing to clean
+    this.#onIssue?.(`revoked superseded bridge session ${sessionId.slice(0, 8)}`);
   }
 
   async token(force = false) {
