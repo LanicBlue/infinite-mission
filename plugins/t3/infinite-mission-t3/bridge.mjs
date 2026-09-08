@@ -349,7 +349,15 @@ export class Bridge {
       let state;
       try {
         const snapshot = await this.t3.threadDetail(watch.threadId);
-        state = snapshot?.thread?.latestTurn?.state ?? null;
+        const thread = snapshot?.thread;
+        // A thread deleted in the T3 UI (or anywhere else) can never reach a
+        // terminal turn state — treat the deletion itself as terminal and let
+        // the reconcile sweep redeliver if the mission is still parked.
+        if (!thread || thread.deletedAt) {
+          this.log(tag, `thread ${watch.threadId} vanished — watch dropped for ${watch.missionId}; sweep will redeliver if still parked`);
+          continue;
+        }
+        state = thread.latestTurn?.state ?? null;
       } catch (err) {
         this.log(tag, `watch probe failed for ${watch.threadId}: ${err.message}`);
         stillWatching.push(watch);
