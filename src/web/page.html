@@ -96,6 +96,7 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .card h3 { margin: 0 0 2px; font-size: 15px; }
 .card .objective { color: var(--ink-muted); margin: 4px 0 10px; font-size: 13px; }
 .card-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.actions-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 
 .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; border-radius: 99px; padding: 1px 9px; border: 1px solid var(--border); color: var(--ink-muted); background: var(--bg); }
 .chip.accent { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
@@ -116,6 +117,29 @@ tr:last-child td { border-bottom: none; }
 .timeline li.routed::before { border-color: var(--accent); }
 .timeline li.ended::before { border-color: var(--ok); background: var(--ok); }
 .timeline .t { color: var(--ink-faint); font-size: 11px; margin-right: 6px; }
+.inbox-trail { margin: 6px 0 2px; }
+.timeline .side-note { color: var(--ink-faint); font-size: 11.5px; margin: 1px 0 0 2px; }
+.k-inline { color: var(--ink-faint); font-size: 11px; }
+.doc-row { align-items: center; }
+.doc-viewer { max-height: 62vh; overflow: auto; font-size: 13px; line-height: 1.55; background: var(--bg-elevated, #111); border-radius: var(--radius-sm, 6px); padding: 14px 16px; margin-top: 10px; }
+.trail-toggle { all: unset; cursor: pointer; display: block; color: var(--ink-faint); font-size: 11px; }
+.trail-toggle:hover { color: var(--ink-muted); }
+.trail-toggle .chev { display: inline-block; width: 14px; }
+.doc-viewer h1, .doc-viewer h2, .doc-viewer h3, .doc-viewer h4 { margin: 14px 0 6px; line-height: 1.3; }
+.doc-viewer h1 { font-size: 17px; } .doc-viewer h2 { font-size: 15px; } .doc-viewer h3 { font-size: 14px; } .doc-viewer h4 { font-size: 13px; }
+.doc-viewer h1:first-child, .doc-viewer h2:first-child { margin-top: 0; }
+.doc-viewer p { margin: 6px 0; }
+.doc-viewer pre { background: var(--bg, #000); border: 1px solid var(--border, #333); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+.doc-viewer pre code { background: none; padding: 0; font-size: 12px; line-height: 1.45; white-space: pre; }
+.doc-viewer code { font-family: var(--mono, ui-monospace, monospace); background: var(--bg, #000); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.doc-viewer table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; display: block; max-width: 100%; overflow-x: auto; }
+.doc-viewer th, .doc-viewer td { border: 1px solid var(--border, #333); padding: 5px 9px; text-align: left; vertical-align: top; }
+.doc-viewer th { background: var(--bg, #000); font-weight: 600; white-space: nowrap; }
+.doc-viewer blockquote { border-left: 3px solid var(--accent, #888); margin: 8px 0; padding: 2px 12px; color: var(--ink-muted, #aaa); }
+.doc-viewer ul, .doc-viewer ol { margin: 6px 0; padding-left: 22px; }
+.doc-viewer li { margin: 3px 0; }
+.doc-viewer hr { border: none; border-top: 1px solid var(--border, #333); margin: 12px 0; }
+.doc-viewer a { color: var(--accent, #6af); }
 
 details.form { margin-bottom: 12px; }
 details.form summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: 4px 0; user-select: none; }
@@ -182,6 +206,7 @@ const ago = ts => {
 let state = null, lastRaw = "";
 let pane = "inbox";        // inbox | works | missions | members | settings
 let expanded = new Set();  // expanded mission ids
+let trailsOpen = new Set(); // inbox cards with the round trail unfolded
 let hideEnded = localStorage.getItem("missions-hide-ended") !== "0"; // filter ended missions
 
 function toast(msg, ok) {
@@ -213,6 +238,90 @@ function openModal(inner) {
 	if (first) first.focus();
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
+
+/* Escape-first mini markdown: the whole source is HTML-escaped before any
+   tag is synthesized, so agent-written documents can never inject markup.
+   Covers what mission documents actually use: headings, hr, blockquote,
+   fenced code, GFM tables, lists, paragraphs, inline code/bold/italic and
+   http(s)-only links. */
+function mdInline(text) {
+	const tick = String.fromCharCode(96);
+	return text
+		.replace(new RegExp(tick + "([^" + tick + "]+)" + tick, "g"), "<code>$1</code>")
+		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+		.replace(/(^|[^*])\*([^*\s]+)\*/g, "$1<em>$2</em>")
+		.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+function mdRender(src) {
+	const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+	const lines = esc(src).split("\n");
+	const out = [];
+	let i = 0;
+	const tick = String.fromCharCode(96);
+	const fence = tick + tick + tick;
+	while (i < lines.length) {
+		const line = lines[i];
+		if (line.startsWith(fence)) {
+			i++;
+			const buf = [];
+			while (i < lines.length && !lines[i].startsWith(fence)) { buf.push(lines[i]); i++; }
+			i++;
+			out.push("<pre><code>" + buf.join("\n") + "</code></pre>");
+			continue;
+		}
+		const h = line.match(/^(#{1,4})\s+(.*)$/);
+		if (h) { out.push("<h" + h[1].length + ">" + mdInline(h[2]) + "</h" + h[1].length + ">"); i++; continue; }
+		if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
+		if (line.startsWith("&gt;")) {
+			const buf = [];
+			while (i < lines.length && lines[i].startsWith("&gt;")) { buf.push(lines[i].replace(/^&gt;\s?/, "")); i++; }
+			out.push("<blockquote>" + mdInline(buf.join("\n")).replace(/\n/g, "<br>") + "</blockquote>");
+			continue;
+		}
+		if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[-: |]+\|\s*$/.test(lines[i + 1])) {
+			const cells = l => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+			const head = cells(line);
+			i += 2;
+			const rows = [];
+			while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(cells(lines[i])); i++; }
+			out.push("<table><thead><tr>" + head.map(c => "<th>" + mdInline(c) + "</th>").join("") + "</tr></thead><tbody>"
+				+ rows.map(r => "<tr>" + r.map(c => "<td>" + mdInline(c) + "</td>").join("") + "</tr>").join("") + "</tbody></table>");
+			continue;
+		}
+		if (/^\s*[-*+]\s+/.test(line)) {
+			const items = [];
+			while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push("<li>" + mdInline(lines[i].replace(/^\s*[-*+]\s+/, "")) + "</li>"); i++; }
+			out.push("<ul>" + items.join("") + "</ul>");
+			continue;
+		}
+		if (/^\s*\d+\.\s+/.test(line)) {
+			const items = [];
+			while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push("<li>" + mdInline(lines[i].replace(/^\s*\d+\.\s+/, "")) + "</li>"); i++; }
+			out.push("<ol>" + items.join("") + "</ol>");
+			continue;
+		}
+		if (!line.trim()) { i++; continue; }
+		const para = [];
+		while (i < lines.length && lines[i].trim() && !lines[i].startsWith(fence) && !/^#{1,4}\s/.test(lines[i]) && !lines[i].startsWith("&gt;") && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !/^\s*\|.*\|\s*$/.test(lines[i])) { para.push(lines[i]); i++; }
+		// Inline marks may span line breaks (**bold** across a hard-wrapped
+		// line is common in these docs) — inline first, then breaks.
+		out.push("<p>" + mdInline(para.join("\n")).replace(/\n/g, "<br>") + "</p>");
+	}
+	return out.join("\n");
+}
+
+async function docViewModal(mission, path) {
+	openModal(`<div class="modal-head"><h3 class="mono">${esc(path)}</h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div><div class="doc-viewer" id="doc-viewer-body">读取中…</div>`);
+	try {
+		const res = await fetch("/api/mission-doc?mission=" + encodeURIComponent(mission) + "&path=" + encodeURIComponent(path));
+		const body = document.getElementById("doc-viewer-body");
+		if (!res.ok) { body.textContent = "读取失败（HTTP " + res.status + "）"; return; }
+		body.innerHTML = mdRender(await res.text());
+	} catch (e) {
+		const body = document.getElementById("doc-viewer-body");
+		if (body) body.textContent = "读取失败：" + String(e);
+	}
+}
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
 /* ---------------- state derivation ---------------- */
@@ -277,21 +386,28 @@ function paneHeader(title, meta) {
 function inboxPane() {
 	const cards = state.inbox || [];
 	if (!cards.length) return paneHeader("收件箱", "What needs me now?") + `<div class="empty">收件箱是空的 —— 没有停在用户工位等待你决策的任务<br><br><span class="hint">起步：终端 <code>im join &lt;你&gt;</code> → 「成员」页把 tier 设为 manage → 「工位」页建工位 → 「任务」页从模板建任务</span></div>`;
-	return paneHeader("收件箱", "停在用户工位的任务 · 点 outcome 直接处置") + cards.map(i => {
-		const terms = (i.outcomes || []).map(o => `<button class="btn small outcome" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="${esc(o)}">${esc(o)}${(i.terminal||[]).includes(o) ? " ✓" : ""}</button>`).join("");
+	return paneHeader("收件箱", "停在用户工位的任务 · 轨迹/文档齐全后点 outcome 直接处置") + cards.map(i => {
+		const terms = (i.routes || []).map(r => `<button class="btn small outcome" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="${esc(r.outcome)}" title="按下后的去向${r.feedback ? "；此 outcome 需填打回 feedback" : ""}">${esc(r.outcome)}${r.feedback ? " ✎" : ""} · ${esc(r.to)}</button>`).join("");
+		const rounds = i.rounds || [];
+		const open = trailsOpen.has(i.mission_id);
+		const trail = !rounds.length ? `<div class="reason"><span class="k">过程轨迹</span>（首轮即达，无历史轮次）</div>`
+			: `<div class="reason trail-box"><button class="trail-toggle" data-act="trail-toggle" data-mission="${esc(i.mission_id)}" aria-expanded="${open}"><span class="chev">${open ? "▾" : "▸"}</span>过程轨迹 · ${rounds.length} 轮（谁在哪个工位交了什么、说了什么）</button>${open ? `<ol class="timeline inbox-trail">${rounds.map(r => `<li class="round"><span class="t mono">${esc(r.work || "?")} · 第${r.iteration || 1}轮</span>${esc((r.by || "?") + " 交 " + (r.outcome || "?"))}${r.reason ? `<div class="side-note">理由：${esc(r.reason)}</div>` : ""}${r.feedback ? `<div class="side-note">反馈：${esc(r.feedback)}</div>` : ""}${r.receipts ? `<div class="side-note">${r.receipts} 份文档回执</div>` : ""}</li>`).join("")}</ol>` : ""}</div>`;
+		const docs = (i.documents || []).length ? `<div class="card-row doc-row"><span class="k-inline">决策文档</span>${i.documents.map(d => `<button class="btn small" data-act="doc-view" data-mission="${esc(i.mission_id)}" data-path="${esc(d.path)}" title="${esc(d.work)} 工位写入"><span class="mono">${esc(d.path)}</span> · ${esc(d.work)}</button>`).join("")}</div>` : "";
 		return `<article class="card">
 			<h3>${esc(i.name)} <span class="chip user">用户工位 · ${esc(i.at)}</span></h3>
 			<p class="objective">${esc(i.objective)}</p>
 			<div class="reason"><span class="k">为何而来（提交方 reason）</span>${esc(i.reason || "(未给出)")}</div>
+			${trail}
+			${docs}
 			<div class="card-row">
 				<span class="chip">revision ${i.revision}</span>
 				<span class="chip">到达 ${ago(i.arrived_at)}</span>
 				<span class="chip mono">${esc(i.mission_id.slice(0,15))}…</span>
 				<span class="spacer"></span>
-				${terms}
 				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="manage-tier 放弃（来自控制台）">abandon</button>
 				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="manage tier 强制结束（disposition: deleted）">强制结束</button>
 			</div>
+			<div class="actions-row">${terms}</div>
 		</article>`;
 	}).join("");
 }
@@ -345,12 +461,15 @@ function workCreateModal() {
 
 function resolveModal(mission, revision, outcome, prefill) {
 	const m = (state.missions || []).find(x => x.mission_id === mission);
-	const terminal = m && (state.inbox || []).some(i => i.mission_id === mission && (i.terminal || []).includes(outcome));
+	const row = (state.inbox || []).find(i => i.mission_id === mission);
+	const terminal = row && (row.terminal || []).includes(outcome);
+	const needsFeedback = row && (row.routes || []).some(r => r.outcome === outcome && r.feedback);
 	openModal(`
 		<div class="modal-head"><h3>处置 · ${esc(outcome)}${terminal ? " ✓" : ""} <span class="chip mono">${esc(mission.slice(0,15))}…</span></h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
 		<p class="hint" style="margin:2px 0 8px">${esc(m ? (m.name || mission) : mission)} · revision ${revision}${m && m.objective ? ` — ${esc(m.objective)}` : ""}</p>
-		<label class="field"><span>reason —— 写入事件，并插值进下一站的 prompt（路由到用户工位必填；grill 答案也走这里）</span><textarea data-f="resolve-reason">${esc(prefill || "")}</textarea></label>
-		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="resolve-confirm" data-mission="${esc(mission)}" data-revision="${revision}" data-outcome="${esc(outcome)}">提交 ${esc(outcome)}</button></div>`);
+		${needsFeedback ? `<label class="field"><span>feedback —— 打回意见：下一站必须看到的具体问题（此 outcome 合同必填）</span><textarea data-f="resolve-feedback" placeholder="逐条列出要修改的点"></textarea></label>` : ""}
+		<label class="field"><span>reason —— 这一跳的说明，写入事件并插值进下一站 prompt 的 {mission.reason} 槽（可空：下一站是用户工位才必填；grill 答案也走这里，≤2000 字符）</span><textarea data-f="resolve-reason">${esc(prefill || "")}</textarea></label>
+		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="resolve-confirm" data-mission="${esc(mission)}" data-revision="${revision}" data-outcome="${esc(outcome)}" data-needs-feedback="${needsFeedback ? "1" : ""}">提交 ${esc(outcome)}</button></div>`);
 }
 
 function workDetailModal(key) {
@@ -464,7 +583,13 @@ document.addEventListener("click", async e => {
 		case "prune-workspaces": await act({ type: "prune_workspaces" }); break;
 		case "resolve": resolveModal(d.mission, Number(d.revision), d.outcome, d.reason); break;
 		case "resolve-confirm": {
-			const ok = await act({ type: "mission_submit", mission: d.mission, revision: Number(d.revision), outcome: d.outcome, reason: field("resolve-reason") });
+			const feedback = field("resolve-feedback");
+			if (d.needsFeedback && !feedback.trim()) { toast("此 outcome 合同要求 feedback：逐条写明要修改的点", false); break; }
+			const reason = field("resolve-reason");
+			if (reason.length > 2000) { toast("reason 超长（" + reason.length + "/2000 字符）", false); break; }
+			// An empty reason must be OMITTED, not sent as "" — the
+			// adjudicator requires 1..=2000 chars when the field is present.
+			const ok = await act({ type: "mission_submit", mission: d.mission, revision: Number(d.revision), outcome: d.outcome, reason: reason.trim() ? reason : undefined, feedback: feedback || undefined });
 			if (ok) closeModal();
 			break;
 		}
@@ -489,6 +614,8 @@ document.addEventListener("click", async e => {
 			break;
 		}
 		case "toggle": expanded.has(d.mission) ? expanded.delete(d.mission) : expanded.add(d.mission); render(); break;
+		case "doc-view": await docViewModal(d.mission, d.path); break;
+		case "trail-toggle": trailsOpen.has(d.mission) ? trailsOpen.delete(d.mission) : trailsOpen.add(d.mission); render(); break;
 	}
 });
 

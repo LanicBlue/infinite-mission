@@ -132,60 +132,164 @@ pub fn state_json(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let inbox: Vec<Value> = store
-        .inbox_missions()?
-        .into_iter()
-        .map(|(mission, _)| {
-            // The hop reason is the human's decision context — surface it
-            // (it rides on the round that performed the hop).
-            let reason: Option<String> = store
-                .conn
-                .query_row(
-                    "SELECT payload FROM mission_events
+    let mut inbox: Vec<Value> = Vec::new();
+    for (mission, _) in store.inbox_missions()? {
+        // The hop reason is the human's decision context — surface it
+        // (it rides on the round that performed the hop).
+        let reason: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT payload FROM mission_events
                      WHERE mission_id = ?1 AND type = 'mission.round.completed'
                      ORDER BY seq DESC LIMIT 1",
-                    [&mission.mission_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok()
-                .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
-                .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from));
-            // When the mailbox arrived at this station (for aging display).
-            let arrived_at: Option<i64> = store
-                .conn
-                .query_row(
-                    "SELECT created_at FROM mission_events
+                [&mission.mission_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+            .and_then(|v| v.get("reason").and_then(|r| r.as_str()).map(String::from));
+        // When the mailbox arrived at this station (for aging display).
+        let arrived_at: Option<i64> = store
+            .conn
+            .query_row(
+                "SELECT created_at FROM mission_events
                      WHERE mission_id = ?1 AND type = 'mission.routed'
                      ORDER BY seq DESC LIMIT 1",
-                    [&mission.mission_id],
-                    |row| row.get(0),
+                [&mission.mission_id],
+                |row| row.get(0),
+            )
+            .ok();
+        // The station's vocabulary so the human can resolve in place,
+        // each outcome annotated with where it sends the mission next
+        // (mirrors the submit adjudication's route resolution).
+        let contract = crate::mission::parse_contract(&mission.contract_json).ok();
+        let discipline = contract
+            .as_ref()
+            .zip(mission.at.as_deref())
+            .and_then(|(c, at)| c.works.get(at));
+        let (outcomes, terminal, feedback_on): (Vec<String>, Vec<String>, Vec<String>) = discipline
+            .map(|d| {
+                (
+                    d.completion.outcomes.clone(),
+                    d.completion.terminal.clone(),
+                    d.completion.feedback_required_on.clone(),
                 )
-                .ok();
-            // The station's vocabulary so the human can resolve in place.
-            let (outcomes, terminal): (Vec<String>, Vec<String>) =
-                crate::mission::parse_contract(&mission.contract_json)
-                    .ok()
-                    .and_then(|contract| {
-                        mission
-                            .at
-                            .as_deref()
-                            .and_then(|at| contract.works.get(at))
-                            .map(|d| (d.completion.outcomes.clone(), d.completion.terminal.clone()))
-                    })
-                    .unwrap_or_default();
-            json!({
-                "mission_id": mission.mission_id,
-                "at": mission.at,
-                "name": mission.name,
-                "objective": mission.objective,
-                "reason": reason,
-                "arrived_at": arrived_at,
-                "revision": mission.revision,
-                "outcomes": outcomes,
-                "terminal": terminal,
             })
-        })
-        .collect();
+            .unwrap_or_default();
+        let routes: Vec<Value> = outcomes
+            .iter()
+            .map(|outcome| {
+                let to = if terminal.contains(outcome) {
+                    "终局 · 任务完成".to_string()
+                } else {
+                    let targets: Vec<String> = contract
+                        .as_ref()
+                        .zip(mission.at.as_deref())
+                        .map(|(c, at)| {
+                            c.paths
+                                .iter()
+                                .filter(|edge| {
+                                    edge.from == at
+                                        && (edge.when == *outcome
+                                            || edge.when == crate::contract::ANY)
+                                })
+                                .map(|edge| edge.to.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    match targets.len() {
+                        0 => "无后续（不可用）".to_string(),
+                        1 => format!("→ {}", targets[0]),
+                        _ => format!("→ {}（需明选）", targets.join(" / ")),
+                    }
+                };
+                json!({
+                    "outcome": outcome,
+                    "to": to,
+                    // Rejection-style outcomes must carry feedback; the
+                    // console modal needs to know to demand it.
+                    "feedback": feedback_on.contains(outcome),
+                })
+            })
+            .collect();
+        // Full round trail for this mission — the global events feed is
+        // capped at 100 across all missions, the decision card must not
+        // lose the tail of a long-running one.
+        let rounds: Vec<Value> = {
+            let mut stmt = store.conn.prepare(
+                "SELECT payload, created_at FROM mission_events
+                     WHERE mission_id = ?1 AND type = 'mission.round.completed'
+                     ORDER BY seq",
+            )?;
+            let rows = stmt
+                .query_map([&mission.mission_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .filter_map(|(payload, ts)| {
+                    let payload: Value = serde_json::from_str(&payload).ok()?;
+                    let by = payload.get("resolvedBy");
+                    Some(json!({
+                        "work": payload.get("workKey").and_then(|v| v.as_str()),
+                        "iteration": payload.get("iteration").and_then(|v| v.as_i64()),
+                        "outcome": payload.get("outcome").and_then(|v| v.as_str()),
+                        "by": by.and_then(|r| r.get("executorRef")).and_then(|v| v.as_str()),
+                        "plane": by.and_then(|r| r.get("plane")).and_then(|v| v.as_str()),
+                        "reason": payload.get("reason").and_then(|v| v.as_str()),
+                        "feedback": payload.get("feedback").and_then(|v| v.as_str()),
+                        "receipts": payload
+                            .get("documentReceipts")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0),
+                        "at": ts,
+                    }))
+                })
+                .collect()
+        };
+        // Documents written so far — the decision substance (spec,
+        // review, …). Content is served by /api/mission-doc. The same
+        // path can carry several content-addressed versions (rounds
+        // rewrite it); the disk file is the latest one, so the card
+        // lists one chip per path, latest write first.
+        let mut documents: Vec<Value> = store
+            .conn
+            .prepare(
+                "SELECT document_id, path, work_key, written_by, written_at
+                     FROM mission_documents WHERE mission_id = ?1
+                     ORDER BY written_at DESC",
+            )?
+            .query_map([&mission.mission_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "path": row.get::<_, String>(1)?,
+                    "work": row.get::<_, String>(2)?,
+                    "by": row.get::<_, String>(3)?,
+                    "at": row.get::<_, i64>(4)?,
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut seen_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        documents.retain(|d| {
+            let path = d["path"].as_str().unwrap_or_default().to_string();
+            seen_paths.insert(path)
+        });
+        inbox.push(json!({
+            "mission_id": mission.mission_id,
+            "at": mission.at,
+            "name": mission.name,
+            "objective": mission.objective,
+            "reason": reason,
+            "arrived_at": arrived_at,
+            "revision": mission.revision,
+            "outcomes": outcomes,
+            "terminal": terminal,
+            "routes": routes,
+            "rounds": rounds,
+            "documents": documents,
+        }));
+    }
 
     let events: Vec<Value> = store
         .conn
@@ -507,6 +611,7 @@ pub fn run(port: Option<u16>, no_open: bool) -> Result<()> {
 struct Request {
     method: String,
     path: String,
+    query: String,
     body: Vec<u8>,
 }
 
@@ -516,13 +621,11 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
-    let path = parts
-        .next()
-        .unwrap_or_default()
-        .split('?')
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let raw_path = parts.next().unwrap_or_default().to_string();
+    let (path, query) = match raw_path.split_once('?') {
+        Some((path, query)) => (path.to_string(), query.to_string()),
+        None => (raw_path, String::new()),
+    };
     let mut content_length = 0usize;
     loop {
         let mut header = String::new();
@@ -539,7 +642,55 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    Ok(Request { method, path, body })
+    Ok(Request {
+        method,
+        path,
+        query,
+        body,
+    })
+}
+
+fn parse_query(query: &str) -> std::collections::BTreeMap<String, String> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            Some((url_decode(key), url_decode(value)))
+        })
+        .collect()
+}
+
+fn url_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) -> Result<()> {
@@ -568,6 +719,63 @@ fn handle(mut stream: TcpStream, current: &Mutex<PathBuf>) -> Result<()> {
             "text/html; charset=utf-8",
             PAGE.as_bytes(),
         ),
+        ("GET", "/api/mission-doc") => {
+            // Console-plane document read: the human at a user station is
+            // the decider, so this is not gated on station documentRights
+            // (that gate is for agent plane). Only declared, written
+            // documents are served — no arbitrary file reads.
+            // Errors answer 404 with the reason in the body — a dropped
+            // connection would surface as a network error in the console
+            // page instead of a readable status.
+            let served = (|| -> Result<Vec<u8>> {
+                let params = parse_query(&request.query);
+                let (mission_id, doc_path) = match (
+                    params.get("mission").map(String::as_str),
+                    params.get("path").map(String::as_str),
+                ) {
+                    (Some(m), Some(p)) => (m, p),
+                    _ => bail!("mission and path query params are required"),
+                };
+                if doc_path.split('/').any(|seg| seg == ".." || seg.is_empty()) {
+                    bail!("invalid document path");
+                }
+                let store = crate::store::Store::open(&db_path)?;
+                let known: Option<String> = store
+                    .conn
+                    .query_row(
+                        "SELECT path FROM mission_documents
+                         WHERE mission_id = ?1 AND path = ?2 LIMIT 1",
+                        rusqlite::params![mission_id, doc_path],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                if known.is_none() {
+                    bail!("no document {doc_path:?} on mission {mission_id}");
+                }
+                // Documents live under a per-mission subdirectory
+                // (see write_mission_document).
+                let file = workspace
+                    .join(".im")
+                    .join("mission-documents")
+                    .join(mission_id)
+                    .join(doc_path);
+                Ok(std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?
+                    .into_bytes())
+            })();
+            match served {
+                Ok(content) => {
+                    respond(&mut stream, "200 OK", "text/plain; charset=utf-8", &content)?
+                }
+                Err(err) => respond(
+                    &mut stream,
+                    "404 Not Found",
+                    "text/plain; charset=utf-8",
+                    format!("document unavailable: {err:#}").as_bytes(),
+                )?,
+            }
+            Ok(())
+        }
         ("GET", "/api/state") => {
             let store = crate::store::Store::open(&db_path)?;
             let templates = list_templates(&workspace);

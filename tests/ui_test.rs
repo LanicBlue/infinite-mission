@@ -158,6 +158,41 @@ fn state_json_exposes_the_console_data_contract() {
         inbox[0]
     );
 
+    // Decision kit: full round trail, per-outcome routes, documents list.
+    let rounds = inbox[0]["rounds"].as_array().unwrap();
+    assert_eq!(rounds.len(), 1, "one completed round so far: {rounds:?}");
+    assert_eq!(rounds[0]["by"].as_str().unwrap(), "worker");
+    assert_eq!(rounds[0]["outcome"].as_str().unwrap(), "done");
+    assert!(
+        rounds[0]["reason"].as_str().unwrap().contains("sign-off"),
+        "round trail lost the reason: {rounds:?}"
+    );
+    let routes = inbox[0]["routes"].as_array().unwrap();
+    assert!(
+        !routes.is_empty(),
+        "approve station has an outcome vocabulary"
+    );
+    assert!(
+        routes
+            .iter()
+            .all(|r| r["outcome"].is_string() && r["to"].is_string()),
+        "every outcome carries its destination: {routes:?}"
+    );
+    assert!(
+        routes.iter().all(|r| r["feedback"].is_boolean()),
+        "every outcome declares whether feedback is required: {routes:?}"
+    );
+    assert!(
+        routes
+            .iter()
+            .any(|r| r["to"].as_str().unwrap().contains("终局")),
+        "terminal outcomes are labeled as endings: {routes:?}"
+    );
+    assert!(
+        inbox[0]["documents"].as_array().unwrap().is_empty(),
+        "template t declares no documents"
+    );
+
     // Events feed the delivery-history timeline.
     let events = state["events"].as_array().unwrap();
     assert!(
@@ -354,6 +389,41 @@ fn console_workspace_selection_persists_and_validates() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&bad.stdout).contains("not a known workspace"));
+
+    // Console-plane doc read fails closed: unknown mission/doc answers a
+    // readable 404, not a dropped connection.
+    let doc = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--noproxy",
+            "*",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "http://127.0.0.1:4699/api/mission-doc?mission=ms_none&path=spec.md",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&doc.stdout),
+        "404",
+        "missing document must answer HTTP 404"
+    );
+    let escape = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--noproxy",
+            "*",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "http://127.0.0.1:4699/api/mission-doc?mission=ms_none&path=../im.db",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&escape.stdout), "404");
     // 守卫 Drop 时收尾；常驻进程没有闲置自退，这里显式确认已可停止
     drop(ui);
 }
