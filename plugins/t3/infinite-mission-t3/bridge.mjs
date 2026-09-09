@@ -53,7 +53,9 @@ export class Bridge {
     this.ownedMembers = new Set();
     // delivered threads whose turn we watch once: when the turn reaches a
     // terminal state, settle if the mission left the member's list (the
-    // submitter itself never receives im's mission-ended notice).
+    // submitter itself never receives im's mission-ended notice). Holds
+    // member ids only — the member's instance/model is re-read at delivery
+    // time, never snapshotted here.
     this.watching = [];
     this.timer = null;
   }
@@ -101,6 +103,19 @@ export class Bridge {
       this.log("bridge", `reading T3 imBridge members failed (${err.message}) — using config file list`);
     }
     return { members: this.config.members, source: "bridge config file" };
+  }
+
+  /**
+   * The member's live definition at delivery time. Loops, the retry queue,
+   * and watchers all carry the member id only and resolve through this —
+   * editing a member's instance/model in T3's settings applies to the next
+   * arrival without restarting the bridge. A member that is gone or disabled
+   * resolves to null (reconcile stops its loop within a tick; the sweep
+   * heals any arrival dropped in between once the table is readable again).
+   */
+  #lookupMember(memberId) {
+    const { members } = this.#resolveMembers();
+    return members.find((member) => member.id === memberId && member.enabled) ?? null;
   }
 
   async #workspaces() {
@@ -198,7 +213,9 @@ export class Bridge {
     const controller = new AbortController();
     const entry = { controller, running: true };
     this.loops.set(key, entry);
-    this.#loop(workspace, member, entry)
+    // The loop owns the identity (member id), not the member definition —
+    // instance/model are re-resolved on every delivery via #lookupMember.
+    this.#loop(workspace, member.id, entry)
       .catch((err) => {
         this.log(this.tag(workspace, member.id), `loop crashed: ${err.message}`);
       })
@@ -207,14 +224,14 @@ export class Bridge {
       });
   }
 
-  async #loop(workspace, member, entry) {
-    const tag = this.tag(workspace, member.id);
+  async #loop(workspace, memberId, entry) {
+    const tag = this.tag(workspace, memberId);
     const { controller } = entry;
     this.log(tag, "listening");
     while (!controller.signal.aborted) {
       let result;
       try {
-        result = await this.runner.receive(workspace, member.id, this.config.receiveTimeoutSec, controller.signal);
+        result = await this.runner.receive(workspace, memberId, this.config.receiveTimeoutSec, controller.signal);
       } catch (err) {
         if (controller.signal.aborted) return;
         this.log(tag, `receive error: ${err.message}`);
@@ -236,13 +253,13 @@ export class Bridge {
 
       if (notes.membershipEnd) {
         this.log(tag, "membership ended — loop stopped; restart the bridge after re-joining this member");
-        this.muted.add(this.key(workspace, member.id));
+        this.muted.add(this.key(workspace, memberId));
         return;
       }
 
       for (const missionId of notes.ended) {
         try {
-          const settled = await this.delivery.settle(member.id, missionId);
+          const settled = await this.delivery.settle(memberId, missionId);
           this.log(tag, `mission ${missionId} ended — thread ${settled ? "settled" : "already settled or absent"}`);
         } catch (err) {
           this.log(tag, `settle failed for ${missionId}: ${err.message}`);
@@ -250,24 +267,32 @@ export class Bridge {
       }
 
       for (const arrival of notes.arrivals) {
-        await this.#handleArrival(workspace, member, arrival, tag);
+        await this.#handleArrival(workspace, memberId, arrival, tag);
       }
     }
   }
 
-  async #handleArrival(workspace, member, arrival, tag) {
-    await this.#tryDeliver(workspace, member, arrival.station, arrival.missionId, tag);
+  async #handleArrival(workspace, memberId, arrival, tag) {
+    await this.#tryDeliver(workspace, memberId, arrival.station, arrival.missionId, tag);
   }
 
   /**
    * Deliver a mission to T3: the note (or sweep) is only a trigger, so
    * re-read the mission from the authority first. A failed show means the
-   * mission moved on — drop it.
+   * mission moved on — drop it. The member definition is resolved here, at
+   * delivery time, so config edits apply without a loop restart; a member
+   * that left the table (or was disabled) drops the trigger — the sweep
+   * redelivers once it is back.
    */
-  async #tryDeliver(workspace, member, station, missionId, tag) {
+  async #tryDeliver(workspace, memberId, station, missionId, tag) {
+    const member = this.#lookupMember(memberId);
+    if (!member) {
+      this.log(tag, `delivery skipped for ${missionId}@${station}: member ${memberId} is not enabled in the member table`);
+      return;
+    }
     let show;
     try {
-      show = await this.runner.missionShow(workspace, missionId, member.id);
+      show = await this.runner.missionShow(workspace, missionId, memberId);
     } catch (err) {
       this.log(tag, `mission show threw for ${missionId}@${station}: ${err.message}`);
       return;
@@ -285,10 +310,10 @@ export class Bridge {
         brief: show.text,
       });
       this.log(tag, `delivered ${missionId}@${station} → T3 thread ${threadId}`);
-      this.watching.push({ workspace, member, missionId, threadId });
+      this.watching.push({ workspace, memberId, missionId, threadId });
     } catch (err) {
       this.log(tag, `delivery failed for ${missionId}@${station}: ${err.message} (queued for retry)`);
-      this.retryQueue.push({ workspace, member, station, missionId, attempts: 0 });
+      this.retryQueue.push({ workspace, memberId, station, missionId, attempts: 0 });
     }
   }
 
@@ -302,8 +327,8 @@ export class Bridge {
    */
   async #sweepUndelivered(workspaces, members) {
     if (!this.t3) return;
-    const queued = new Set(this.retryQueue.map((i) => `${i.workspace}\0${i.member.id}\0${i.missionId}`));
-    const watched = new Set(this.watching.map((w) => `${w.workspace}\0${w.member.id}\0${w.missionId}`));
+    const queued = new Set(this.retryQueue.map((i) => `${i.workspace}\0${i.memberId}\0${i.missionId}`));
+    const watched = new Set(this.watching.map((w) => `${w.workspace}\0${w.memberId}\0${w.missionId}`));
     for (const workspace of workspaces) {
       for (const member of members) {
         if (!member.enabled) continue;
@@ -328,7 +353,7 @@ export class Bridge {
           }
           if (arrived) continue;
           this.log(this.tag(workspace, member.id), `sweep: ${missionId}@${station} has no T3 thread — delivering`);
-          await this.#tryDeliver(workspace, member, station, missionId, this.tag(workspace, member.id));
+          await this.#tryDeliver(workspace, member.id, station, missionId, this.tag(workspace, member.id));
         }
       }
     }
@@ -345,7 +370,7 @@ export class Bridge {
     if (!this.watching.length || !this.t3) return;
     const stillWatching = [];
     for (const watch of this.watching) {
-      const tag = this.tag(watch.workspace, watch.member.id);
+      const tag = this.tag(watch.workspace, watch.memberId);
       let state;
       try {
         const snapshot = await this.t3.threadDetail(watch.threadId);
@@ -369,14 +394,14 @@ export class Bridge {
       }
       let activeMissionIds = [];
       try {
-        activeMissionIds = await this.runner.missions(watch.workspace, watch.member.id);
+        activeMissionIds = await this.runner.missions(watch.workspace, watch.memberId);
       } catch (err) {
         this.log(tag, `watch: im missions failed (${err.message}) — dropping watch for ${watch.missionId}`);
         continue;
       }
       if (!activeMissionIds.includes(watch.missionId)) {
         try {
-          await this.delivery.settle(watch.member.id, watch.missionId);
+          await this.delivery.settle(watch.memberId, watch.missionId);
           this.log(tag, `turn ${state} and mission ${watch.missionId} closed — thread settled`);
         } catch (err) {
           this.log(tag, `settle failed for ${watch.missionId}: ${err.message}`);
@@ -404,28 +429,36 @@ export class Bridge {
         item.attempts = 0;
         this.retryQueue.push(item);
         this.log(
-          this.tag(item.workspace, item.member.id),
+          this.tag(item.workspace, item.memberId),
           `parking ${item.missionId}@${item.station} after ${this.config.maxDeliverAttempts} attempt(s) — stays queued for later reconciles`,
         );
         continue;
       }
+      // The member definition is re-resolved per attempt, so a retry picks up
+      // config edits made since the failure (or drops out when the member
+      // left the table — the sweep owns it again then).
+      const member = this.#lookupMember(item.memberId);
+      if (!member) {
+        this.log(this.tag(item.workspace, item.memberId), `retry dropped: member ${item.memberId} is not enabled in the member table`);
+        continue;
+      }
       try {
-        const show = await this.runner.missionShow(item.workspace, item.missionId, item.member.id);
+        const show = await this.runner.missionShow(item.workspace, item.missionId, item.memberId);
         if (!show.ok) {
-          this.log(this.tag(item.workspace, item.member.id), `retry dropped: ${item.missionId} no longer shows`);
+          this.log(this.tag(item.workspace, item.memberId), `retry dropped: ${item.missionId} no longer shows`);
           continue;
         }
         const threadId = await this.delivery.deliver({
           workspacePath: item.workspace,
-          member: item.member,
+          member,
           station: item.station,
           missionId: item.missionId,
           brief: show.text,
         });
-        this.log(this.tag(item.workspace, item.member.id), `retry delivered ${item.missionId}@${item.station} → ${threadId}`);
-        this.watching.push({ workspace: item.workspace, member: item.member, missionId: item.missionId, threadId });
+        this.log(this.tag(item.workspace, item.memberId), `retry delivered ${item.missionId}@${item.station} → ${threadId}`);
+        this.watching.push({ workspace: item.workspace, memberId: item.memberId, missionId: item.missionId, threadId });
       } catch (err) {
-        this.log(this.tag(item.workspace, item.member.id), `retry ${item.attempts} failed for ${item.missionId}: ${err.message}`);
+        this.log(this.tag(item.workspace, item.memberId), `retry ${item.attempts} failed for ${item.missionId}: ${err.message}`);
         this.retryQueue.push(item);
       }
     }

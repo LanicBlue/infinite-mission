@@ -435,3 +435,64 @@ test("exhausted retries park in the queue instead of dropping; healing delivers 
   assert.equal(delivery.deliverCalls.length, 1);
   assert.equal(bridge.watching.length, 1); // retry delivery gets a turn watcher too
 });
+
+test("loop deliveries resolve the member at delivery time — model edits apply without a loop restart", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL("ms_1111111111111111") }, { code: 0, stdout: ARRIVAL("ms_2222222222222222") }],
+    missionShow: (missionId) => ({ ok: true, text: `[mission ${missionId}] Smoke — active` }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  assert.equal(delivery.deliverCalls[0].member.model, "gpt-5.6-luna");
+  // Edit the member's instance/model while the loop keeps running — the next
+  // arrival must carry the new selection, not the loop-start snapshot.
+  bridge.config = makeConfig({ members: [{ id: "t3-codex", instance: "zcode", model: "builtin:bigmodel-coding-plan/GLM-5.3-Flash" }] });
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 2));
+  assert.equal(delivery.deliverCalls[1].member.instance, "zcode");
+  assert.equal(delivery.deliverCalls[1].member.model, "builtin:bigmodel-coding-plan/GLM-5.3-Flash");
+});
+
+test("retries resolve the member at retry time — a config edit heals with the new selection", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL("ms_3333333333333333") }],
+    missionShow: () => ({ ok: true, text: "[mission ms_3333333333333333] Parked — active" }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  delivery.failDeliver = true;
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => runner.calls.missionShow.length === 1)); // failed → queued
+  delivery.failDeliver = false;
+  bridge.config = makeConfig({ members: [{ id: "t3-codex", instance: "zcode", model: "GLM-5.3-Flash" }] });
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 1);
+  assert.equal(delivery.deliverCalls[0].member.model, "GLM-5.3-Flash"); // not the failure-time snapshot
+});
+
+test("arrival for a member that left the table is skipped, not delivered with a stale snapshot", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL("ms_4444444444444444") }],
+    missionShow: () => ({ ok: true, text: "[mission ms_4444444444444444] Smoke — active" }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => runner.calls.receive.length >= 1));
+  // Member disabled between reconciles: the arrival lands before the loop is
+  // removed — it must be skipped before even re-reading the mission.
+  bridge.config = makeConfig({ members: [{ id: "t3-codex", instance: "codex", model: "gpt-5.6-luna", enabled: false }] });
+  assert.ok(await waitFor(() => runner.calls.receive.length >= 2)); // arrival batch consumed
+  assert.equal(runner.calls.missionShow.length, 0); // skipped before the authority re-read
+  assert.equal(delivery.deliverCalls.length, 0);
+});
