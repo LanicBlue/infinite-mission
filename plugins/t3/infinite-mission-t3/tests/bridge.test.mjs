@@ -496,3 +496,36 @@ test("arrival for a member that left the table is skipped, not delivered with a 
   assert.equal(runner.calls.missionShow.length, 0); // skipped before the authority re-read
   assert.equal(delivery.deliverCalls.length, 0);
 });
+
+test("a delivery in flight absorbs the concurrent triggers: loop arrival, sweep, and a second reconcile", async (t) => {
+  const MISSION = "ms_5555555555555555";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(MISSION) }],
+    missionShow: () => ({ ok: true, text: `[mission ${MISSION}] Smoke — active` }),
+    missions: [{ id: MISSION, station: "build" }], // the sweep sees the same parked mission
+  });
+  const delivery = new FakeDelivery();
+  delivery.threadExists = async () => false; // sweep would deliver it
+  let releaseDelivery;
+  const gate = new Promise((resolve) => (releaseDelivery = resolve));
+  const innerDeliver = delivery.deliver.bind(delivery);
+  delivery.deliver = async (args) => {
+    const threadId = await innerDeliver(args);
+    await gate; // hold the first delivery while the other triggers fire
+    return threadId;
+  };
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+
+  const firstCycle = bridge.reconcile(); // sweep delivers, blocks on the gate
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  // While the delivery is in flight: the receive loop's arrival for the same
+  // mission must skip, and an overlapping reconcile tick must not double it.
+  await bridge.reconcile();
+  releaseDelivery();
+  await firstCycle;
+  assert.ok(await waitFor(() => runner.calls.receive.length >= 2)); // the loop consumed its arrival and re-hung
+  assert.equal(delivery.deliverCalls.length, 1); // exactly one delivery, one thread
+  assert.equal(bridge.watching.length, 1);
+});

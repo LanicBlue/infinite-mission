@@ -140,6 +140,19 @@ on the launcher links to it.
   its retry budget is parked in the queue rather than dropped, so a T3
   outage longer than the retry window no longer strands the mission —
   recovery is automatic once T3 is reachable again.
+- **Member config is read at delivery time** — loops, the retry queue, and
+  watchers carry member ids only; every delivery resolves the member's
+  instance/model from the current table, so edits in T3's settings apply to
+  the next arrival without a bridge restart. Members that left the table
+  (or were disabled) skip delivery until they return.
+- **Thread reuse beyond the deterministic ids** — when the deterministic ids
+  miss (a deleted base squats its id), the shell snapshot's thread list is
+  searched by `im-<memberId>-<missionId>` prefix, so a create-race fallback
+  thread (random suffix) is reused instead of forking a new one every round.
+  Only an archived random-suffix thread is out of reach.
+- **One delivery at a time** — an in-flight set dedupes concurrent triggers
+  for the same mission (receive-loop arrival × sweep × retry), and a
+  reconcile cycle still running skips the next tick instead of overlapping.
 
 ## Tests
 

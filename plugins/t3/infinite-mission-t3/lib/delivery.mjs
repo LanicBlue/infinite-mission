@@ -10,6 +10,17 @@ export function threadIdFor(memberId, missionId, attempt = 0) {
   return attempt > 0 ? `im-${memberId}-${missionId}-${attempt + 1}` : `im-${memberId}-${missionId}`;
 }
 
+/**
+ * Whether a thread id belongs to this member's mission: the deterministic
+ * base or any of its suffixed variants. Mission ids are fixed-length, so the
+ * prefix cannot straddle two missions, and the member id inside it keeps
+ * matches member-scoped (`im-t3-glm-…` never matches t3-glm-flash's threads).
+ */
+export function isMissionThreadId(threadId, memberId, missionId) {
+  const base = threadIdFor(memberId, missionId);
+  return threadId === base || threadId.startsWith(`${base}-`);
+}
+
 /** `[mission ms_x] NAME — status` → a T3 display title (missionId as fallback). */
 export function titleFromBrief(brief, memberId, station, missionId) {
   const firstLine = String(brief).split("\n", 1)[0] ?? "";
@@ -72,9 +83,24 @@ export class Delivery {
     return norm(a) === norm(b);
   }
 
+  /**
+   * The mission's most recently updated live thread beyond the three
+   * deterministic ids, found by id prefix in the shell snapshot's thread
+   * list. This is how a create-race fallback (random suffix) thread stays
+   * findable — without it every round after its creation would fork yet
+   * another one. The shell lists non-deleted threads only; archived ones are
+   * legitimate followup targets (deliver unarchives). Residual blind spot:
+   * an archived random-suffix thread is absent from the shell and unreachable.
+   */
+  #findByPrefix(shell, memberId, missionId) {
+    const matches = (shell?.threads ?? [])
+      .filter((thread) => isMissionThreadId(thread.id, memberId, missionId))
+      .toSorted((a, b) => String(a.updatedAt ?? "").localeCompare(String(b.updatedAt ?? "")));
+    return matches.at(-1) ?? null;
+  }
+
   /** Reuse-or-create the T3 project for an im workspace (matched by real path). */
-  async ensureProject(workspacePath) {
-    const shell = await this.t3.shell();
+  async ensureProject(shell, workspacePath) {
     const existing = (shell.projects ?? []).find((project) =>
       this.#sameRoot(project.workspaceRoot, workspacePath),
     );
@@ -106,23 +132,34 @@ export class Delivery {
         return true;
       }
     }
-    return false;
+    // The deterministic probes can miss a random-suffix thread (deleted
+    // bases squatted their ids); a live one still counts as delivered — a
+    // settled one does not, or a revisit round could never find it.
+    const reuse = this.#findByPrefix(await this.t3.shell(), memberId, missionId);
+    return Boolean(reuse && !reuse.settledAt && reuse.settledOverride !== "settled");
   }
 
   /**
-   * Resolve where a mission's thread lives. `create` means the base id is
-   * free; `followup` means the thread exists (the same mission returned for
+   * Resolve where a mission's thread lives. `create` means the id is free;
+   * `followup` means the thread exists (the same mission returned for
    * another round — inject into it rather than forking). A settled thread is
    * still a valid followup target: the server un-settles it on the next turn.
+   * Detail 404 covers both "never existed" and "deleted" — and a deleted
+   * base is exactly when a create-race fallback thread (random suffix) may
+   * live on, so every miss checks the shell before deciding to create.
    */
-  async #resolveTarget(memberId, missionId) {
+  async #resolveTarget(memberId, missionId, shell = null) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const threadId = threadIdFor(memberId, missionId, attempt);
       const snapshot = await this.t3.threadDetail(threadId);
-      if (!snapshot?.thread) return { mode: "create", threadId };
-      const thread = snapshot.thread;
-      if (thread.deletedAt) continue;
-      return { mode: "followup", threadId, thread };
+      if (snapshot?.thread) {
+        const thread = snapshot.thread;
+        if (thread.deletedAt) continue;
+        return { mode: "followup", threadId, thread };
+      }
+      const reuse = this.#findByPrefix(shell ?? (await this.t3.shell()), memberId, missionId);
+      if (reuse) return { mode: "followup", threadId: reuse.id, thread: reuse };
+      return { mode: "create", threadId };
     }
     return { mode: "create", threadId: `im-${memberId}-${missionId}-${randomUUID().slice(0, 8)}` };
   }
@@ -132,8 +169,11 @@ export class Delivery {
    * project on first arrival). Returns the thread id used.
    */
   async deliver({ workspacePath, member, station, missionId, brief }) {
-    const projectId = await this.ensureProject(workspacePath);
-    const target = await this.#resolveTarget(member.id, missionId);
+    // One shell fetch serves both the project lookup and the prefix search
+    // in #resolveTarget (the fallback path for deleted deterministic ids).
+    const shell = await this.t3.shell();
+    const projectId = await this.ensureProject(shell, workspacePath);
+    const target = await this.#resolveTarget(member.id, missionId, shell);
 
     if (target.mode === "create") {
       await this.#createThread({ target, projectId, member, station, missionId, brief });

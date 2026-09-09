@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Delivery, threadIdFor, titleFromBrief, dutyPreamble, modelSelectionOf } from "../lib/delivery.mjs";
+import { Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, modelSelectionOf } from "../lib/delivery.mjs";
 
 const BRIEF = [
   "[mission ms_aaaabbbbccccdddd] Smoke mission — active",
@@ -17,8 +17,12 @@ const BRIEF = [
 const MEMBER = { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna", runtimeMode: "full-access" };
 
 class FakeT3 {
-  constructor({ projects = [], threads = new Map(), failOnce = {} } = {}) {
-    this.shellState = { projects };
+  // threads: the detail map (probe targets); shellThreads: the shell snapshot's
+  // live thread list (what the prefix fallback searches) — kept separate so a
+  // test can model "deleted base, live suffixed thread" (detail 404s deleted
+  // threads on the real server; the shell never lists them).
+  constructor({ projects = [], threads = new Map(), shellThreads = [], failOnce = {} } = {}) {
+    this.shellState = { projects, threads: shellThreads };
     this.threads = threads;
     this.dispatched = [];
     this.failOnce = failOnce; // { "thread.create": 1 } → fail that many times
@@ -67,6 +71,18 @@ test("threadIdFor determinism, per-member scope, and suffixes", () => {
   assert.equal(threadIdFor("t3-codex", "ms_abc", 1), "im-t3-codex-ms_abc-2");
   assert.equal(threadIdFor("t3-codex", "ms_abc", 2), "im-t3-codex-ms_abc-3");
   assert.notEqual(threadIdFor("t3-kimi", "ms_abc"), threadIdFor("t3-codex", "ms_abc"));
+});
+
+test("isMissionThreadId: exact, suffixed, and boundary mismatches", () => {
+  const mission = `ms_${"a".repeat(32)}`;
+  const otherMission = `ms_${"a".repeat(31)}b`; // same length, different tail
+  assert.ok(isMissionThreadId(`im-t3-codex-${mission}`, "t3-codex", mission));
+  assert.ok(isMissionThreadId(`im-t3-codex-${mission}-16bced3f`, "t3-codex", mission));
+  assert.ok(!isMissionThreadId(`im-t3-codex-${otherMission}-16bced3f`, "t3-codex", mission));
+  // member boundary: t3-glm must not claim t3-glm-flash's threads
+  const flashMission = `ms_${"f".repeat(32)}`;
+  assert.ok(!isMissionThreadId(`im-t3-glm-flash-${flashMission}-ab`, "t3-glm", flashMission));
+  assert.ok(isMissionThreadId(`im-t3-glm-flash-${flashMission}-ab`, "t3-glm-flash", flashMission));
 });
 
 test("titleFromBrief extracts the mission name with the member prefix", () => {
@@ -281,4 +297,88 @@ test("two members delivering the same mission get separate threads with their ow
   } finally {
     cleanup();
   }
+});
+
+test("deleted base + live suffixed thread: the suffix thread is reused, not re-forked", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const hexId = "im-t3-codex-ms_aaaabbbbccccdddd-16bced3f";
+  const t3 = new FakeT3({
+    projects: [{ id: "p-existing", workspaceRoot: dir }],
+    threads: new Map(), // detail probes all miss (base deleted → 404 on the server)
+    shellThreads: [
+      { id: hexId, archivedAt: null, settledAt: null, settledOverride: null, updatedAt: "2026-09-09T03:17:51Z" },
+    ],
+  });
+  const delivery = new Delivery(t3);
+  try {
+    const threadId = await delivery.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "human-review",
+      missionId: "ms_aaaabbbbccccdddd",
+      brief: BRIEF,
+    });
+    assert.equal(threadId, hexId);
+    assert.deepEqual(types(t3), ["thread.turn.start"]); // followup — no create, no fork
+    assert.equal(t3.dispatched[0].threadId, hexId);
+  } finally {
+    cleanup();
+  }
+});
+
+test("several suffixed threads: the most recently updated one carries the conversation", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const older = "im-t3-codex-ms_aaaabbbbccccdddd-91f10e00";
+  const newer = "im-t3-codex-ms_aaaabbbbccccdddd-ea743c32";
+  const t3 = new FakeT3({
+    projects: [{ id: "p-existing", workspaceRoot: dir }],
+    shellThreads: [
+      { id: older, archivedAt: null, settledAt: null, settledOverride: null, updatedAt: "2026-09-09T03:19:38Z" },
+      { id: newer, archivedAt: null, settledAt: null, settledOverride: null, updatedAt: "2026-09-09T03:24:58Z" },
+    ],
+  });
+  const delivery = new Delivery(t3);
+  try {
+    const threadId = await delivery.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "human-review",
+      missionId: "ms_aaaabbbbccccdddd",
+      brief: BRIEF,
+    });
+    assert.equal(threadId, newer);
+  } finally {
+    cleanup();
+  }
+});
+
+test("hasThread sees suffixed threads through the shell; settled ones still count as undelivered", async () => {
+  const hexLive = "im-t3-codex-ms_1111111111111111-16bced3f";
+  const hexSettled = "im-t3-codex-ms_2222222222222222-21235c2a";
+  const foreignHex = "im-t3-grok-ms_1111111111111111-abcd1234";
+  const t3 = new FakeT3({
+    shellThreads: [
+      { id: hexLive, archivedAt: null, settledAt: null, settledOverride: null, updatedAt: "2026-09-09T03:00:00Z" },
+      { id: hexSettled, archivedAt: null, settledAt: "2026-09-09T03:05:00Z", settledOverride: null, updatedAt: "2026-09-09T03:05:00Z" },
+      { id: foreignHex, archivedAt: null, settledAt: null, settledOverride: null, updatedAt: "2026-09-09T03:00:00Z" },
+    ],
+  });
+  const delivery = new Delivery(t3);
+  assert.equal(await delivery.hasThread("t3-codex", "ms_1111111111111111"), true);
+  assert.equal(await delivery.hasThread("t3-codex", "ms_2222222222222222"), false); // settled → revisit must find it
+  assert.equal(await delivery.hasThread("t3-grok", "ms_9999999999999999"), false); // prefix is member-scoped
+});
+
+test("settle reaches a suffixed thread once the deterministic ids are gone", async () => {
+  const hexId = "im-t3-codex-ms_1111111111111111-ea743c32";
+  const t3 = new FakeT3({
+    threads: new Map(), // probes miss
+    shellThreads: [
+      { id: hexId, archivedAt: null, settledAt: null, settledOverride: null, updatedAt: "2026-09-09T03:24:58Z" },
+    ],
+  });
+  const delivery = new Delivery(t3);
+  assert.equal(await delivery.settle("t3-codex", "ms_1111111111111111"), true);
+  assert.deepEqual(types(t3), ["thread.settle"]);
+  assert.equal(t3.dispatched[0].threadId, hexId);
 });

@@ -57,6 +57,11 @@ export class Bridge {
     // member ids only — the member's instance/model is re-read at delivery
     // time, never snapshotted here.
     this.watching = [];
+    // `${workspace}\0${memberId}\0${missionId}` of deliveries currently
+    // running — the receive loop, the sweep, and the retry queue can all
+    // trigger the same mission concurrently; the first one wins.
+    this.inflight = new Set();
+    this.reconciling = false;
     this.timer = null;
   }
 
@@ -129,6 +134,22 @@ export class Bridge {
   }
 
   async reconcile() {
+    // One cycle at a time: a slow pass (subprocess spawns per workspace ×
+    // member) can outlast the rescan interval, and overlapping passes
+    // double-deliver the same parked missions.
+    if (this.reconciling) {
+      this.log("bridge", "reconcile skipped — previous cycle still running");
+      return;
+    }
+    this.reconciling = true;
+    try {
+      await this.#reconcileCycle();
+    } finally {
+      this.reconciling = false;
+    }
+  }
+
+  async #reconcileCycle() {
     await this.#reloadConfig();
     const workspaces = await this.#workspaces();
     const { members, source } = this.#resolveMembers();
@@ -282,38 +303,49 @@ export class Bridge {
    * mission moved on — drop it. The member definition is resolved here, at
    * delivery time, so config edits apply without a loop restart; a member
    * that left the table (or was disabled) drops the trigger — the sweep
-   * redelivers once it is back.
+   * redelivers once it is back. The in-flight check is synchronous, so two
+   * concurrent triggers (loop arrival × sweep × retry) cannot both deliver.
    */
   async #tryDeliver(workspace, memberId, station, missionId, tag) {
-    const member = this.#lookupMember(memberId);
-    if (!member) {
-      this.log(tag, `delivery skipped for ${missionId}@${station}: member ${memberId} is not enabled in the member table`);
+    const inflightKey = `${workspace}\0${memberId}\0${missionId}`;
+    if (this.inflight.has(inflightKey)) {
+      this.log(tag, `delivery skipped for ${missionId}@${station}: another delivery is in flight`);
       return;
     }
-    let show;
+    this.inflight.add(inflightKey);
     try {
-      show = await this.runner.missionShow(workspace, missionId, memberId);
-    } catch (err) {
-      this.log(tag, `mission show threw for ${missionId}@${station}: ${err.message}`);
-      return;
-    }
-    if (!show.ok) {
-      this.log(tag, `stale arrival dropped: ${missionId}@${station} (mission show failed)`);
-      return;
-    }
-    try {
-      const threadId = await this.delivery.deliver({
-        workspacePath: workspace,
-        member,
-        station,
-        missionId,
-        brief: show.text,
-      });
-      this.log(tag, `delivered ${missionId}@${station} → T3 thread ${threadId}`);
-      this.watching.push({ workspace, memberId, missionId, threadId });
-    } catch (err) {
-      this.log(tag, `delivery failed for ${missionId}@${station}: ${err.message} (queued for retry)`);
-      this.retryQueue.push({ workspace, memberId, station, missionId, attempts: 0 });
+      const member = this.#lookupMember(memberId);
+      if (!member) {
+        this.log(tag, `delivery skipped for ${missionId}@${station}: member ${memberId} is not enabled in the member table`);
+        return;
+      }
+      let show;
+      try {
+        show = await this.runner.missionShow(workspace, missionId, memberId);
+      } catch (err) {
+        this.log(tag, `mission show threw for ${missionId}@${station}: ${err.message}`);
+        return;
+      }
+      if (!show.ok) {
+        this.log(tag, `stale arrival dropped: ${missionId}@${station} (mission show failed)`);
+        return;
+      }
+      try {
+        const threadId = await this.delivery.deliver({
+          workspacePath: workspace,
+          member,
+          station,
+          missionId,
+          brief: show.text,
+        });
+        this.log(tag, `delivered ${missionId}@${station} → T3 thread ${threadId}`);
+        this.watching.push({ workspace, memberId, missionId, threadId });
+      } catch (err) {
+        this.log(tag, `delivery failed for ${missionId}@${station}: ${err.message} (queued for retry)`);
+        this.retryQueue.push({ workspace, memberId, station, missionId, attempts: 0 });
+      }
+    } finally {
+      this.inflight.delete(inflightKey);
     }
   }
 
@@ -342,7 +374,7 @@ export class Bridge {
         }
         for (const { id: missionId, station } of entries) {
           const dedupe = `${workspace}\0${member.id}\0${missionId}`;
-          if (queued.has(dedupe) || watched.has(dedupe)) continue;
+          if (queued.has(dedupe) || watched.has(dedupe) || this.inflight.has(dedupe)) continue;
           let arrived;
           try {
             arrived = await this.delivery.hasThread(member.id, missionId);
@@ -421,6 +453,12 @@ export class Bridge {
     const pending = this.retryQueue;
     this.retryQueue = [];
     for (const item of pending) {
+      if (this.inflight.has(`${item.workspace}\0${item.memberId}\0${item.missionId}`)) {
+        // Another path is delivering this mission right now; let it finish —
+        // a successful delivery registers the turn watcher itself.
+        this.retryQueue.push(item);
+        continue;
+      }
       item.attempts += 1;
       if (item.attempts > this.config.maxDeliverAttempts) {
         // Park instead of dropping: a dropped item is a mission stranded at
