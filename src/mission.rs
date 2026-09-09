@@ -192,6 +192,18 @@ impl Store {
             .collect())
     }
 
+    /// Live (non-ended) missions — the console's purge guard: deleting a
+    /// workspace's `.im` with active missions would silently void their
+    /// contracts.
+    pub fn active_mission_count(&self) -> Result<i64> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM missions WHERE status = 'active'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     /// Inbound ("en route") counts: active missions whose contract references
     /// a station but are currently parked elsewhere. Held missions don't
     /// count — those are the per-station `holding` numbers.
@@ -1432,4 +1444,24 @@ pub fn interpolate_prompt(prompt: &str, context: &InterpolationContext) -> Strin
             &context.iteration.unwrap_or(1).to_string(),
         )
         .replace("{mission.reason}", context.reason.unwrap_or(""))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn active_mission_count_counts_only_live_missions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("im.db")).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO missions (mission_id, name, objective, contract_json, at, status,
+                                       revision, created_at, created_by)
+                 VALUES ('ms_a','n','o','{}',NULL,'active',1,0,'t'),
+                        ('ms_b','n','o','{}',NULL,'ended',1,0,'t')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(store.active_mission_count().unwrap(), 1);
+    }
 }

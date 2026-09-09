@@ -360,6 +360,8 @@ fn console_workspace_selection_persists_and_validates() {
             "*",
             "-X",
             "POST",
+            "-H",
+            "Content-Type: application/json",
             "http://127.0.0.1:4699/api/workspace",
             "-d",
             &format!(r#"{{"path":"{}"}}"#, other_canon.display()),
@@ -382,6 +384,8 @@ fn console_workspace_selection_persists_and_validates() {
             "*",
             "-X",
             "POST",
+            "-H",
+            "Content-Type: application/json",
             "http://127.0.0.1:4699/api/workspace",
             "-d",
             r#"{"path":"/nonexistent/ws"}"#,
@@ -426,4 +430,233 @@ fn console_workspace_selection_persists_and_validates() {
     assert_eq!(String::from_utf8_lossy(&escape.stdout), "404");
     // 守卫 Drop 时收尾；常驻进程没有闲置自退，这里显式确认已可停止
     drop(ui);
+}
+
+/// purge 是破坏性动作，注册表/桥镜像在 apply_action 里是进程内直调
+/// （读进程 HOME）——这两个测试用互斥量 + 临时 HOME 隔离真实 ~/.im。
+/// 这两个测试共享一把锁：都要临时改「进程」HOME（apply_action 在进程
+/// 内读注册表），并发互踩环境变量会互相污染。
+static PROC_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 进程内直调测试专用：HOME 不被子命令覆写（继承测试进程已设好的
+/// 临时 HOME），注册表与 apply_action 看到的是同一份。
+fn im_with_proc_home(workspace: &Path) -> assert_cmd::Command {
+    let mut cmd = assert_cmd::Command::cargo_bin("im").unwrap();
+    cmd.current_dir(workspace);
+    cmd
+}
+
+struct RestoreHome(String);
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        std::env::set_var("HOME", &self.0);
+    }
+}
+
+#[test]
+fn purge_workspace_guards_and_mirrors_the_bridge_list() {
+    let _guard = PROC_HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
+    let _restore = RestoreHome(std::env::var("HOME").unwrap());
+    std::env::set_var("HOME", home.path());
+
+    let console_tmp = tempfile::TempDir::new().unwrap();
+    let console_ws = console_tmp.path().to_path_buf();
+    im_with_proc_home(&console_ws).arg("init").assert().success();
+
+    let victim_tmp = tempfile::TempDir::new().unwrap();
+    let victim = victim_tmp.path().to_path_buf();
+    im_with_proc_home(&victim).arg("init").assert().success();
+
+    // 桥配置钉住两个工作区——purge 后镜像必须只剩控制台工作区
+    std::fs::create_dir_all(home.path().join(".im")).unwrap();
+    let console_phys = std::fs::canonicalize(&console_ws).unwrap();
+    let victim_phys = std::fs::canonicalize(&victim).unwrap();
+    std::fs::write(
+        home.path().join(".im").join("t3-bridge.json"),
+        format!(
+            "{{\"workspaces\": [\"{}\", \"{}\"]}}",
+            console_phys.display(),
+            victim_phys.display()
+        ),
+    )
+    .unwrap();
+
+    let store = im::store::Store::open(&console_ws.join(".im").join("im.db")).unwrap();
+
+    // 白名单：不在册的路径拒绝（堵任意路径删 ~/.im 一类目标）
+    let stranger = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(stranger.path().join(".im")).unwrap();
+    let err = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "purge_workspace", "path": stranger.path() }),
+        &console_ws,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("不在注册表"), "got: {err:#}");
+
+    // 当前工作区拒绝
+    let err = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "purge_workspace", "path": console_ws }),
+        &console_ws,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("当前工作区"), "got: {err:#}");
+
+    // 活跃 mission 拒绝（合同锁不可绕过）
+    {
+        let victim_store = im::store::Store::open(&victim.join(".im").join("im.db")).unwrap();
+        victim_store
+            .conn
+            .execute(
+                "INSERT INTO missions (mission_id, name, objective, contract_json, at, status,
+                                       revision, created_at, created_by)
+                 VALUES ('ms_v','n','o','{}',NULL,'active',1,0,'t')",
+                [],
+            )
+            .unwrap();
+    }
+    let err = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "purge_workspace", "path": victim }),
+        &console_ws,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("活跃 mission"), "got: {err:#}");
+
+    // 结束 mission 后放行：.im 删除 + 注册表出册 + 桥清单镜像移除
+    {
+        let victim_store = im::store::Store::open(&victim.join(".im").join("im.db")).unwrap();
+        victim_store
+            .conn
+            .execute("UPDATE missions SET status = 'ended'", [])
+            .unwrap();
+    }
+    let message = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "purge_workspace", "path": victim }),
+        &console_ws,
+    )
+    .unwrap();
+    assert!(message.contains("unregistered"), "got: {message}");
+    assert!(!victim.join(".im").exists(), ".im must be gone");
+    let registry: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".im").join("workspaces.json")).unwrap(),
+    )
+    .unwrap();
+    let listed: Vec<&str> = registry["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(!listed.contains(&victim_phys.display().to_string().as_str()));
+    let bridge: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".im").join("t3-bridge.json")).unwrap(),
+    )
+    .unwrap();
+    let pinned: Vec<&str> = bridge["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(pinned, vec![console_phys.display().to_string().as_str()]);
+}
+
+#[test]
+fn remove_workspace_refuses_symlink_alias_of_current_workspace() {
+    let _guard = PROC_HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
+    let _restore = RestoreHome(std::env::var("HOME").unwrap());
+    std::env::set_var("HOME", home.path());
+
+    let console_tmp = tempfile::TempDir::new().unwrap();
+    let console_ws = console_tmp.path().to_path_buf();
+    im_with_proc_home(&console_ws).arg("init").assert().success();
+    let store = im::store::Store::open(&console_ws.join(".im").join("im.db")).unwrap();
+
+    // 别名（符号链接）指向当前工作区：守卫必须在 canonicalize 之后比较，
+    // 否则 registry::remove 内部的 canonicalize 会命中物理条目、静默注销当前工作区
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&console_ws, console_tmp.path().join("alias")).unwrap();
+    let err = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "remove_workspace",
+            "path": console_tmp.path().join("alias")
+        }),
+        &console_ws,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("当前工作区"), "got: {err:#}");
+    let registry: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.path().join(".im").join("workspaces.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(registry["workspaces"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn workspaces_remove_rejects_flags_as_paths() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+    im(ws).arg("init").assert().success();
+    im(ws)
+        .args(["workspaces", "--remove", "--prune"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--remove requires a path"));
+}
+
+#[test]
+fn purge_redeletes_shell_recreated_like_a_running_receiver() {
+    let _guard = PROC_HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
+    let _restore = RestoreHome(std::env::var("HOME").unwrap());
+    std::env::set_var("HOME", home.path());
+
+    let console_tmp = tempfile::TempDir::new().unwrap();
+    let console_ws = console_tmp.path().to_path_buf();
+    im_with_proc_home(&console_ws).arg("init").assert().success();
+    let victim_tmp = tempfile::TempDir::new().unwrap();
+    let victim = victim_tmp.path().to_path_buf();
+    im_with_proc_home(&victim).arg("init").assert().success();
+
+    let store = im::store::Store::open(&console_ws.join(".im").join("im.db")).unwrap();
+
+    // 复活源：模拟 im receive 的 open_store——目录一旦消失就在 ≤100ms 内
+    // 重建空壳，1.2s 后「退出」（真 receive 遇空库查不到成员即退出）。
+    // 复查循环必须先等一个轮询周期再查才能接住它。
+    let dot = victim.join(".im");
+    let mimic = std::thread::spawn(move || {
+        let stop = std::time::Instant::now() + std::time::Duration::from_millis(1200);
+        while std::time::Instant::now() < stop {
+            if !dot.is_dir() {
+                let _ = std::fs::create_dir_all(&dot);
+                let _ = std::fs::write(dot.join("im.db"), b"");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+
+    let message = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "purge_workspace", "path": victim }),
+        &console_ws,
+    )
+    .unwrap();
+    mimic.join().unwrap();
+    assert!(
+        message.contains("recreated an empty shell — re-deleted"),
+        "got: {message}"
+    );
+    assert!(!victim.join(".im").exists(), "final state must be clean");
 }

@@ -1072,11 +1072,46 @@ fn cmd_clean() -> Result<()> {
 
 fn cmd_workspaces(args: Vec<String>) -> Result<()> {
     let mut prune = false;
-    for arg in &args {
-        match arg.as_str() {
+    let mut remove: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--prune" => prune = true,
+            "--remove" => {
+                let value = args.get(i + 1).context("--remove requires a path")?;
+                if value.starts_with("--") {
+                    bail!("--remove requires a path, got {value:?}");
+                }
+                remove = Some(std::path::PathBuf::from(value));
+                i += 1;
+            }
             other => bail!("unknown workspaces flag: {other}"),
         }
+        i += 1;
+    }
+    if let Some(mut target) = remove {
+        if !target.is_absolute() {
+            target = std::env::current_dir()?.join(&target);
+        }
+        // 注册表存的是物理路径（getcwd 已解析符号链接），对齐后再匹配
+        let target =
+            std::fs::canonicalize(&target).unwrap_or(target);
+        // 与控制台同一守卫：当前工作区不能自我注销
+        if let Ok(current) = find_workspace() {
+            if current == target {
+                bail!("当前工作区不能从注册表移除——先切换到别的工作区");
+            }
+        }
+        let removed = im::registry::remove(&target)?;
+        println!(
+            "{}",
+            if removed {
+                format!("removed {} from the registry", target.display())
+            } else {
+                format!("{} was not registered", target.display())
+            }
+        );
+        // --remove X --prune 同给时两件事都做（remove 之后落到下方 prune）
     }
     if prune {
         let removed = im::registry::prune()?;

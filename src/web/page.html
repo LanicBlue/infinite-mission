@@ -472,6 +472,14 @@ function resolveModal(mission, revision, outcome, prefill) {
 		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn primary" data-act="resolve-confirm" data-mission="${esc(mission)}" data-revision="${revision}" data-outcome="${esc(outcome)}" data-needs-feedback="${needsFeedback ? "1" : ""}">提交 ${esc(outcome)}</button></div>`);
 }
 
+function purgeModal(path) {
+	openModal(`
+		<div class="modal-head"><h3 class="mono">${esc(path)}</h3><button class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<p class="objective">将从注册表移除该工作区，并<b>永久删除</b>其 <code>.im</code> 目录——missions、成员、工位、模板、文档全部丢失，不可恢复。工作区其余内容不动。</p>
+		<p class="hint">有活跃 mission 时会被拒绝；t3-bridge 的 workspaces 清单同步移除。</p>
+		<div class="modal-foot"><button class="btn" data-act="modal-close">取消</button><button class="btn danger" data-act="purge-confirm" data-path="${esc(path)}">确认删除</button></div>`);
+}
+
 function workDetailModal(key) {
 	const w = (state.works || []).find(x => x.work_key === key);
 	if (!w) { toast("工位不存在（可能刚被删除）", false); return; }
@@ -554,9 +562,9 @@ function settingsPane() {
 	<div class="table-wrap"><table><thead><tr><th>工作区</th><th>状态</th><th></th></tr></thead><tbody>
 	${(state.registeredWorkspaces||[]).map(w => `<tr><td class="mono">${esc(w.path)}</td>
 	<td>${w.live ? '<span class="chip accent">✓ 在册可用</span>' : '<span class="chip danger">✗ 目录已不存在</span>'}</td>
-	<td><button class="btn small danger" data-act="remove-workspace" data-path="${esc(w.path)}" title="从注册表移除（不删目录）">移除</button></td></tr>`).join("") || '<tr><td colspan="3" class="meta">注册表为空</td></tr>'}
+	<td><button class="btn small danger" data-act="remove-workspace" data-path="${esc(w.path)}" title="从注册表移除（不删目录）">移除</button><button class="btn small danger" style="margin-left:6px" data-act="purge-workspace" data-path="${esc(w.path)}" title="注销并删除该工作区的 .im 数据（不可恢复，活跃 mission 会被拒绝）">移除并删数据</button></td></tr>`).join("") || '<tr><td colspan="3" class="meta">注册表为空</td></tr>'}
 	</tbody></table></div>
-	<p class="hint"><code>im init</code> 只追加；清理失效条目在这里按下或用 <code>im workspaces --prune</code>。 <button class="btn small" data-act="prune-workspaces">清理全部失效</button></p></div>`;
+	<p class="hint"><code>im init</code> 只追加；清理失效条目在这里按下或用 <code>im workspaces --prune</code>；移除/删除会同步 t3-bridge 的 workspaces 清单（若已钉住）。 <button class="btn small" data-act="prune-workspaces">清理全部失效</button></p></div>`;
 }
 
 function render() {
@@ -580,6 +588,12 @@ document.addEventListener("click", async e => {
 	const d = btn.dataset;
 	switch (d.act) {
 		case "remove-workspace": await act({ type: "remove_workspace", path: d.path }); break;
+		case "purge-workspace": purgeModal(d.path); break;
+		case "purge-confirm": {
+			const ok = await act({ type: "purge_workspace", path: d.path });
+			if (ok) closeModal();
+			break;
+		}
 		case "prune-workspaces": await act({ type: "prune_workspaces" }); break;
 		case "resolve": resolveModal(d.mission, Number(d.revision), d.outcome, d.reason); break;
 		case "resolve-confirm": {

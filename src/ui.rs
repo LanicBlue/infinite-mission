@@ -389,8 +389,13 @@ pub fn apply_action_response(
         }
         "remove_workspace" => {
             let target = action["path"].as_str().context("`path` required")?;
-            let target = std::path::PathBuf::from(target);
-            if target == workspace {
+            // 与注册表的物理路径对齐（/tmp → /private/tmp），否则符号链接
+            // 别名可以绕过下方的当前工作区守卫（registry::remove 内部会
+            // canonicalize，守卫必须用同一形态比较——两侧都对齐）
+            let target = std::fs::canonicalize(std::path::PathBuf::from(target))
+                .unwrap_or_else(|_| std::path::PathBuf::from(target));
+            let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            if target == here {
                 return Err(anyhow::anyhow!(
                     "当前工作区不能从注册表移除——先切换到别的工作区"
                 ));
@@ -400,6 +405,100 @@ pub fn apply_action_response(
                 format!("removed {target:?} from the registry")
             } else {
                 format!("{target:?} was not registered")
+            })
+        }
+        "purge_workspace" => {
+            // remove_workspace 的破坏性兄弟：注销 + 删除该工作区的 .im
+            // （missions/成员/工位/模板/文档，全部不可恢复）。工作区其余
+            // 内容不动。活跃 mission 拒绝——删库不能绕过合同锁纪律。
+            let target = action["path"].as_str().context("`path` required")?;
+            let raw_target = std::path::PathBuf::from(target);
+            // 与注册表的物理路径对齐（/tmp → /private/tmp）：守卫、白名单、
+            // 删除三处判定必须落在同一条目上
+            let target =
+                std::fs::canonicalize(&raw_target).unwrap_or_else(|_| raw_target.clone());
+            let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            if target == here {
+                return Err(anyhow::anyhow!(
+                    "当前工作区不能注销并删除——先切换到别的工作区"
+                ));
+            }
+            // 白名单：只清在册工作区。否则任意路径下的 .im（比如 HOME 下
+            // 的 ~/.im 全局状态）都会成为删除目标。
+            let known = crate::registry::list_with_liveness()?
+                .iter()
+                .any(|(entry, _)| *entry == target || *entry == raw_target);
+            if !known {
+                return Err(anyhow::anyhow!(
+                    "refusing: {target:?} 不在注册表——purge 只清在册工作区"
+                ));
+            }
+            let dot = target.join(".im");
+            let had_dot = dot.is_dir();
+            let db = dot.join("im.db");
+            if db.is_file() {
+                // Store::open 会顺手建文件——存在才开
+                let target_store = crate::store::Store::open(&db)?;
+                let active = target_store.active_mission_count()?;
+                if active > 0 {
+                    return Err(anyhow::anyhow!(
+                        "refusing: {target:?} 还有 {active} 个活跃 mission——先结束再删，purge 不能绕过合同锁"
+                    ));
+                }
+            }
+            // 先删后注销：删除硬失败时保持未注销（数据可见、可修权限重试），
+            // 注销失败只留下可 prune 的死条目——反过来的中间态是孤儿数据。
+            // 「不存在」视为已删；其他错误如实上抛。
+            match std::fs::remove_dir_all(&dot) {
+                Ok(()) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "deletion failed: {e} —— 未注销，.im 数据仍在"
+                    ))
+                }
+            }
+            // 复活复查：运行中的 `im receive` 轮询间隔 ≤500ms，会在删除后
+            // 的下一个 tick 用 open_store 重建空壳 .im——「先查再等」会在
+            // 复活发生前秒退（窗口形同虚设），必须先等一个轮询周期再查，
+            // 干净满一个周期才算稳；复活则重删，直到 3 秒窗口耗尽。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let poll = std::time::Duration::from_millis(600);
+            let mut recreated = false;
+            loop {
+                std::thread::sleep(poll);
+                if !dot.is_dir() {
+                    break;
+                }
+                recreated = true;
+                if std::time::Instant::now() > deadline {
+                    break;
+                }
+                match std::fs::remove_dir_all(&dot) {
+                    Ok(()) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "deletion failed: {e} —— 已删部分数据，注册表未动"
+                        ))
+                    }
+                }
+            }
+            if dot.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "a running receive keeps recreating {target:?}/.im —— \
+                     数据已清、空壳仍在：稍后重试 purge 或手动删除"
+                ));
+            }
+            let removed = crate::registry::remove(&target)?;
+            Ok(match (removed, recreated, had_dot) {
+                (true, false, true) => format!("unregistered {target:?} and deleted its .im"),
+                (true, false, false) => format!("unregistered {target:?} (no .im to delete)"),
+                (_, true, _) => format!(
+                    "unregistered {target:?}; its .im was deleted (a running \
+                     receive recreated an empty shell — re-deleted)"
+                ),
+                (false, false, _) => format!("deleted {target:?}/.im (it was not registered)"),
             })
         }
         "delete_agent" => {
@@ -612,6 +711,7 @@ struct Request {
     method: String,
     path: String,
     query: String,
+    content_type: String,
     body: Vec<u8>,
 }
 
@@ -627,6 +727,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         None => (raw_path, String::new()),
     };
     let mut content_length = 0usize;
+    let mut content_type = String::new();
     loop {
         let mut header = String::new();
         reader.read_line(&mut header)?;
@@ -634,8 +735,11 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         if header.is_empty() {
             break;
         }
-        if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = header.to_ascii_lowercase();
+        if let Some(value) = lower.strip_prefix("content-length:") {
             content_length = value.trim().parse().unwrap_or(0);
+        } else if let Some(value) = lower.strip_prefix("content-type:") {
+            content_type = value.trim().to_string();
         }
     }
     let mut body = vec![0u8; content_length];
@@ -646,6 +750,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         method,
         path,
         query,
+        content_type,
         body,
     })
 }
@@ -711,6 +816,18 @@ fn handle(mut stream: TcpStream, current: &Mutex<PathBuf>) -> Result<()> {
     };
     let workspace = current.lock().expect("workspace lock poisoned").clone();
     let db_path = workspace.join(".im").join("im.db");
+
+    // 状态变更端点只收 application/json：控制台页面的 fetch 都带这个头，
+    // 而 text/plain 是 CORS「简单请求」——跨源恶意页面可以不带预检盲打
+    // POST；强制 JSON 让跨源 fetch 必须过预检（本服务无 ACAO，预检必败）。
+    if request.method == "POST" && !request.content_type.starts_with("application/json") {
+        return respond(
+            &mut stream,
+            "415 Unsupported Media Type",
+            "text/plain; charset=utf-8",
+            b"POST endpoints require Content-Type: application/json",
+        );
+    }
 
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => respond(
