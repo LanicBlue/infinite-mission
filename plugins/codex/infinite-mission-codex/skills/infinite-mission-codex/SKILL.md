@@ -44,7 +44,17 @@ use the `wait` command below; calling `join` again may create a suffixed id.
 2. Work from the supplied workspace. Run `im missions <agentId>` and inspect
    each actionable mission with `im mission show <missionId> --for <agentId>`.
    The live mission view, revision, rights, routes, and station prompt are the
-   authority. Duplicate or stale wakeups may have no actionable mission.
+   authority.
+   Before treating a wake with no actionable mission as duplicate or stale,
+   read the persisted `noticePath`. For each exact Mission id in a station
+   note's `im mission show ...` hint, run that show command even when the id is
+   absent from `im missions`. A Work-origin result intentionally wakes the
+   origin Work after the Mission has ended, so it is absent from the active
+   list while `mission show` still succeeds and reports `ended`.
+   For an ended result, run `im mission result <missionId>` and report the
+   returned answer. If an older IM core does not support that command, use
+   `im mission events <missionId>` as the read-only fallback. Do not submit,
+   abandon, or otherwise advance an ended Mission.
 3. Read and write only the mission documents granted by that live view. Submit
    with the current revision, an allowed outcome, required feedback or reason,
    and every receipt produced by document writes.
@@ -56,6 +66,11 @@ event, and `reason` is `arrival`, `membership`, or `receive-error`. Normal
 six-hour timeouts never produce an envelope because the watcher renews them
 internally. `nextWait=auto-renewing` means the watcher is already entering the
 next wait; `nextWait=paused` means it stopped for a terminal condition.
+
+`reason=arrival` covers both a newly actionable round and a returned result;
+the watcher deliberately does not guess between them. The live `mission show`
+state makes that distinction. A station result wake is therefore not stale
+merely because `im missions <agentId>` is empty.
 
 If the wakeup reports `reason=receive-error`, inspect the referenced
 `noticePath`, diagnose the local CLI/session problem, and report it instead of

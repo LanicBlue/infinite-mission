@@ -11,12 +11,21 @@ import unittest
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "im_codex.py"
+SKILL = Path(__file__).parents[1] / "skills" / "infinite-mission-codex" / "SKILL.md"
 
 
 class ImCodexTest(unittest.TestCase):
     def make_executable(self, path: Path, body: str) -> None:
         path.write_text(f"#!{sys.executable}\n{body}")
         path.chmod(0o755)
+
+    def test_skill_treats_ended_result_wake_as_read_only_work_not_stale(self) -> None:
+        text = SKILL.read_text()
+        self.assertIn("im mission result <missionId>", text)
+        self.assertIn("im mission events <missionId>", text)
+        self.assertIn("absent from `im missions`", text)
+        self.assertIn("Do not submit", text)
+        self.assertIn("result wake is therefore not stale", text)
 
     def test_join_arms_actual_auto_suffixed_agent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
