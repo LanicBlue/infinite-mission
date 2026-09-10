@@ -1,4 +1,4 @@
 /target
-/.im
-
 .im/
+.DS_Store
+__pycache__/
