@@ -21,6 +21,28 @@ export class ProcessImRunner {
 
   /** @returns {Promise<Array<{ id: string, name: string | null, status: string }>>} */
   async roster(workspace) {
+    // Prefer the machine contract: `--json` is immune to whatever a free-text
+    // display name does to the human roster lines. Older cores lack the flag
+    // and have no display names either, so the line fallback stays safe there.
+    const json = await this.#run(["agents", "--all", "--json"], workspace);
+    if (json.code === 0) {
+      let rows;
+      try {
+        rows = JSON.parse(json.stdout);
+      } catch {
+        throw new Error(`im agents --json returned unparseable output: ${json.stdout.slice(0, 120)}`);
+      }
+      if (!Array.isArray(rows)) {
+        throw new Error("im agents --json returned a non-array roster");
+      }
+      return rows
+        .filter((row) => row && typeof row.id === "string")
+        .map((row) => ({
+          id: row.id,
+          name: typeof row.displayName === "string" && row.displayName ? row.displayName : null,
+          status: typeof row.status === "string" ? row.status : "unknown",
+        }));
+    }
     const res = await this.#run(["agents", "--all"], workspace);
     if (res.code !== 0) {
       throw new Error(`im agents failed (exit ${res.code}): ${res.stderr.trim().slice(0, 200)}`);

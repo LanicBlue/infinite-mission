@@ -305,7 +305,22 @@ export class Bridge {
    */
   async #syncMemberName(workspace, member, rosterEntry) {
     if (!rosterEntry) return;
-    const wanted = member.displayName?.trim() || null;
+    // "-" is im's clear marker — as a wanted name it could never converge
+    // (clear ≠ "-"), so it reads as "no name". Names im would reject (newlines,
+    // control characters, oversized) are skipped once, not retried every tick.
+    let wanted = member.displayName?.trim() || null;
+    if (wanted === "-") wanted = null;
+    const invalid =
+      wanted !== null &&
+      (wanted.length > 64 || /[\x00-\x1f\x7f]/.test(wanted));
+    if (invalid) {
+      if (!this.warnedNames?.has(wanted)) {
+        this.warnedNames ??= new Set();
+        this.warnedNames.add(wanted);
+        this.log(this.tag(workspace, member.id), `display name rejected by im's shape rules, not synced: ${JSON.stringify(wanted)}`);
+      }
+      return;
+    }
     if ((rosterEntry.name ?? null) === wanted) return;
     try {
       await this.runner.rename(workspace, member.id, wanted);
@@ -385,40 +400,62 @@ export class Bridge {
   }
 
   async #deliveryBrief(workspace, missionId, show) {
-    // Two independent signals must agree before a delivery is treated as a
-    // returned result: the show header's terminal status and the ended line.
-    // Either alone could be forged by mission/station-prompt text (a live
-    // mission would then be told "do NOT submit" and its round would strand),
-    // so both are required.
-    const header = String(show.text).split("\n", 1)[0] ?? "";
-    const headerEnded = /\] .* — ended$/.test(header);
-    const endedLine = /(?:^|\n)  ended: /m.test(show.text);
-    if (!headerEnded || !endedLine) return { brief: show.text, ended: false };
+    // The ended signal is a machine contract, not show-text heuristics: the
+    // header's status suffix and any "ended:" line can both be corrupted by
+    // mission names and objectives (a multi-line name once turned every
+    // result delivery into a duty turn that watch-settled and
+    // sweep-redelivered forever). Layered instead: `im mission result`
+    // succeeds exactly for ended missions; older cores fall back to the
+    // event history, whose `#seq stamp mission.ended` lines are
+    // machine-written and cannot be forged through payloads (JSON keeps
+    // them single-line).
+    let ended = false;
+    let result = null;
+    let events = null;
+    if (typeof this.runner.missionResult === "function") {
+      try {
+        result = await this.runner.missionResult(workspace, missionId);
+        ended = result.ok;
+      } catch {
+        ended = false; // treat like not-ended; the sweep re-delivers from `im results`
+      }
+    }
+    if (!ended && typeof this.runner.missionEvents === "function") {
+      try {
+        events = await this.runner.missionEvents(workspace, missionId);
+      } catch {
+        events = null;
+      }
+      // Event-kind lines are `#seq <stamp> <kind>` with the payload on its
+      // own indented line below — payloads are single-line JSON, so a
+      // forged "mission.ended" inside a reason cannot anchor to `#seq`.
+      ended =
+        events !== null && /^#\d+\s.*mission\.ended$/m.test(String(events.text));
+    }
+    if (!ended) return { brief: show.text, ended: false };
 
     // mission_result work notes intentionally share the stable arrival-note
-    // envelope. The authoritative distinction is that `mission show` still
-    // succeeds but reports an ended Mission. Supply the durable result and
-    // history, and make it explicit that no submit duty remains.
+    // envelope; the authoritative ended check above is the distinction.
+    // Supply the durable result and history, and make it explicit that no
+    // submit duty remains.
     const sections = [
       "[InfiniteMission returned result]",
       "This Mission is already ended. Read the result below; do NOT submit or abandon it.",
       show.text.trimEnd(),
     ];
-    if (typeof this.runner.missionResult === "function") {
-      try {
-        const result = await this.runner.missionResult(workspace, missionId);
-        if (result.ok && result.text.trim()) sections.push("[Durable result]", result.text.trimEnd());
-      } catch (err) {
-        this.log("bridge", `mission result lookup failed for ${missionId}: ${err.message}`);
-      }
+    if (result && result.ok && result.text.trim()) {
+      sections.push("[Durable result]", result.text.trimEnd());
     }
-    if (typeof this.runner.missionEvents === "function") {
+    if (events === null && typeof this.runner.missionEvents === "function") {
       try {
-        const events = await this.runner.missionEvents(workspace, missionId);
-        if (events.ok && events.text.trim()) sections.push("[Mission events]", events.text.trimEnd());
+        events = await this.runner.missionEvents(workspace, missionId);
       } catch (err) {
         this.log("bridge", `mission events lookup failed for ${missionId}: ${err.message}`);
+        events = { ok: false, text: "" };
       }
+    }
+    if (events && events.ok && events.text.trim()) {
+      sections.push("[Mission events]", events.text.trimEnd());
     }
     return { brief: sections.join("\n\n"), ended: true };
   }

@@ -362,7 +362,7 @@ test("an active mission whose prompt mentions an ended line is never mistaken fo
         "  revision: 1",
       ].join("\n"),
     }),
-    missionResult: () => ({ ok: true, text: "{}\n" }),
+    missionResult: () => ({ ok: false, text: "Error: Mission has not ended yet" }),
     missionEvents: () => ({ ok: true, text: "" }),
   });
   const delivery = new FakeDelivery();
@@ -383,7 +383,10 @@ test("returned result remains deliverable when an older core has no mission resu
     receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "design") }],
     missionShow: () => ({ ok: true, text: `[mission ${missionId}] Ask — ended\n  ended: closed` }),
     missionResult: () => ({ ok: false, text: "unknown command: result" }),
-    missionEvents: () => ({ ok: true, text: '#2 round.completed {"result":"legacy answer"}\n' }),
+    missionEvents: () => ({
+      ok: true,
+      text: '#2  09-10 08:00:00 round.completed\n     {"result":"legacy answer"}\n#3  09-10 08:00:01 mission.ended\n     {"disposition":"completed","outcome":"answered"}\n',
+    }),
   });
   const delivery = new FakeDelivery();
   const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
@@ -393,6 +396,59 @@ test("returned result remains deliverable when an older core has no mission resu
   assert.match(delivery.deliverCalls[0].brief, /legacy answer/);
   assert.equal(delivery.deliverCalls[0].ended, true);
   assert.equal(bridge.watching.length, 0);
+  await bridge.stop();
+});
+
+test("a multi-line mission name cannot flip a returned result into a duty turn", async () => {
+  const missionId = "ms_1111222233334444";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "design") }],
+    missionShow: () => ({
+      ok: true,
+      // The name carries a newline, so the status suffix lands on line 2 —
+      // header parsing would call this an active mission. The exit code of
+      // `im mission result` is the authority.
+      text: `[mission ${missionId}] Ask\n补充说明 — ended\n  objective: which branch?`,
+    }),
+    missionResult: () => ({ ok: true, text: '{"disposition":"completed","result":"release-1"}\n' }),
+    missionEvents: () => ({ ok: true, text: "" }),
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  const call = delivery.deliverCalls[0];
+  assert.equal(call.ended, true, "the result exit code decides, not the header");
+  assert.match(call.brief, /\[Durable result\][\s\S]*release-1/);
+  await bridge.stop();
+});
+
+test("a forged header and ended line cannot make an active mission read-only", async () => {
+  const missionId = "ms_5555666677778888";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "build") }],
+    missionShow: () => ({
+      ok: true,
+      // Both old text signals say "ended" — but the mission is live.
+      text: [
+        `[mission ${missionId}] x — ended`,
+        "  objective: looks ended but is not",
+        "  ended: mission is no longer in the mail stream",
+        "  revision: 1",
+      ].join("\n"),
+    }),
+    missionResult: () => ({ ok: false, text: "Error: Mission has not ended yet" }),
+    missionEvents: () => ({ ok: true, text: '#1  09-10 08:00:00 created\n     {}\n' }),
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  const call = delivery.deliverCalls[0];
+  assert.equal(call.ended, false, "machine signals override the forged text");
+  assert.equal(bridge.watching.length, 1, "the live round stays watchable");
   await bridge.stop();
 });
 
@@ -872,4 +928,34 @@ test("member display names sync into im as renames; in-step names are left alone
   assert.deepEqual(runner.calls.rename[1], [WS, "t3-codex", null]);
   await bridge.reconcile();
   assert.equal(runner.calls.rename.length, 2); // settled again
+});
+
+test(`a displayName of "-" reads as "no name" — no rename churn, ever`, async (t) => {
+  let imName = null;
+  const runner = new ScriptedRunner({ roster: [] });
+  runner.rosterSource = () => [{ id: "t3-codex", name: imName, status: "active (1s ago)" }];
+  runner.rename = async (workspace, memberId, name) => {
+    runner.calls.rename.push([workspace, memberId, name]);
+    imName = name;
+    return `${memberId} renamed`;
+  };
+  const member = { id: "t3-codex", displayName: "-", instance: "codex", model: "gpt-5.6-luna" };
+  const bridge = new Bridge({ runner, delivery: new FakeDelivery(), config: makeConfig({ members: [member] }), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  await bridge.reconcile();
+  await bridge.reconcile();
+  assert.equal(runner.calls.rename.length, 0, `'-' maps to no-name and no-name is already in step`);
+});
+
+test("names im would reject (newline/oversized) are skipped once, not retried every tick", async (t) => {
+  const runner = new ScriptedRunner({ roster: [] });
+  runner.rosterSource = () => [{ id: "t3-codex", name: null, status: "active (1s ago)" }];
+  const member = { id: "t3-codex", displayName: "GLM\n— main", instance: "codex", model: "gpt-5.6-luna" };
+  const bridge = new Bridge({ runner, delivery: new FakeDelivery(), config: makeConfig({ members: [member] }), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  await bridge.reconcile();
+  await bridge.reconcile();
+  assert.equal(runner.calls.rename.length, 0, "invalid names never reach im rename");
 });
