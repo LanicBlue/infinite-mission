@@ -81,7 +81,7 @@ export function resultPreamble(memberId, workspace) {
     `You are the InfiniteMission member "${memberId}" in workspace ${workspace}.`,
     `A mission you originated has ENDED and its result is addressed to you below the line.`,
     `This is a read-only delivery: do NOT run im mission submit, im mission abandon, or`,
-    `im ask cancel for this mission — it is closed and every such command will fail.`,
+    `im mission cancel for this mission — it is closed and every such command will fail.`,
     `Read the result and the event history in the brief, then report the outcome to the`,
     `user in your own words.`,
     ``,
