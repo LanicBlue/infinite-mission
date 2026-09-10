@@ -165,6 +165,50 @@ test("ended delivery carries the result preamble; a normal one keeps the duty pr
   }
 });
 
+test("every delivered turn ends with the tail reminder: recency anchor after the brief", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const t3 = new FakeT3();
+  const delivery = new Delivery(t3);
+  try {
+    await delivery.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "build",
+      missionId: "ms_aaaabbbbccccdddd",
+      brief: BRIEF,
+    });
+    await delivery.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "build",
+      missionId: "ms_bbbbccccddddeeee",
+      brief: "[InfiniteMission returned result]\nended brief",
+      ended: true,
+    });
+    const turns = t3.dispatched
+      .filter((command) => command.type === "thread.turn.start")
+      .map((command) => command.message.text);
+    // Duty tail: XML envelope at the very end, ids pre-bound, two-option menu.
+    const duty = turns[0];
+    assert.ok(duty.trimEnd().endsWith("</im-system-reminder>"), "duty tail must be the last thing in the turn");
+    assert.match(duty, /<im-system-reminder>\n/);
+    assert.match(duty, /im mission submit "t3-codex" "ms_aaaabbbbccccdddd" --revision <N>/);
+    assert.match(duty, /im mission abandon "t3-codex" "ms_aaaabbbbccccdddd" --revision <N>/);
+    assert.match(duty, /Take --revision and the permitted outcomes from the/);
+    // The tail must not smuggle in a concrete revision/outcome — those live
+    // in the brief; extracting them here would parse human-readable output.
+    assert.doesNotMatch(duty, /--revision \d/);
+    // Result tail: read-only action menu, same envelope discipline.
+    const result = turns[1];
+    assert.ok(result.trimEnd().endsWith("</im-system-reminder>"), "result tail must be the last thing in the turn");
+    assert.match(result, /ms_bbbbccccddddeeee is ENDED/);
+    assert.match(result, /reporting the result to the/);
+    assert.doesNotMatch(result, /im mission submit "t3-codex" "ms_bbbbccccddddeeee"/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("first delivery creates the project and thread, then starts the turn", async () => {
   const { dir, cleanup } = tempWorkspace();
   const t3 = new FakeT3();

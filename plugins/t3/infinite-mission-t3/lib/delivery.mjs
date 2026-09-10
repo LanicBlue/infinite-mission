@@ -81,6 +81,51 @@ export function dutyPreamble(member, workspace) {
 }
 
 /**
+ * Tail reminder appended AFTER the brief of every duty turn (first arrival
+ * and follow-up rounds alike). Follows Hive's compaction-drift field notes:
+ * a static head preamble is filtered out as banner noise after a few
+ * occurrences, but an XML `<...-system-reminder>` envelope placed at the
+ * tail — right before the agent's reply turn — rides recency weighting, and
+ * a two-option action menu beats abstract identity restatement. The member
+ * and mission ids are pre-bound (the bridge knows both); revision and
+ * outcomes stay "from the brief above" because extracting them would mean
+ * parsing human-readable show output — the machine-contract line we do not
+ * cross again.
+ */
+export function dutyTailReminder(member, missionId) {
+  const memberId = typeof member === "string" ? member : member.id;
+  return [
+    ``,
+    `----- end of brief -----`,
+    `<im-system-reminder>`,
+    `You are InfiniteMission member "${memberId}", on duty for mission ${missionId}.`,
+    `Reply by either: (a) \`im mission submit "${memberId}" "${missionId}" --revision <N> --outcome <permitted>\``,
+    `when the work is done, or (b) \`im mission abandon "${memberId}" "${missionId}" --revision <N>\``,
+    `when you cannot proceed. Take --revision and the permitted outcomes from the`,
+    `brief above. Do the work yourself — nested CLI subagent tools bypass this duty`,
+    `and their output will not reach the mission. Never run "im join" or "im receive".`,
+    `</im-system-reminder>`,
+  ].join("\n");
+}
+
+/**
+ * Tail reminder for a returned Work-origin result: same recency anchoring,
+ * but the action menu is read-only — report to the user, never submit.
+ */
+export function resultTailReminder(memberId, missionId) {
+  return [
+    ``,
+    `----- end of result -----`,
+    `<im-system-reminder>`,
+    `You are InfiniteMission member "${memberId}". Mission ${missionId} is ENDED — the`,
+    `brief above was a read-only result delivery. Reply by reporting the result to the`,
+    `user in your own words. Any \`im mission submit/abandon/cancel\` for ${missionId}`,
+    `will fail — do not run them.`,
+    `</im-system-reminder>`,
+  ].join("\n");
+}
+
+/**
  * Preamble for a returned Work-origin result: the Mission is already ended,
  * so there is no round to close — the deliverable is reading and relaying
  * the durable result. Deliberately contains no submit instruction; the brief
@@ -231,7 +276,9 @@ export class Delivery {
       message: {
         messageId: randomUUID(),
         role: "user",
-        text: `${ended ? resultPreamble(member.id, workspacePath) : dutyPreamble(member, workspacePath)}\n${brief}`,
+        text: ended
+          ? `${resultPreamble(member.id, workspacePath)}\n${brief}${resultTailReminder(member.id, missionId)}`
+          : `${dutyPreamble(member, workspacePath)}\n${brief}${dutyTailReminder(member, missionId)}`,
         attachments: [],
       },
       // Each turn restates the member's selection, so the runtime identity
