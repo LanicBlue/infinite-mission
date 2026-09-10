@@ -476,10 +476,13 @@ function resultCard(r) {
 	</article>`;
 }
 
-function worksPane() {
+	// 成员显示名优先（ui.rs 的 label = "名称 (id)"），查不到回退裸 id。
+	const agentLabel = id => { const a = (state.agents || []).find(x => x.id === id); return (a && (a.label || a.name || a.id)) || id; };
+
+	function worksPane() {
 	const works = liveWorks();
 	const agents = (state.agents || []).filter(a => a.status !== "archived");
-	const options = current => `<option value="-"${current ? "" : " selected"}>（用户工位）</option>` + agents.map(a => `<option value="${esc(a.id)}"${current===a.id?" selected":""}>${esc(a.id)}</option>`).join("");
+	const options = current => `<option value="-"${current ? "" : " selected"}>（用户工位）</option>` + agents.map(a => `<option value="${esc(a.id)}"${current===a.id?" selected":""}>${esc(a.label || a.id)}</option>`).join("");
 	const header = `<header class="detail-header">
 		<div><h2>工位</h2><p class="meta">任务流转的停驻点；不绑值守者即用户工位；点「详情」看完整配置</p></div>
 		<div class="header-actions"><button class="btn primary" data-act="open-work-create">＋ 新建工位</button></div>
@@ -488,7 +491,7 @@ function worksPane() {
 	return header + works.map(w => `<article class="card">
 		<div class="card-row">
 			<h3 style="margin:0">${esc(w.work_key)}</h3>
-			${w.executor ? `<span class="chip accent">👤 ${esc(w.executor)}</span>` : `<span class="chip user">用户工位</span>`}
+			${w.executor ? `<span class="chip accent">👤 ${esc(agentLabel(w.executor))}</span>` : `<span class="chip user">用户工位</span>`}
 			${w.holding ? `<span class="chip ok">在岗 ${w.holding}</span>` : ""}
 			${w.incoming ? `<span class="chip">在途 ${w.incoming}</span>` : ""}
 			${w.outbox ? `<span class="chip">发出 ${w.outbox}</span>` : ""}
@@ -508,7 +511,7 @@ function missionCreateModal() {
 	openModal(`
 		<form data-form="mission-create">
 		<div class="modal-head"><h3 id="modal-title">新建任务</h3><button type="button" class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
-		<label class="field"><span>来源工位（originWork）—— 任务的发件地址与最终结果返回地址</span><select data-f="origin-work" required aria-required="true"><option value="">请选择</option>${works.map(w => `<option value="${esc(w.work_key)}">${esc(w.work_key)}${w.executor ? ` · ${esc(w.executor)}` : " · 用户工位"}</option>`).join("")}</select></label>
+		<label class="field"><span>来源工位（originWork）—— 任务的发件地址与最终结果返回地址</span><select data-f="origin-work" required aria-required="true"><option value="">请选择</option>${works.map(w => `<option value="${esc(w.work_key)}">${esc(w.work_key)}${w.executor ? ` · ${esc(agentLabel(w.executor))}` : " · 用户工位"}</option>`).join("")}</select></label>
 		<label class="field"><span>模板 —— 位于 <code>.im/templates/*.yaml</code></span><select data-f="template" required aria-required="true">${templates.map(t => `<option>${esc(t)}</option>`).join("")}</select></label>
 		<label class="field"><span>任务名（可选，覆盖模板名称）</span><input data-f="mission-name" placeholder="例如：审核支付改造"></label>
 		<label class="field"><span>目标（可选，覆盖模板目标）</span><textarea data-f="mission-objective" placeholder="说明这次任务要达成什么"></textarea></label>
@@ -543,7 +546,7 @@ function workCreateModal() {
 		<label class="field"><span>key（^[a-z][a-z0-9-]*$，工位的唯一地址与名字）</span><input data-f="work" required aria-required="true" placeholder="build"></label>
 		<label class="field"><span>简介（一句话，工位板与列表展示）</span><input data-f="description" placeholder="对照 goal 验证实现"></label>
 		<label class="field"><span>模版 —— 预填交付流水线岗位章程（prompt + 简介），选后可再改</span><select data-f="preset"><option value="">（无模版）</option>${presets.map(p => `<option value="${esc(p.key)}">${esc(p.key)}（${esc(p.description)}）</option>`).join("")}</select></label>
-		<label class="field"><span>值守者（不绑 = 用户工位，人类信箱）</span><select data-f="executor"><option value="-">（用户工位）</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.id)}</option>`).join("")}</select></label>
+		<label class="field"><span>值守者（不绑 = 用户工位，人类信箱）</span><select data-f="executor"><option value="-">（用户工位）</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.label || a.id)}</option>`).join("")}</select></label>
 		<label class="field"><span>常驻 prompt —— 工位的作业内容，随每个停驻的任务一起渲染</span><textarea data-f="prompt" placeholder="实现 {mission.objective}；来自 {mission.from}，第 {mission.iteration} 轮。"></textarea></label>
 		<p class="hint">可插值槽位：<code>{mission.name}</code> <code>{mission.objective}</code> <code>{mission.from}</code> <code>{mission.iteration}</code> <code>{mission.reason}</code> —— 未知槽位保留字面</p>
 		<p class="form-status" id="modal-status" role="alert"></p>
@@ -594,7 +597,7 @@ function workDetailModal(key, tab = "config") {
 	const results = returned.length ? returned.map(resultCard).join("") : `<div class="empty">这个工位还没有回程结果</div>`;
 	const body = tab === "outbox" ? outbox : tab === "results" ? results : config;
 	openModal(`
-		<div class="modal-head"><h3 id="modal-title">${esc(w.work_key)} <span class="chip accent">👤 ${w.executor ? esc(w.executor) : "用户工位"}</span></h3><button type="button" class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
+		<div class="modal-head"><h3 id="modal-title">${esc(w.work_key)} <span class="chip accent">👤 ${w.executor ? esc(agentLabel(w.executor)) : "用户工位"}</span></h3><button type="button" class="close" data-act="modal-close" aria-label="关闭">✕</button></div>
 		<div class="tabs" role="tablist" aria-label="工位详情">
 			<button class="tab${tab === "config" ? " active" : ""}" data-act="work-detail-tab" data-work="${esc(key)}" data-tab="config" role="tab" aria-selected="${tab === "config"}">配置</button>
 			<button class="tab${tab === "outbox" ? " active" : ""}" data-act="work-detail-tab" data-work="${esc(key)}" data-tab="outbox" role="tab" aria-selected="${tab === "outbox"}">发件箱 ${sent.length}</button>
@@ -645,7 +648,7 @@ function membersPane() {
 	<div class="card"><table>
 		<thead><tr><th>身份</th><th>状态</th><th>tier</th><th></th></tr></thead>
 		<tbody>${agents.map(a => `<tr>
-			<td class="mono">${esc(a.id)}</td>
+				<td>${a.name ? `<strong>${esc(a.name)}</strong> <span class="hint mono">${esc(a.id)}</span>` : `<span class="mono">${esc(a.id)}</span>`}</td>
 			<td class="hint">${esc(a.status)}</td>
 			<td class="card-row">
 				<span class="chip${a.tier === "manage" ? " accent" : ""}">${esc(a.tier || "execute")}</span>

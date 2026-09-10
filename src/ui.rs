@@ -80,6 +80,8 @@ pub fn state_json(
             };
             json!({
                 "id": agent.id,
+                "name": agent.display_name,
+                "label": agent.label(),
                 "status": status,
                 "tier": agent.tier.as_str(),
             })

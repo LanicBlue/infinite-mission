@@ -45,8 +45,8 @@ fn schema_creates_all_domain_tables() {
 #[test]
 fn register_agent_unique_never_overwrites() {
     let (_tmp, store) = open();
-    let (first, token_a) = store.register_agent_unique("alice").unwrap();
-    let (second, _token_b) = store.register_agent_unique("alice").unwrap();
+    let (first, token_a) = store.register_agent_unique("alice", None).unwrap();
+    let (second, _token_b) = store.register_agent_unique("alice", None).unwrap();
     assert_eq!(first, "alice");
     assert_eq!(second, "alice-2");
     // Distinct session tokens per join.
@@ -59,8 +59,8 @@ fn register_agent_unique_never_overwrites() {
 #[test]
 fn receive_consumes_system_notices_exactly_once() {
     let (_tmp, store) = open();
-    store.register_agent_unique("alice").unwrap();
-    store.register_agent_unique("bob").unwrap();
+    store.register_agent_unique("alice", None).unwrap();
+    store.register_agent_unique("bob", None).unwrap();
 
     store
         .send_message_envelope("workspace", "bob", "granted", "membership", None)
@@ -78,8 +78,8 @@ fn receive_consumes_system_notices_exactly_once() {
 #[test]
 fn peer_notes_are_rejected() {
     let (_tmp, store) = open();
-    store.register_agent_unique("alice").unwrap();
-    store.register_agent_unique("bob").unwrap();
+    store.register_agent_unique("alice", None).unwrap();
+    store.register_agent_unique("bob", None).unwrap();
     let err = store
         .send_message_envelope("alice", "bob", "hello", "note", None)
         .unwrap_err()
@@ -90,7 +90,7 @@ fn peer_notes_are_rejected() {
 #[test]
 fn notices_to_archived_identities_are_preserved() {
     let (_tmp, store) = open();
-    store.register_agent_unique("bob").unwrap();
+    store.register_agent_unique("bob", None).unwrap();
     store
         .set_agent_tier("workspace", "bob", Tier::Manage)
         .unwrap();
@@ -107,7 +107,7 @@ fn notices_to_archived_identities_are_preserved() {
 fn tier_ladder_gates_and_refusals() {
     let (_tmp, store) = open();
     for id in ["boss", "worker", "plain"] {
-        store.register_agent_unique(id).unwrap();
+        store.register_agent_unique(id, None).unwrap();
     }
 
     // Fresh members sit at execute.
@@ -180,7 +180,7 @@ fn tier_ladder_gates_and_refusals() {
 #[test]
 fn require_tier_hint_points_to_the_console_when_no_manage_member_exists() {
     let (_tmp, store) = open();
-    store.register_agent_unique("lone").unwrap();
+    store.register_agent_unique("lone", None).unwrap();
     let err = store
         .require_tier("lone", Tier::Manage)
         .unwrap_err()
@@ -192,8 +192,8 @@ fn require_tier_hint_points_to_the_console_when_no_manage_member_exists() {
 #[test]
 fn work_notes_are_consumed_only_by_the_bound_executor() {
     let (_tmp, store) = open();
-    store.register_agent_unique("worker").unwrap();
-    store.register_agent_unique("inspector").unwrap();
+    store.register_agent_unique("worker", None).unwrap();
+    store.register_agent_unique("inspector", None).unwrap();
     store
         .conn
         .execute_batch(
@@ -355,7 +355,7 @@ fn legacy_managers_fold_into_the_manage_tier() {
 fn membership_actions_deliver_inbox_notices() {
     let (_tmp, store) = open();
     for id in ["boss", "worker"] {
-        store.register_agent_unique(id).unwrap();
+        store.register_agent_unique(id, None).unwrap();
     }
     store
         .set_agent_tier("workspace", "boss", Tier::Manage)
@@ -588,7 +588,7 @@ fn a_legacy_binary_resurrecting_the_managers_table_is_refolded() {
     let db_path = tmp.path().join("im.db");
     {
         let store = Store::open(&db_path).unwrap();
-        store.register_agent_unique("a1").unwrap();
+        store.register_agent_unique("a1", None).unwrap();
         // Fully migrated: the managers table is already gone.
     }
 
@@ -624,4 +624,29 @@ fn a_legacy_binary_resurrecting_the_managers_table_is_refolded() {
         .query_row("SELECT tier FROM agents WHERE id = 'a1'", [], |r| r.get(0))
         .unwrap();
     assert_eq!(tier, "execute");
+}
+
+#[test]
+fn display_name_is_a_pure_label_over_the_id() {
+    let (_tmp, store) = open();
+    store.register_agent_unique("m-1", Some("t3-glm")).unwrap();
+    let agent = &store.list_agents(true).unwrap()[0];
+    assert_eq!(agent.display_name.as_deref(), Some("t3-glm"));
+    assert_eq!(agent.label(), "t3-glm (m-1)");
+
+    // Rename swaps only the label — the id key never moves.
+    store.set_agent_display_name("m-1", Some("改名后")).unwrap();
+    assert_eq!(store.list_agents(true).unwrap()[0].label(), "改名后 (m-1)");
+
+    // Clear, and whitespace-only names count as absent.
+    store.set_agent_display_name("m-1", None).unwrap();
+    assert_eq!(store.list_agents(true).unwrap()[0].label(), "m-1");
+    store.set_agent_display_name("m-1", Some("   ")).unwrap();
+    assert_eq!(store.list_agents(true).unwrap()[0].label(), "m-1");
+
+    // Reactivation keeps an explicit name in step with the join request.
+    store.unregister_agent("m-1").unwrap();
+    store.register_agent_unique("m-1", Some("回归")).unwrap();
+    assert_eq!(store.list_agents(true).unwrap()[0].label(), "回归 (m-1)");
+    assert!(store.set_agent_display_name("ghost", Some("x")).is_err());
 }

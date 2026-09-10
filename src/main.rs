@@ -16,10 +16,20 @@ fn main() -> Result<()> {
         "init" => cmd_init(args.collect()),
         "join" => {
             let id = args.next().unwrap_or_default();
-            if id.is_empty() {
-                bail!("Usage: im join <id>");
+            let mut name: Option<String> = None;
+            let rest: Vec<String> = args.collect();
+            if rest.first().map(String::as_str) == Some("--name") {
+                match rest.get(1) {
+                    Some(value) if !value.trim().is_empty() => name = Some(value.clone()),
+                    _ => bail!("Usage: im join <id> [--name <display name>]"),
+                }
+            } else if !rest.is_empty() {
+                bail!("Usage: im join <id> [--name <display name>]");
             }
-            cmd_join(&id)
+            if id.is_empty() {
+                bail!("Usage: im join <id> [--name <display name>]");
+            }
+            cmd_join(&id, name.as_deref())
         }
         "leave" => {
             let id = args.next().unwrap_or_default();
@@ -27,6 +37,14 @@ fn main() -> Result<()> {
                 bail!("Usage: im leave <id>");
             }
             cmd_leave(&id)
+        }
+        "rename" => {
+            let id = args.next().unwrap_or_default();
+            let text: Vec<String> = args.collect();
+            if id.is_empty() || text.is_empty() {
+                bail!("Usage: im rename <id> <new display name | ->");
+            }
+            cmd_rename(&id, &text.join(" "))
         }
         "agents" => {
             let show_all = args.next().as_deref() == Some("--all");
@@ -137,10 +155,10 @@ fn cmd_init(args: Vec<String>) -> Result<()> {
     im::init::run()
 }
 
-fn cmd_join(id: &str) -> Result<()> {
+fn cmd_join(id: &str, display_name: Option<&str>) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
-    let (actual_id, token) = store.register_agent_unique(id)?;
+    let (actual_id, token) = store.register_agent_unique(id, display_name)?;
     store.touch_agent(&actual_id)?;
     std::fs::create_dir_all(sessions_dir(&workspace))?;
     std::fs::write(sessions_dir(&workspace).join(&actual_id), &token)?;
@@ -149,10 +167,27 @@ fn cmd_join(id: &str) -> Result<()> {
     } else {
         println!("Joined as {actual_id}.");
     }
+    if let Some(name) = display_name {
+        println!("Display name: {name}");
+    }
     println!(
         "Work content arrives with each mission (station prompt + mission fields) — \
          check `im missions {actual_id}`."
     );
+    Ok(())
+}
+
+/// Rename in the only sense im knows: swap the display label. The id — and
+/// with it every station binding, thread, and file name — stays put.
+fn cmd_rename(id: &str, text: &str) -> Result<()> {
+    let workspace = find_workspace()?;
+    let store = open_store(&workspace)?;
+    let name = if text.trim() == "-" { None } else { Some(text) };
+    store.set_agent_display_name(id, name)?;
+    match name {
+        Some(name) => println!("{id} now shows as \"{name}\"."),
+        None => println!("{id} display name cleared."),
+    }
     Ok(())
 }
 
@@ -200,7 +235,7 @@ fn cmd_agents(show_all: bool) -> Result<()> {
                 None => "unknown".to_string(),
             }
         };
-        println!("  {} — {status} [{}]", agent.id, agent.tier.as_str());
+        println!("  {} — {status} [{}]", agent.label(), agent.tier.as_str());
     }
     Ok(())
 }
@@ -455,8 +490,17 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
             let inbound = store.inbound_counts()?;
+            let labels: std::collections::HashMap<String, String> = store
+                .list_agents(true)?
+                .into_iter()
+                .map(|agent| (agent.id.clone(), agent.label()))
+                .collect();
             for work in store.list_works()? {
-                let executor = work.executor.as_deref().unwrap_or("(user)");
+                let executor = work
+                    .executor
+                    .as_deref()
+                    .map(|id| labels.get(id).cloned().unwrap_or_else(|| id.to_string()))
+                    .unwrap_or_else(|| "(user)".to_string());
                 let holding: i64 = store.conn.query_row(
                     "SELECT COUNT(*) FROM missions WHERE at = ?1 AND status = 'active'",
                     rusqlite::params![work.work_key],
@@ -1263,9 +1307,10 @@ stations, and records its own delivery history.
 
 COMMANDS
   im init                                   Initialize workspace (.im/)
-  im join <id>                              Join as agent (id self-reported, auto-suffixed on conflict)
+  im join <id> [--name <display name>]      Join as agent (id self-reported, auto-suffixed on conflict)
   im leave <id>                             Archive agent
-  im agents [--all]                         List agents (with tier tags)
+  im rename <id> <new name | ->             Set/clear an agent's display name (the id never changes)
+  im agents [--all]                         List agents (name (id), tier tags)
   im receive <id> [--wait] [--timeout N]    Station arrival notes + membership notices
   im pending / im history [agent]           Unread / full system-notice views
 

@@ -38,6 +38,20 @@ pub struct AgentRecord {
     pub status: String,
     pub archived_at: Option<i64>,
     pub tier: Tier,
+    /// Human-facing label; the id stays the machine key everywhere else.
+    /// Bridges sync it from their member tables (rename = display update).
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+impl AgentRecord {
+    /// "name (id)" when a name is set, the bare id otherwise.
+    pub fn label(&self) -> String {
+        match self.display_name.as_deref() {
+            Some(name) if !name.trim().is_empty() => format!("{} ({})", name.trim(), self.id),
+            _ => self.id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

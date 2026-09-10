@@ -19,7 +19,8 @@ fn schema() -> String {
         last_seen INTEGER,
         status TEXT NOT NULL DEFAULT 'active',
         archived_at INTEGER,
-        tier TEXT NOT NULL DEFAULT 'execute' CHECK (tier IN ('execute','publish','manage'))
+        tier TEXT NOT NULL DEFAULT 'execute' CHECK (tier IN ('execute','publish','manage')),
+        display_name TEXT
     );
 
     -- System notices only (membership, mission_ended). Members have no
@@ -251,6 +252,15 @@ impl Store {
                  CHECK (tier IN ('execute','publish','manage'));",
             )?;
         }
+        // Display names: pure labels over the id keys (rename = label update).
+        let has_display_name: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agents') WHERE name = 'display_name'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_display_name == 0 {
+            tx.execute_batch("ALTER TABLE agents ADD COLUMN display_name TEXT;")?;
+        }
         let has_managers: i64 = tx.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'managers'",
             [],
@@ -276,31 +286,51 @@ impl Store {
     /// Externally registered agents carry no persona playbook — their work
     /// content travels with each mission's station prompt. The `role` column
     /// stays (DEFAULT '') reserved for built-in agents.
-    pub fn register_agent_unique(&self, requested_id: &str) -> Result<(String, String)> {
+    pub fn register_agent_unique(
+        &self,
+        requested_id: &str,
+        display_name: Option<&str>,
+    ) -> Result<(String, String)> {
         let now = chrono::Utc::now().timestamp();
+        let name = display_name.map(str::trim).filter(|n| !n.is_empty());
         let candidates = std::iter::once(requested_id.to_string())
             .chain((2..=99).map(|i| format!("{}-{}", requested_id, i)));
         for candidate in candidates {
             let token = uuid::Uuid::new_v4().to_string();
             let reactivated = self.conn.execute(
                 "UPDATE agents
-                 SET role = '', joined_at = ?2, session_token = ?3, status = 'active', archived_at = NULL
+                 SET role = '', joined_at = ?2, session_token = ?3, status = 'active',
+                     archived_at = NULL, display_name = COALESCE(?4, display_name)
                  WHERE id = ?1 AND status = 'archived'",
-                rusqlite::params![candidate, now, token],
+                rusqlite::params![candidate, now, token, name],
             )?;
             if reactivated > 0 {
                 return Ok((candidate, token));
             }
             let inserted = self.conn.execute(
-                "INSERT OR IGNORE INTO agents (id, role, joined_at, session_token, status)
-                 VALUES (?1, '', ?2, ?3, 'active')",
-                rusqlite::params![candidate, now, token],
+                "INSERT OR IGNORE INTO agents (id, role, joined_at, session_token, status, display_name)
+                 VALUES (?1, '', ?2, ?3, 'active', ?4)",
+                rusqlite::params![candidate, now, token, name],
             )?;
             if inserted > 0 {
                 return Ok((candidate, token));
             }
         }
-        anyhow::bail!("Too many agents with base id '{}'", requested_id);
+        anyhow::bail!("Too many agents with base id '{}'", requested_id)
+    }
+
+    /// Set (or clear with `-`) an agent's display name — the only rename im
+    /// will ever need: the id stays the key, stations and threads untouched.
+    pub fn set_agent_display_name(&self, id: &str, display_name: Option<&str>) -> Result<()> {
+        let name = display_name.map(str::trim).filter(|n| !n.is_empty());
+        let updated = self.conn.execute(
+            "UPDATE agents SET display_name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        if updated == 0 {
+            bail!("no agent named {id}");
+        }
+        Ok(())
     }
 
     pub fn get_session_token(&self, id: &str) -> Result<Option<String>> {
@@ -427,9 +457,9 @@ impl Store {
 
     pub fn list_agents(&self, include_archived: bool) -> Result<Vec<AgentRecord>> {
         let sql = if include_archived {
-            "SELECT id, role, joined_at, last_seen, status, archived_at, tier FROM agents ORDER BY joined_at"
+            "SELECT id, role, joined_at, last_seen, status, archived_at, tier, display_name FROM agents ORDER BY joined_at"
         } else {
-            "SELECT id, role, joined_at, last_seen, status, archived_at, tier FROM agents WHERE status = 'active' ORDER BY joined_at"
+            "SELECT id, role, joined_at, last_seen, status, archived_at, tier, display_name FROM agents WHERE status = 'active' ORDER BY joined_at"
         };
         let mut stmt = self.conn.prepare(sql)?;
         let agents = stmt
@@ -442,6 +472,7 @@ impl Store {
                     status: row.get(4)?,
                     archived_at: row.get(5)?,
                     tier: Tier::parse(&row.get::<_, String>(6)?).unwrap_or(Tier::Execute),
+                    display_name: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
