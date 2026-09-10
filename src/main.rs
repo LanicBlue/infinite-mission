@@ -919,9 +919,24 @@ fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
         println!("  prompt: {prompt}");
     }
     if !view.outcomes.is_empty() {
-        let mut permitted = view.outcomes.clone();
-        permitted.push("abandon".to_string());
-        println!("  outcomes: {}", permitted.join(", "));
+        // Teach the submit requirements inline: an executor that learns
+        // "--result required" only from the rejection loses a round.
+        let annotated = view
+            .outcomes
+            .iter()
+            .map(|outcome| {
+                let mut label = outcome.clone();
+                if view.result_required_on.iter().any(|r| r == outcome) {
+                    label.push_str(" (needs --result)");
+                }
+                if view.feedback_required_on.iter().any(|f| f == outcome) {
+                    label.push_str(" (needs --feedback)");
+                }
+                label
+            })
+            .chain(std::iter::once("abandon".to_string()))
+            .collect::<Vec<_>>();
+        println!("  outcomes: {}", annotated.join(", "));
     }
     if !view.terminal.is_empty() {
         println!("  terminal: {}", view.terminal.join(", "));

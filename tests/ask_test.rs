@@ -1424,3 +1424,78 @@ fn origin_ledger_shows_in_flight_and_ended_split() {
         .assert()
         .failure();
 }
+
+#[test]
+fn ask_brief_renders_the_question_not_a_mismatched_charter() {
+    let tmp = setup();
+    let ws = tmp.path();
+    // Give the target station a document-pipeline charter, the way the
+    // init-seeded pipeline stations have one: its taught outcomes and
+    // document flow belong to a different contract shape than an ask.
+    im(ws)
+        .args([
+            "work",
+            "set-prompt",
+            "boss",
+            "lab",
+            "Implement the GOAL document; submit done with receipts, blocked if the goal is wrong.",
+        ])
+        .assert()
+        .success();
+    let ms = create_ask(ws, "q-charter");
+    let out = im(ws)
+        .args(["mission", "show", &ms, "--for", "bob"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    // The question is the mission content…
+    assert!(stdout.contains("# Question from work origin"), "{stdout}");
+    assert!(stdout.contains("What ships first?"));
+    // …not the station charter, which teaches outcomes this contract does
+    // not permit and documents it does not declare.
+    assert!(!stdout.contains("GOAL document"));
+    assert!(!stdout.contains("receipts"));
+    // The vocabulary teaches its submit requirements inline.
+    assert!(
+        stdout.contains("outcomes: answered (needs --result), declined, abandon"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn show_annotates_feedback_required_outcomes() {
+    let tmp = setup();
+    let ws = tmp.path();
+    std::fs::write(
+        ws.join(".im").join("templates").join("gate.yaml"),
+        "schemaVersion: 4\nname: gate\nentry: lab\nworks:\n  lab:\n    completion: {outcomes: [pass], terminal: [pass], feedbackRequiredOn: [pass]}\n    documentRights: {read: [], write: []}\n",
+    )
+    .unwrap();
+    im(ws)
+        .args([
+            "mission",
+            "create",
+            "alice",
+            "--from",
+            "origin",
+            "--template",
+            "gate",
+            "--key",
+            "g1",
+        ])
+        .assert()
+        .success();
+    let ms = mission_ids(ws)
+        .into_iter()
+        .find(|id| id.starts_with("ms_"))
+        .unwrap();
+    let out = im(ws)
+        .args(["mission", "show", &ms, "--for", "bob"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("outcomes: pass (needs --feedback), abandon"),
+        "{stdout}"
+    );
+}

@@ -1672,10 +1672,17 @@ pub struct RunView {
     pub revision: i64,
     pub iteration: Option<i64>,
     /// Rendered station prompt (read-time fusion of station text + mission facts).
+    /// For a template-less ask the question itself is the mission content — the
+    /// target station's charter belongs to document-pipeline missions and would
+    /// teach outcomes this contract does not permit.
     pub prompt: Option<String>,
     pub on_duty: bool,
     pub outcomes: Vec<String>,
     pub terminal: Vec<String>,
+    /// Outcomes whose submit requires a non-empty --result / --feedback. The
+    /// run view must teach them, or the executor's first submit fails.
+    pub result_required_on: Vec<String>,
+    pub feedback_required_on: Vec<String>,
     pub routes: Vec<RouteRow>,
     pub documents: Vec<DocumentResolvedRow>,
 }
@@ -1704,7 +1711,12 @@ impl Store {
                     .last_routed_from(&mission.mission_id)
                     .or_else(|| mission.origin_work.clone())
                     .unwrap_or_else(|| mission.created_by.clone());
-                let prompt = if work.prompt.is_empty() {
+                let prompt = if contract.template.as_ref().map(|t| t.path.as_str())
+                    == Some("builtin:ask/v1")
+                {
+                    // Template-less ask: the question is the mission content.
+                    Some(ask_run_prompt(&mission.objective, &from))
+                } else if work.prompt.is_empty() {
                     None
                 } else {
                     Some(interpolate_prompt(
@@ -1736,9 +1748,16 @@ impl Store {
             None => (None, false, None, None, Vec::new()),
         };
 
-        let (outcomes, terminal) = discipline
+        let (outcomes, terminal, result_required_on, feedback_required_on) = discipline
             .as_ref()
-            .map(|d| (d.completion.outcomes.clone(), d.completion.terminal.clone()))
+            .map(|d| {
+                (
+                    d.completion.outcomes.clone(),
+                    d.completion.terminal.clone(),
+                    d.completion.result_required_on.clone(),
+                    d.completion.feedback_required_on.clone(),
+                )
+            })
             .unwrap_or_default();
 
         let mut documents = Vec::new();
@@ -1783,6 +1802,8 @@ impl Store {
             on_duty,
             outcomes,
             terminal,
+            result_required_on,
+            feedback_required_on,
             routes,
             documents,
         })
@@ -1817,6 +1838,19 @@ pub struct InterpolationContext<'a> {
     pub from: &'a str,
     pub iteration: Option<i64>,
     pub reason: Option<&'a str>,
+}
+
+/// The run prompt of a template-less ask. The question is the mission
+/// content, so no station charter is interpolated: the pipeline charters
+/// teach document flows (goal.md, receipts, done/blocked outcomes) that this
+/// contract's generated vocabulary does not permit — an executor following
+/// the charter would submit an outcome that fails adjudication.
+pub fn ask_run_prompt(objective: &str, from: &str) -> String {
+    format!(
+        "# Question from work {from}\n\n{objective}\n\nGround the answer in this workspace: \
+read or grep the actual code and files, and verify before answering. If the \
+question cannot be answered as asked, decline with the reason instead of guessing."
+    )
 }
 
 /// Unknown slots stay literal; `from` is the last routing station, or the
