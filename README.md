@@ -77,13 +77,16 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
   the durable result authority.
 - **A template-less create is the ask form.** `im mission create --to
   <target-work> --objective <question>` replaces the template file with an
-  immutable built-in contract: one target Work, no paths, no vocabulary to
-  learn — the target replies with `im mission answer <agent> <ms> <answer…>`
-  (no flags: the prose is the answer, a distinct bounded payload up to 16 KiB,
-  and the mission ends on delivery) or declines with `im mission decline …
-  --reason`. At most eight active asks are allowed for one origin→target pair;
-  the origin withdraws its own asks with `im mission cancel` (a durable
-  `cancelled` disposition, distinct from manage-tier `mission end`).
+  immutable built-in one-station contract: the objective carries the question,
+  the outcome vocabulary is generated for you, and the receiver handles it
+  exactly like any other mission — `im missions` → `im mission show` (which
+  lists the vocabulary and revision) → `im mission submit`, the answer riding
+  `--result` (a distinct bounded payload up to 16 KiB, not `reason`). The only
+  structural differences from a templated mission are the generated contract
+  and the origin-work result return. At most eight active asks are allowed for
+  one origin→target pair; the origin withdraws its own asks with
+  `im mission cancel` (a durable `cancelled` disposition, distinct from
+  manage-tier `mission end`).
 - **Inbox**: missions parked at user stations, with the reason the sender
   had to give. A manage-tier member resolves them.
 
@@ -210,9 +213,8 @@ Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|result|end
             im mission create <agent> --from <origin-work> --template <name> --key <key>
             im mission create <agent> --from <origin> --to <target> --key <key>
-                                 --objective <question>          # template-less ask form
-            im mission answer <agent> <ms> <answer...>           # reply to an ask, no flags
-            im mission decline <agent> <ms> --reason <text>      # decline an ask
+                                 --objective <question>          # template-less ask form;
+                                                                  # receiver submits like any mission
             im mission submit <agent> <ms> --revision N --outcome O
                                  [--next-node] [--reason] [--feedback] [--result] [--receipts]
             im mission abandon <agent> <ms> --revision N [--reason]

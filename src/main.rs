@@ -644,22 +644,6 @@ fn valid_template_name(name: &str) -> bool {
     im::contract::valid_work_key(name) && name.len() <= 64
 }
 
-/// Positional free text after the valued flags are skipped (answers carry
-/// arbitrary prose, so they are arguments, not flag values).
-fn free_text(args: &[String], start: usize, valued_flags: &[&str]) -> String {
-    let mut words = Vec::new();
-    let mut index = start;
-    while index < args.len() {
-        if valued_flags.contains(&args[index].as_str()) {
-            index += 2;
-        } else {
-            words.push(args[index].clone());
-            index += 1;
-        }
-    }
-    words.join(" ")
-}
-
 fn cmd_results(args: Vec<String>) -> Result<()> {
     let agent = args.first().context("Usage: im results <agent>")?;
     let workspace = find_workspace()?;
@@ -688,8 +672,6 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
         Some("create") => cmd_mission_create(&args[1..]),
         Some("show") if args.len() >= 2 => cmd_mission_show(&args[1], flag_value(&args[2..], "--for")?.as_deref()),
         Some("submit") => cmd_mission_submit(&args[1..]),
-        Some("answer") => cmd_mission_answer(&args[1..]),
-        Some("decline") => cmd_mission_decline(&args[1..]),
         Some("abandon") => cmd_mission_abandon(&args[1..]),
         Some("events") if args.len() == 2 => cmd_mission_events(&args[1]),
         Some("result") if args.len() == 2 => cmd_mission_result(&args[1]),
@@ -697,7 +679,7 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
         Some("end") if args.len() >= 3 => cmd_mission_end(&args[1], &args[2], flag_value(&args[3..], "--reason")?),
         Some("doc") => cmd_mission_doc(&args[1..]),
         _ => bail!(
-            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question>) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | answer <agent> <ms> <answer text...>\n             | decline <agent> <ms> --reason <text>\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | cancel <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
+            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question>) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | cancel <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
         ),
     }
 }
@@ -1025,70 +1007,6 @@ fn cmd_mission_end(manager: &str, mission_id: &str, reason: Option<String>) -> R
     Ok(())
 }
 
-/// Answer a one-station ask: the verb itself is the outcome (`answered`) and
-/// the prose is the result payload, so neither flag is caller-visible. A
-/// single-station ask has no routing hops, so the revision is whatever the
-/// mission shows now — races between two answers (or an answer and a cancel)
-/// are still settled by the adjudicator's `UPDATE … WHERE revision=?`: exactly
-/// one wins, the loser is told the mission moved on.
-fn cmd_mission_answer(args: &[String]) -> Result<()> {
-    let agent = args
-        .first()
-        .context("Usage: im mission answer <agent> <ms> <answer text...>")?;
-    let mission_id = args.get(1).context("mission id is required")?;
-    let answer = free_text(args, 2, &[]);
-    if answer.trim().is_empty() {
-        bail!("answer text is required — it becomes the mission result");
-    }
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    ensure_agent(&store, agent)?;
-    check_session(&workspace, &store, agent)?;
-    let revision = store.get_mission(mission_id)?.revision;
-    let submission = im::mission::RoundSubmission {
-        next_node: None,
-        reason: None,
-        feedback: None,
-        result: Some(answer.trim()),
-        receipt_ids: &[],
-    };
-    let result = store.submit_mission(agent, mission_id, revision, "answered", &submission)?;
-    println!(
-        "Mission {} answered (revision {}).",
-        result.mission_id, result.revision
-    );
-    Ok(())
-}
-
-/// Decline a one-station ask: the verb is the outcome (`declined`); a
-/// rejection owes its reason, so --reason is required here even though the
-/// generic submit path leaves it to the contract.
-fn cmd_mission_decline(args: &[String]) -> Result<()> {
-    let agent = args
-        .first()
-        .context("Usage: im mission decline <agent> <ms> --reason <text>")?;
-    let mission_id = args.get(1).context("mission id is required")?;
-    let reason = flag_value(&args[2..], "--reason")?.context("--reason is required")?;
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    ensure_agent(&store, agent)?;
-    check_session(&workspace, &store, agent)?;
-    let revision = store.get_mission(mission_id)?.revision;
-    let submission = im::mission::RoundSubmission {
-        next_node: None,
-        reason: Some(reason.as_str()),
-        feedback: None,
-        result: None,
-        receipt_ids: &[],
-    };
-    let result = store.submit_mission(agent, mission_id, revision, "declined", &submission)?;
-    println!(
-        "Mission {} declined (revision {}).",
-        result.mission_id, result.revision
-    );
-    Ok(())
-}
-
 fn cmd_mission_doc(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("read") if args.len() == 4 => {
@@ -1374,21 +1292,15 @@ Missions (Work-to-Work mail; Agent identity authorizes the operation)
                                              `im init` writes example.yaml and pipeline.yaml
                                              (design→plan→build→review→final gate) and seeds
                                              those four stations. The template-less --to form
-                                             is the built-in ask contract: one target work,
-                                             the objective carries the question; the target
-                                             replies with `im mission answer` (or declines)
-                                             and the result returns to the origin work.
+                                             is a built-in one-station contract: the objective
+                                             carries the question, the outcomes are generated
+                                             for you, and the result returns to the origin
+                                             work. The receiver handles it like any mission.
   im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
   im missions <agent>                       Active missions at your stations
   im mission submit <agent> <ms> --revision N --outcome <o>
        [--next-node <station>] [--reason <t>] [--feedback <t>] [--result <t>]
        [--receipts <document:hash,...>]
-  im mission answer <agent> <ms> <answer text...>
-                                             Reply to a one-station ask: no flags to carry —
-                                             the prose is the answer, the mission ends on
-                                             delivery, the result returns to the origin.
-  im mission decline <agent> <ms> --reason <text>
-                                             Decline a one-station ask (reason required).
   im mission abandon <agent> <ms> --revision N [--reason <t>]
   im mission cancel <agent> <ms> --revision N [--reason <t>]
                                              Origin-side withdrawal of a template-less ask
