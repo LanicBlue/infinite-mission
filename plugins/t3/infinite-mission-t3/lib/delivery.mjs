@@ -21,10 +21,15 @@ export function isMissionThreadId(threadId, memberId, missionId) {
   return threadId === base || threadId.startsWith(`${base}-`);
 }
 
-/** `[mission ms_x] NAME — status` → a T3 display title (missionId as fallback). */
+/** `[mission ms_x] NAME — status` → a T3 display title (missionId as fallback).
+ * The header may sit a few lines down (result briefs open with a marker), so
+ * the first lines are scanned but the match stays line-anchored. */
 export function titleFromBrief(brief, memberId, station, missionId) {
-  const firstLine = String(brief).split("\n", 1)[0] ?? "";
-  const header = firstLine.match(/^\[mission ms_[0-9a-f]{6,64}\] (.*)$/);
+  const lines = String(brief).split("\n");
+  const header = lines
+    .slice(0, 5)
+    .map((line) => line.match(/^\[mission ms_[0-9a-f]{6,64}\] (.*)$/))
+    .find(Boolean);
   const name = header ? header[1].split(" — ")[0].trim() : "";
   return `im/${memberId}@${station}: ${name || missionId}`;
 }
@@ -62,6 +67,28 @@ export function dutyPreamble(memberId, workspace) {
     `the listening loop. Run im commands from the workspace root (your current project).`,
     ``,
     `----- mission brief -----`,
+  ].join("\n");
+}
+
+/**
+ * Preamble for a returned Work-origin result: the Mission is already ended,
+ * so there is no round to close — the deliverable is reading and relaying
+ * the durable result. Deliberately contains no submit instruction; the brief
+ * below the line carries the result JSON and the event history.
+ */
+export function resultPreamble(memberId, workspace) {
+  return [
+    `You are the InfiniteMission member "${memberId}" in workspace ${workspace}.`,
+    `A mission you originated has ENDED and its result is addressed to you below the line.`,
+    `This is a read-only delivery: do NOT run im mission submit, im mission abandon, or`,
+    `im ask cancel for this mission — it is closed and every such command will fail.`,
+    `Read the result and the event history in the brief, then report the outcome to the`,
+    `user in your own words.`,
+    ``,
+    `Never run "im join" or "im receive" — the bridge owns the member identity and`,
+    `the listening loop. Run im commands from the workspace root (your current project).`,
+    ``,
+    `----- mission result -----`,
   ].join("\n");
 }
 
@@ -166,9 +193,11 @@ export class Delivery {
 
   /**
    * One mission arrival → one T3 thread turn (creating the thread and its
-   * project on first arrival). Returns the thread id used.
+   * project on first arrival). Returns the thread id used. `ended` marks a
+   * returned Work-origin result: the brief is read-only, so the turn carries
+   * the result preamble instead of the submit-duty one.
    */
-  async deliver({ workspacePath, member, station, missionId, brief }) {
+  async deliver({ workspacePath, member, station, missionId, brief, ended = false }) {
     // One shell fetch serves both the project lookup and the prefix search
     // in #resolveTarget (the fallback path for deleted deterministic ids).
     const shell = await this.t3.shell();
@@ -192,7 +221,7 @@ export class Delivery {
       message: {
         messageId: randomUUID(),
         role: "user",
-        text: `${dutyPreamble(member.id, workspacePath)}\n${brief}`,
+        text: `${ended ? resultPreamble(member.id, workspacePath) : dutyPreamble(member.id, workspacePath)}\n${brief}`,
         attachments: [],
       },
       // Each turn restates the member's selection, so the runtime identity

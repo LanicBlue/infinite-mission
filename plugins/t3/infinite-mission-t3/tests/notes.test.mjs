@@ -16,6 +16,16 @@ test("parses an arrival note (station line + Run hint)", () => {
   assert.deepEqual(notes.unknown, []);
 });
 
+test("parses a mission_result work note through the stable station envelope", () => {
+  const stdout = [
+    "[station design] [ms_abc123def456] result: completed (answered)",
+    "  → Run: im mission show ms_abc123def456 --for t3-codex (then im missions t3-codex)",
+  ].join("\n");
+  const notes = parseReceiveOutput(stdout);
+  assert.deepEqual(notes.arrivals, [{ station: "design", missionId: "ms_abc123def456" }]);
+  assert.deepEqual(notes.unknown, []);
+});
+
 test("parses a batch: two arrivals plus a mission-ended message", () => {
   const stdout = [
     "[from workspace] [ms_111222333444555] mission ended: deleted (outcome)",

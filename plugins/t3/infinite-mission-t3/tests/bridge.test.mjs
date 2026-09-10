@@ -18,12 +18,25 @@ const ARRIVAL = (missionId, station = "build") =>
 const TIMEOUT = "No new messages (timed out after 600s).";
 
 class ScriptedRunner {
-  constructor({ roster = [], receiveScript = [], missionShow = () => ({ ok: true, text: "[mission ms_x] T — active" }), missions = [] } = {}) {
+  constructor({
+    roster = [],
+    receiveScript = [],
+    missionShow = () => ({ ok: true, text: "[mission ms_x] T — active" }),
+    missionResult = () => ({ ok: false, text: "" }),
+    missionEvents = () => ({ ok: true, text: "" }),
+    missions = [],
+    results = [],
+  } = {}) {
     this.rosterSource = roster;
     this.receiveScript = [...receiveScript];
     this.missionShowSource = missionShow;
+    this.missionResultSource = missionResult;
+    this.missionEventsSource = missionEvents;
     this.missionsSource = missions;
-    this.calls = { roster: [], join: [], leave: [], receive: [], missionShow: [], missions: [], workspaces: 0 };
+    this.resultsSource = results;
+    this.calls = {
+      roster: [], join: [], leave: [], receive: [], missionShow: [], missionResult: [], missionEvents: [], missions: [], results: [], workspaces: 0,
+    };
   }
   async roster(workspace) {
     this.calls.roster.push(workspace);
@@ -52,6 +65,14 @@ class ScriptedRunner {
     this.calls.missionShow.push([workspace, missionId, memberId]);
     return typeof this.missionShowSource === "function" ? this.missionShowSource(missionId) : this.missionShowSource;
   }
+  async missionResult(workspace, missionId) {
+    this.calls.missionResult.push([workspace, missionId]);
+    return typeof this.missionResultSource === "function" ? this.missionResultSource(missionId) : this.missionResultSource;
+  }
+  async missionEvents(workspace, missionId) {
+    this.calls.missionEvents.push([workspace, missionId]);
+    return typeof this.missionEventsSource === "function" ? this.missionEventsSource(missionId) : this.missionEventsSource;
+  }
   async missions(workspace, memberId) {
     this.calls.missions.push([workspace, memberId]);
     return typeof this.missionsSource === "function" ? this.missionsSource(memberId) : this.missionsSource;
@@ -61,6 +82,10 @@ class ScriptedRunner {
     this.calls.missionsAt.push([workspace, memberId]);
     const source = typeof this.missionsSource === "function" ? this.missionsSource(memberId) : this.missionsSource;
     return source.map((entry) => (typeof entry === "string" ? { id: entry, station: "build" } : entry));
+  }
+  async results(workspace, memberId) {
+    this.calls.results.push([workspace, memberId]);
+    return typeof this.resultsSource === "function" ? this.resultsSource(memberId) : this.resultsSource;
   }
   async workspaces() {
     this.calls.workspaces += 1;
@@ -138,6 +163,11 @@ function writeBridgeConfig(dir, members) {
 const ownedInState = (configPath) => {
   const statePath = `${configPath.replace(/\.json$/, "")}.state.json`;
   return JSON.parse(fs.readFileSync(statePath, "utf8")).ownedMembers;
+};
+
+const ackedInState = (configPath) => {
+  const statePath = `${configPath.replace(/\.json$/, "")}.state.json`;
+  return JSON.parse(fs.readFileSync(statePath, "utf8")).ackedResults ?? [];
 };
 
 test("guard-join: active member with the exact id never triggers join", async () => {
@@ -283,6 +313,210 @@ test("arrival: mission show re-verified, then delivered with the brief", async (
   assert.equal(call.missionId, "ms_aaaabbbbccccdddd");
   assert.match(call.brief, /revision: 1/);
   await bridge.stop();
+});
+
+test("returned result: ended mission is delivered with durable result and events, never submit duty", async () => {
+  const missionId = "ms_aaaabbbbccccdddd";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "design") }],
+    missionShow: () => ({
+      ok: true,
+      text: `[mission ${missionId}] Ask — ended\n  ended: mission is no longer in the mail stream`,
+    }),
+    missionResult: () => ({ ok: true, text: '{"disposition":"completed","result":"forty two"}\n' }),
+    missionEvents: () => ({ ok: true, text: '#3 mission.ended {"disposition":"completed"}\n' }),
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  const call = delivery.deliverCalls[0];
+  assert.equal(call.station, "design");
+  assert.match(call.brief, /\[InfiniteMission returned result\]/);
+  assert.match(call.brief, /do NOT submit or abandon/i);
+  assert.match(call.brief, /\[Durable result\][\s\S]*forty two/);
+  assert.match(call.brief, /\[Mission events\][\s\S]*mission\.ended/);
+  assert.equal(call.ended, true);
+  assert.deepEqual(runner.calls.missionResult, [[WS, missionId]]);
+  assert.deepEqual(runner.calls.missionEvents, [[WS, missionId]]);
+  assert.equal(bridge.watching.length, 0);
+  await bridge.stop();
+});
+
+test("an active mission whose prompt mentions an ended line is never mistaken for a result", async () => {
+  const missionId = "ms_ccccddddeeeeffff";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "build") }],
+    missionShow: () => ({
+      ok: true,
+      text: [
+        `[mission ${missionId}] Tricky — active`,
+        "  prompt: quote this verbatim:",
+        "  ended: (a line a station prompt could contain)",
+        "  revision: 1",
+      ].join("\n"),
+    }),
+    missionResult: () => ({ ok: true, text: "{}\n" }),
+    missionEvents: () => ({ ok: true, text: "" }),
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  const call = delivery.deliverCalls[0];
+  assert.equal(call.ended, false);
+  assert.doesNotMatch(call.brief, /InfiniteMission returned result/);
+  assert.equal(bridge.watching.length, 1);
+  await bridge.stop();
+});
+
+test("returned result remains deliverable when an older core has no mission result command", async () => {
+  const missionId = "ms_bbbbccccddddeeee";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "design") }],
+    missionShow: () => ({ ok: true, text: `[mission ${missionId}] Ask — ended\n  ended: closed` }),
+    missionResult: () => ({ ok: false, text: "unknown command: result" }),
+    missionEvents: () => ({ ok: true, text: '#2 round.completed {"result":"legacy answer"}\n' }),
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  assert.doesNotMatch(delivery.deliverCalls[0].brief, /unknown command/);
+  assert.match(delivery.deliverCalls[0].brief, /legacy answer/);
+  assert.equal(delivery.deliverCalls[0].ended, true);
+  assert.equal(bridge.watching.length, 0);
+  await bridge.stop();
+});
+
+test("result sweep redelivers a consumed-but-undelivered result and acks it exactly once", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "im-t3-bridge-state-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { configPath, config } = writeBridgeConfig(dir, [
+    { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna" },
+  ]);
+  const missionId = "ms_aaaabbbbccccdddd";
+  // The result note was consumed long ago (receive only ever times out) and
+  // no thread exists: the note-less restart-loss case the sweep must heal.
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: TIMEOUT }],
+    results: () => [{ id: missionId, station: "design", objective: "what is the answer?" }],
+    missionShow: () => ({
+      ok: true,
+      text: `[mission ${missionId}] Ask — ended\n  ended: mission is no longer in the mail stream`,
+    }),
+    missionResult: () => ({ ok: true, text: '{"disposition":"completed","result":"forty two"}' }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  delivery.threadExists = async () => false;
+  const bridge = new Bridge({ runner, delivery, t3: {}, config, configPath, logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  assert.equal(delivery.deliverCalls[0].ended, true);
+  assert.match(delivery.deliverCalls[0].brief, /forty two/);
+  const ackKey = `${WS}\0t3-codex\0${missionId}`;
+  assert.deepEqual(ackedInState(configPath), [ackKey]);
+
+  // Idempotent: the next reconcile re-lists the same ended mission but the
+  // persisted ack skips it — no second delivery, no second probe.
+  await bridge.reconcile();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(delivery.deliverCalls.length, 1);
+  assert.equal(delivery.hasThreadCalls.length, 1);
+  assert.deepEqual(ackedInState(configPath), [ackKey]);
+});
+
+test("result sweep acks a live result thread from a previous life without redelivering", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "im-t3-bridge-state-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { configPath, config } = writeBridgeConfig(dir, [
+    { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna" },
+  ]);
+  const missionId = "ms_bbbbccccddddeeee";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    results: () => [{ id: missionId, station: "design", objective: "q" }],
+    missions: [],
+  });
+  const delivery = new FakeDelivery(); // threadExists → true: delivered before the restart
+  const bridge = new Bridge({ runner, delivery, t3: {}, config, configPath, logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 0);
+  assert.equal(delivery.hasThreadCalls.length, 1);
+  assert.deepEqual(ackedInState(configPath), [`${WS}\0t3-codex\0${missionId}`]);
+
+  // The ack short-circuits: later reconciles stop probing T3 for it.
+  await bridge.reconcile();
+  assert.equal(delivery.hasThreadCalls.length, 1);
+});
+
+test("result sweep on an old core (im results fails) is inert; arrivals still sweep", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "im-t3-bridge-state-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { configPath, config } = writeBridgeConfig(dir, [
+    { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna" },
+  ]);
+  const missionId = "ms_ccccddddeeeeffff";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "build") }],
+    // Old core: the command does not exist → non-zero exit.
+    results: () => {
+      throw new Error("im results t3-codex failed (exit 1): unknown command: results");
+    },
+    missionShow: () => ({ ok: true, text: "[mission ms_x] T — active\n  revision: 1" }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config, configPath, logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  assert.equal(delivery.deliverCalls[0].ended, false); // the arrival, not a result
+  assert.deepEqual(ackedInState(configPath), []);
+  await bridge.stop();
+});
+
+test("a failed result delivery retries and the retry success acks and persists", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "im-t3-bridge-state-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { configPath, config } = writeBridgeConfig(dir, [
+    { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna" },
+  ]);
+  const missionId = "ms_ddddceeeffff0001";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "design") }],
+    results: () => [],
+    missionShow: () => ({
+      ok: true,
+      text: `[mission ${missionId}] Ask — ended\n  ended: mission is no longer in the mail stream`,
+    }),
+    missionResult: () => ({ ok: true, text: '{"disposition":"completed","result":"late answer"}' }),
+    missions: [],
+  });
+  const delivery = new FakeDelivery();
+  delivery.failDeliver = true; // first delivery attempt fails → retry queue
+  const bridge = new Bridge({ runner, delivery, config, configPath, logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(delivery.deliverCalls.length, 0);
+  assert.deepEqual(ackedInState(configPath), []); // failure must not ack
+
+  delivery.failDeliver = false;
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  assert.equal(delivery.deliverCalls[0].ended, true);
+  assert.match(delivery.deliverCalls[0].brief, /late answer/);
+  assert.deepEqual(ackedInState(configPath), [`${WS}\0t3-codex\0${missionId}`]);
 });
 
 test("stale arrival (mission show fails) is dropped, never delivered", async () => {

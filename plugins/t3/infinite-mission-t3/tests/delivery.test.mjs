@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, modelSelectionOf } from "../lib/delivery.mjs";
+import { Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf } from "../lib/delivery.mjs";
 
 const BRIEF = [
   "[mission ms_aaaabbbbccccdddd] Smoke mission — active",
@@ -90,6 +90,20 @@ test("titleFromBrief extracts the mission name with the member prefix", () => {
   assert.equal(titleFromBrief("garbage\nmore", "t3-codex", "review", "ms_abc123def"), "im/t3-codex@review: ms_abc123def");
 });
 
+test("titleFromBrief finds the mission header below a result marker", () => {
+  const resultBrief = [
+    "[InfiniteMission returned result]",
+    "This Mission is already ended.",
+    "",
+    "[mission ms_aaaabbbbccccdddd] Ask — ended",
+    "  ended: mission is no longer in the mail stream",
+  ].join("\n");
+  assert.equal(
+    titleFromBrief(resultBrief, "t3-codex", "design", "ms_aaaabbbbccccdddd"),
+    "im/t3-codex@design: Ask",
+  );
+});
+
 test("modelSelectionOf passes options through", () => {
   assert.deepEqual(modelSelectionOf(MEMBER), { instanceId: "codex", model: "gpt-5.6-luna" });
   const withOptions = { ...MEMBER, options: { reasoningEffort: "high" } };
@@ -105,6 +119,50 @@ test("dutyPreamble names the member and forbids join/receive", () => {
   assert.match(text, /im mission submit t3-codex/);
   assert.match(text, /im mission doc read t3-codex/);
   assert.match(text, /Never run "im join" or "im receive"/);
+});
+
+test("resultPreamble is read-only: no submit duty, explicit closed-mission warning", () => {
+  const text = resultPreamble("t3-codex", "/w");
+  // The warning sentence mentions the command; what must be absent is the
+  // duty-preamble's imperative submit instruction and its command syntax.
+  assert.doesNotMatch(text, /Submitting IS the deliverable/);
+  assert.doesNotMatch(text, /im mission submit \S+ <missionId>/);
+  assert.match(text, /ENDED/);
+  assert.match(text, /do NOT run im mission submit/);
+  assert.match(text, /Never run "im join" or "im receive"/);
+  assert.match(text, /----- mission result -----/);
+});
+
+test("ended delivery carries the result preamble; a normal one keeps the duty preamble", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const t3 = new FakeT3();
+  const delivery = new Delivery(t3);
+  try {
+    await delivery.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "build",
+      missionId: "ms_aaaabbbbccccdddd",
+      brief: "[InfiniteMission returned result]\nended brief",
+      ended: true,
+    });
+    await delivery.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "build",
+      missionId: "ms_bbbbccccddddeeee",
+      brief: BRIEF,
+    });
+    const turns = t3.dispatched
+      .filter((command) => command.type === "thread.turn.start")
+      .map((command) => command.message.text);
+    assert.match(turns[0], /----- mission result -----/);
+    assert.doesNotMatch(turns[0], /Submitting IS the deliverable/);
+    assert.match(turns[1], /----- mission brief -----/);
+    assert.match(turns[1], /Submitting IS the deliverable/);
+  } finally {
+    cleanup();
+  }
 });
 
 test("first delivery creates the project and thread, then starts the turn", async () => {

@@ -6,6 +6,7 @@ import { runCapture } from "./spawn.mjs";
 const ROSTER_LINE = /^  (.+?) — (.+?) \[(execute|publish|manage)\]$/;
 const WORKSPACE_LINE = /^  ([✓✗]) (.+)$/;
 const MISSIONS_LINE = /^\[mission (ms_[0-9a-f]{6,64})\] at (\S+)/;
+const RESULTS_LINE = /^(ms_[0-9a-f]{6,64})  from:(\S+)  (.*)$/;
 
 export class ProcessImRunner {
   constructor({ imBin = "im" } = {}) {
@@ -61,6 +62,18 @@ export class ProcessImRunner {
     return { ok: res.code === 0, text: res.stdout };
   }
 
+  /** Durable terminal result for a Work-origin mission (newer IM cores). */
+  async missionResult(workspace, missionId) {
+    const res = await this.#run(["mission", "result", missionId], workspace);
+    return { ok: res.code === 0, text: res.stdout };
+  }
+
+  /** Append-only mission history; also available on older IM cores. */
+  async missionEvents(workspace, missionId) {
+    const res = await this.#run(["mission", "events", missionId], workspace);
+    return { ok: res.code === 0, text: res.stdout };
+  }
+
   /** Active missions at the member's stations, with the station key. */
   async #missionsEntries(workspace, memberId) {
     const res = await this.#run(["missions", memberId], workspace);
@@ -84,6 +97,24 @@ export class ProcessImRunner {
   /** Active missions as `{ id, station }` — the reconcile sweep's input. */
   async missionsAt(workspace, memberId) {
     return this.#missionsEntries(workspace, memberId);
+  }
+
+  /**
+   * Ended Work-origin results addressed to the member's duty stations, as
+   * `{ id, station, objective }` — the result sweep's input. Older IM cores
+   * without the command exit non-zero (the caller treats that as empty).
+   */
+  async results(workspace, memberId) {
+    const res = await this.#run(["results", memberId], workspace);
+    if (res.code !== 0) {
+      throw new Error(`im results ${memberId} failed (exit ${res.code}): ${res.stderr.trim().slice(0, 200)}`);
+    }
+    const entries = [];
+    for (const line of res.stdout.split("\n")) {
+      const match = line.match(RESULTS_LINE);
+      if (match) entries.push({ id: match[1], station: match[2], objective: match[3] });
+    }
+    return entries;
   }
 
   /** Live workspace paths from the global registry. */

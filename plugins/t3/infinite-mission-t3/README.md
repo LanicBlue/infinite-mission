@@ -58,6 +58,22 @@ tool path (im is a local CLI over SQLite).
      deleted. Watch state is in-memory: threads that finish while the
      bridge is down settle on their next ended note or stay
      completed-but-unsettled (cosmetic).
+- **Returned Work-origin results → read-only turn** — a `mission_result`
+  note shares the arrival-note envelope, but `mission show` reports the
+  mission `ended`, so the bridge delivers a result turn instead of a duty
+  turn: the brief carries the durable `im mission result` payload (falling
+  back to `im mission events` on older cores) and the preamble forbids
+  submitting — the mission is closed, there is no round to complete. Result
+  threads are never watch-settled (there is no open mission to check) and
+  are recorded in the persisted ack set.
+- **Result sweep** — a result note is consumed by `im receive`, so a lost
+  delivery (crash, T3 outage past the retry budget) would otherwise never
+  re-surface: the ended mission is invisible to the active-arrival sweep.
+  Each reconcile therefore also asks `im results <member>` (ended
+  Work-origin missions for the member's duty stations; absent on older
+  cores, where the sweep is inert) and re-delivers any result with no live
+  thread and no persisted ack. Acked results and live threads make the
+  sweep idempotent — a redelivered result cannot loop.
 - **Membership end → loop stops** — an archived/removed member is muted for
   the process lifetime; restart the bridge after re-joining.
 - **Rename/remove cleanup survives restarts** — every id the bridge joins is

@@ -50,13 +50,21 @@ export class Bridge {
     this.muted = new Set();
     // deliveries that failed (e.g. T3 down) and retry on each reconcile
     this.retryQueue = [];
-    // member ids this bridge has joined and not yet left (leave candidates).
-    // Persisted beside the config (`<config>.state.json`) so renaming or
-    // removing a member still archives the old id (`im leave`) after a
-    // bridge restart — an in-memory set alone would orphan it in every
-    // roster it ever joined. Null configPath (tests) disables persistence.
+    // member ids this bridge has joined and not yet left (leave candidates),
+    // plus acknowledged Work-origin results. Persisted beside the config
+    // (`<config>.state.json`) so renaming or removing a member still archives
+    // the old id (`im leave`) after a bridge restart, and so a result whose
+    // note was consumed but whose delivery was lost (crash, T3 outage past the
+    // retry budget) is found again by the result sweep instead of being lost —
+    // the ended mission never reappears in the active-arrival sweep. Null
+    // configPath (tests) disables persistence.
     this.statePath = configPath ? `${configPath.replace(/\.json$/, "")}.state.json` : null;
-    this.ownedMembers = new Set(this.#readOwnedMembers());
+    const persisted = this.#readState();
+    this.ownedMembers = new Set(persisted.ownedMembers);
+    // `${workspace}\0${memberId}\0${missionId}` of Work-origin results whose
+    // delivery is known good (this process delivered them, or a live thread
+    // proved a previous process did). The result sweep re-delivers the rest.
+    this.ackedResults = new Set(persisted.ackedResults);
     // delivered threads whose turn we watch once: when the turn reaches a
     // terminal state, settle if the mission left the member's list (the
     // submitter itself never receives im's mission-ended notice). Holds
@@ -75,28 +83,37 @@ export class Bridge {
     return `${workspace}\0${memberId}`;
   }
 
-  #readOwnedMembers() {
-    if (!this.statePath) return [];
+  #readState() {
+    const empty = { ownedMembers: [], ackedResults: [] };
+    if (!this.statePath) return empty;
     try {
       const raw = JSON.parse(fs.readFileSync(this.statePath, "utf8"));
-      if (!Array.isArray(raw?.ownedMembers)) return [];
-      return raw.ownedMembers.filter((id) => typeof id === "string" && id.length > 0);
+      const strings = (value) =>
+        Array.isArray(value) ? value.filter((id) => typeof id === "string" && id.length > 0) : [];
+      return { ownedMembers: strings(raw?.ownedMembers), ackedResults: strings(raw?.ackedResults) };
     } catch (err) {
       if (err.code !== "ENOENT") {
-        this.log("bridge", `state file unreadable, starting with no owned members (${err.message})`);
+        this.log("bridge", `state file unreadable, starting with empty state (${err.message})`);
       }
-      return [];
+      return empty;
     }
   }
 
-  #writeOwnedMembers() {
+  #writeState() {
     if (!this.statePath) return;
     try {
       const tmp = `${this.statePath}.tmp`;
-      fs.writeFileSync(tmp, `${JSON.stringify({ ownedMembers: [...this.ownedMembers] }, null, 2)}\n`);
+      fs.writeFileSync(
+        tmp,
+        `${JSON.stringify(
+          { ownedMembers: [...this.ownedMembers], ackedResults: [...this.ackedResults] },
+          null,
+          2,
+        )}\n`,
+      );
       fs.renameSync(tmp, this.statePath);
     } catch (err) {
-      this.log("bridge", `owned-members state write failed (${err.message}) — rename cleanup may be lost on restart`);
+      this.log("bridge", `state write failed (${err.message}) — archive/ack bookkeeping may be lost on restart`);
     }
   }
 
@@ -205,7 +222,7 @@ export class Bridge {
       }
     }
     const leftCount = await this.#leaveDisabled(workspaces, members);
-    if (ownedChanged || leftCount > 0) this.#writeOwnedMembers();
+    if (ownedChanged || leftCount > 0) this.#writeState();
 
     // Loops that are no longer configured (or whose member got muted) stop.
     for (const [key, entry] of [...this.loops]) {
@@ -217,6 +234,7 @@ export class Bridge {
 
     await this.#flushRetries();
     await this.#sweepUndelivered(workspaces, members);
+    await this.#sweepUnackedResults(workspaces, members);
     await this.#pollWatchers();
   }
 
@@ -345,6 +363,45 @@ export class Bridge {
     await this.#tryDeliver(workspace, memberId, arrival.station, arrival.missionId, tag);
   }
 
+  async #deliveryBrief(workspace, missionId, show) {
+    // Two independent signals must agree before a delivery is treated as a
+    // returned result: the show header's terminal status and the ended line.
+    // Either alone could be forged by mission/station-prompt text (a live
+    // mission would then be told "do NOT submit" and its round would strand),
+    // so both are required.
+    const header = String(show.text).split("\n", 1)[0] ?? "";
+    const headerEnded = /\] .* — ended$/.test(header);
+    const endedLine = /(?:^|\n)  ended: /m.test(show.text);
+    if (!headerEnded || !endedLine) return { brief: show.text, ended: false };
+
+    // mission_result work notes intentionally share the stable arrival-note
+    // envelope. The authoritative distinction is that `mission show` still
+    // succeeds but reports an ended Mission. Supply the durable result and
+    // history, and make it explicit that no submit duty remains.
+    const sections = [
+      "[InfiniteMission returned result]",
+      "This Mission is already ended. Read the result below; do NOT submit or abandon it.",
+      show.text.trimEnd(),
+    ];
+    if (typeof this.runner.missionResult === "function") {
+      try {
+        const result = await this.runner.missionResult(workspace, missionId);
+        if (result.ok && result.text.trim()) sections.push("[Durable result]", result.text.trimEnd());
+      } catch (err) {
+        this.log("bridge", `mission result lookup failed for ${missionId}: ${err.message}`);
+      }
+    }
+    if (typeof this.runner.missionEvents === "function") {
+      try {
+        const events = await this.runner.missionEvents(workspace, missionId);
+        if (events.ok && events.text.trim()) sections.push("[Mission events]", events.text.trimEnd());
+      } catch (err) {
+        this.log("bridge", `mission events lookup failed for ${missionId}: ${err.message}`);
+      }
+    }
+    return { brief: sections.join("\n\n"), ended: true };
+  }
+
   /**
    * Deliver a mission to T3: the note (or sweep) is only a trigger, so
    * re-read the mission from the authority first. A failed show means the
@@ -378,16 +435,26 @@ export class Bridge {
         this.log(tag, `stale arrival dropped: ${missionId}@${station} (mission show failed)`);
         return;
       }
+      const { brief, ended } = await this.#deliveryBrief(workspace, missionId, show);
       try {
         const threadId = await this.delivery.deliver({
           workspacePath: workspace,
           member,
           station,
           missionId,
-          brief: show.text,
+          brief,
+          ended,
         });
         this.log(tag, `delivered ${missionId}@${station} → T3 thread ${threadId}`);
-        this.watching.push({ workspace, memberId, missionId, threadId });
+        if (ended) {
+          // A returned result that reached T3 is done: the mission is ended,
+          // so no follow-up round can ever arrive. Ack it (persisted) so the
+          // result sweep never re-delivers it.
+          this.ackedResults.add(inflightKey);
+          this.#writeState();
+        } else {
+          this.watching.push({ workspace, memberId, missionId, threadId });
+        }
       } catch (err) {
         this.log(tag, `delivery failed for ${missionId}@${station}: ${err.message} (queued for retry)`);
         this.retryQueue.push({ workspace, memberId, station, missionId, attempts: 0 });
@@ -433,6 +500,60 @@ export class Bridge {
           }
           if (arrived) continue;
           this.log(this.tag(workspace, member.id), `sweep: ${missionId}@${station} has no T3 thread — delivering`);
+          await this.#tryDeliver(workspace, member.id, station, missionId, this.tag(workspace, member.id));
+        }
+      }
+    }
+  }
+
+  /**
+   * Result sweep: a mission_result work note is consumed by `im receive`, so
+   * a delivery that failed past the retry budget — or a bridge restart around
+   * it — loses the only wake: an ended mission never reappears in the
+   * active-arrival sweep above. Recover it from the durable side instead:
+   * `im results <member>` lists every ended Work-origin mission addressed to
+   * the member's duty stations, regardless of whether its note survived.
+   * Idempotent by the same rule as the arrival sweep (a live deterministic
+   * thread = already delivered) plus the persisted ack set, so re-running is
+   * free and a redelivered result cannot loop.
+   */
+  async #sweepUnackedResults(workspaces, members) {
+    if (!this.t3) return;
+    if (typeof this.runner.results !== "function") return; // scripted/older runner
+    const queued = new Set(this.retryQueue.map((i) => `${i.workspace}\0${i.memberId}\0${i.missionId}`));
+    const watched = new Set(this.watching.map((w) => `${w.workspace}\0${w.memberId}\0${w.missionId}`));
+    for (const workspace of workspaces) {
+      for (const member of members) {
+        if (!member.enabled) continue;
+        if (this.muted.has(this.key(workspace, member.id))) continue;
+        let entries;
+        try {
+          entries = await this.runner.results(workspace, member.id);
+        } catch (err) {
+          // Older IM cores have no `im results` — treat like an empty list.
+          this.log(this.tag(workspace, member.id), `result sweep: im results unavailable (${err.message})`);
+          continue;
+        }
+        for (const { id: missionId, station } of entries) {
+          const dedupe = `${workspace}\0${member.id}\0${missionId}`;
+          if (this.ackedResults.has(dedupe) || queued.has(dedupe) || watched.has(dedupe) || this.inflight.has(dedupe)) {
+            continue;
+          }
+          let arrived;
+          try {
+            arrived = await this.delivery.hasThread(member.id, missionId);
+          } catch (err) {
+            this.log("bridge", `result sweep aborted (T3 probe failed): ${err.message}`);
+            return;
+          }
+          if (arrived) {
+            // Delivered by a previous process life; ack so later ticks stop
+            // re-probing T3 for it.
+            this.ackedResults.add(dedupe);
+            this.#writeState();
+            continue;
+          }
+          this.log(this.tag(workspace, member.id), `result sweep: ${missionId} has no T3 thread — delivering result`);
           await this.#tryDeliver(workspace, member.id, station, missionId, this.tag(workspace, member.id));
         }
       }
@@ -534,15 +655,22 @@ export class Bridge {
           this.log(this.tag(item.workspace, item.memberId), `retry dropped: ${item.missionId} no longer shows`);
           continue;
         }
+        const { brief, ended } = await this.#deliveryBrief(item.workspace, item.missionId, show);
         const threadId = await this.delivery.deliver({
           workspacePath: item.workspace,
           member,
           station: item.station,
           missionId: item.missionId,
-          brief: show.text,
+          brief,
+          ended,
         });
         this.log(this.tag(item.workspace, item.memberId), `retry delivered ${item.missionId}@${item.station} → ${threadId}`);
-        this.watching.push({ workspace: item.workspace, memberId: item.memberId, missionId: item.missionId, threadId });
+        if (ended) {
+          this.ackedResults.add(`${item.workspace}\0${item.memberId}\0${item.missionId}`);
+          this.#writeState();
+        } else {
+          this.watching.push({ workspace: item.workspace, memberId: item.memberId, missionId: item.missionId, threadId });
+        }
       } catch (err) {
         this.log(this.tag(item.workspace, item.memberId), `retry ${item.attempts} failed for ${item.missionId}: ${err.message}`);
         this.retryQueue.push(item);
