@@ -659,6 +659,26 @@ impl Store {
         Ok(results)
     }
 
+    /// The outbox ledger of a work: every mission it originated. Rows come
+    /// back active-first (oldest first, matching the executor view); the
+    /// caller renders ended rows newest-first. The work must exist, so a
+    /// typo cannot masquerade as an empty ledger.
+    pub fn missions_from_origin(&self, work_key: &str) -> Result<Vec<MissionRecord>> {
+        self.get_work(work_key)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT mission_id, name, objective, contract_json, at, status,
+                    revision, ended_disposition, ended_by_work, ended_by_iteration,
+                    ended_at, created_at, created_by, origin_work
+             FROM missions
+             WHERE origin_work = ?1
+             ORDER BY (status != 'active'), created_at",
+        )?;
+        let rows = stmt
+            .query_map(params![work_key], map_mission_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn mission_result(&self, mission_id: &str) -> Result<serde_json::Value> {
         let mission = self.get_mission(mission_id)?;
         if mission.status != "ended" {

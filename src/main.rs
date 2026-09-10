@@ -79,11 +79,18 @@ fn main() -> Result<()> {
         "results" => cmd_results(args.collect()),
         "mission" => cmd_mission(args.collect()),
         "missions" => {
-            let id = args.next().unwrap_or_default();
-            if id.is_empty() {
-                bail!("Usage: im missions <agent>");
+            let first = args.next().unwrap_or_default();
+            if first == "--from" {
+                let work = args.next().unwrap_or_default();
+                if work.is_empty() {
+                    bail!("Usage: im missions --from <work>");
+                }
+                cmd_missions_from(&work)
+            } else if first.is_empty() {
+                bail!("Usage: im missions <agent> | im missions --from <work>");
+            } else {
+                cmd_missions_for(&first)
             }
-            cmd_missions_for(&id)
         }
         "inbox" => cmd_inbox(),
         "doctor" => cmd_doctor(),
@@ -1153,6 +1160,46 @@ fn cmd_missions_for(agent: &str) -> Result<()> {
     Ok(())
 }
 
+/// Origin-side ledger (`im missions --from <work>`): what a work has sent
+/// out and what came back — the in-flight half that `im results` (ended
+/// only) never shows. Grouped active-oldest-first / ended-newest-first.
+fn cmd_missions_from(work: &str) -> Result<()> {
+    let workspace = find_workspace()?;
+    let store = open_store(&workspace)?;
+    let missions = store.missions_from_origin(work)?;
+    let (active, ended): (Vec<_>, Vec<_>) = missions
+        .iter()
+        .partition(|mission| mission.status == "active");
+    println!(
+        "Outbox of work {work} — {} in flight, {} ended",
+        active.len(),
+        ended.len()
+    );
+    if active.is_empty() && ended.is_empty() {
+        return Ok(());
+    }
+    for mission in &active {
+        println!(
+            "[mission {}] → {} (revision {})",
+            mission.mission_id,
+            mission.at.as_deref().unwrap_or("?"),
+            mission.revision
+        );
+        println!("  {}", mission.name);
+        println!("    {}", mission.objective);
+    }
+    for mission in ended.iter().rev() {
+        println!(
+            "[mission {}] ended: {}",
+            mission.mission_id,
+            mission.ended_disposition.as_deref().unwrap_or("?")
+        );
+        println!("  {}", mission.name);
+    }
+    println!("  ended detail: im mission result <ms>");
+    Ok(())
+}
+
 fn cmd_inbox() -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
@@ -1384,6 +1431,9 @@ Missions (Work-to-Work mail; Agent identity authorizes the operation)
                                              work. The receiver handles it like any mission.
   im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
   im missions <agent>                       Active missions at your stations
+  im missions --from <work>                 Origin ledger: in-flight + ended
+                                             missions this work sent out (the
+                                             in-flight half `im results` omits)
   im mission submit <agent> <ms> --revision N --outcome <o>
        [--next-node <station>] [--reason <t>] [--feedback <t>] [--result <t>]
        [--receipts <document:hash,...>]

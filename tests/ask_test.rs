@@ -1335,3 +1335,92 @@ fn old_pipeline_flow_regression_alongside_asks() {
         .success()
         .stdout(predicate::str::contains("side question answered"));
 }
+
+#[test]
+fn origin_ledger_shows_in_flight_and_ended_split() {
+    let tmp = setup();
+    let ws = tmp.path();
+    // origin's outbox: one ask still in flight, one answered, one cancelled.
+    ask(ws, "alice", "origin", "lab", "keep", "still in flight?")
+        .assert()
+        .success();
+    // Created as the only mission so far, so the single ms_ id is unambiguous.
+    let inflight = mission_ids(ws)
+        .into_iter()
+        .find(|id| id.starts_with("ms_"))
+        .unwrap();
+    // create_ask() assumes a single-mission workspace; with several missions
+    // diff the id set around each create instead.
+    let new_mission = |before: std::collections::BTreeSet<String>| {
+        mission_ids(ws)
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .unwrap()
+    };
+    let before = std::collections::BTreeSet::from_iter(mission_ids(ws));
+    ask(ws, "alice", "origin", "lab", "answered", "gets answered")
+        .assert()
+        .success();
+    let answered = new_mission(before);
+    im(ws)
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &answered,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "here is the answer",
+        ])
+        .assert()
+        .success();
+    let before = std::collections::BTreeSet::from_iter(mission_ids(ws));
+    ask(ws, "alice", "origin", "lab", "cancelled", "gets cancelled")
+        .assert()
+        .success();
+    let cancelled = new_mission(before);
+    im(ws)
+        .args([
+            "mission",
+            "cancel",
+            "alice",
+            &cancelled,
+            "--revision",
+            "1",
+            "--reason",
+            "no longer needed",
+        ])
+        .assert()
+        .success();
+    // A mission from a different origin must not leak into origin's ledger.
+    ask(ws, "carol", "desk", "lab", "other-origin", "not my ledger")
+        .assert()
+        .success();
+
+    let out = im(ws)
+        .args(["missions", "--from", "origin"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("1 in flight, 2 ended"),
+        "ledger header miscounted:\n{stdout}"
+    );
+    // In-flight rows carry the routing (→ lab) and live revision.
+    assert!(stdout.contains(&format!("[mission {inflight}] → lab (revision 1)")));
+    assert!(stdout.contains("still in flight?"));
+    // Ended rows carry the disposition, not a phantom result.
+    assert!(stdout.contains("ended: completed"));
+    assert!(stdout.contains("ended: cancelled"));
+    assert!(!stdout.contains("here is the answer"));
+    assert!(!stdout.contains("not my ledger"));
+
+    // A typo'd work must not masquerade as an empty ledger.
+    im(ws)
+        .args(["missions", "--from", "nosuchwork"])
+        .assert()
+        .failure();
+}
