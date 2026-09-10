@@ -11,6 +11,7 @@
 // T3 side is driven through its public HTTP API only (zero T3 fork):
 // project/thread creation, turn start, and settle via /api/orchestration/*.
 
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { readConfigFile, readT3ImMembers, defaultConfigPath } from "./lib/config.mjs";
@@ -49,8 +50,13 @@ export class Bridge {
     this.muted = new Set();
     // deliveries that failed (e.g. T3 down) and retry on each reconcile
     this.retryQueue = [];
-    // member ids this bridge has ensured at least once (leave candidates)
-    this.ownedMembers = new Set();
+    // member ids this bridge has joined and not yet left (leave candidates).
+    // Persisted beside the config (`<config>.state.json`) so renaming or
+    // removing a member still archives the old id (`im leave`) after a
+    // bridge restart — an in-memory set alone would orphan it in every
+    // roster it ever joined. Null configPath (tests) disables persistence.
+    this.statePath = configPath ? `${configPath.replace(/\.json$/, "")}.state.json` : null;
+    this.ownedMembers = new Set(this.#readOwnedMembers());
     // delivered threads whose turn we watch once: when the turn reaches a
     // terminal state, settle if the mission left the member's list (the
     // submitter itself never receives im's mission-ended notice). Holds
@@ -67,6 +73,31 @@ export class Bridge {
 
   key(workspace, memberId) {
     return `${workspace}\0${memberId}`;
+  }
+
+  #readOwnedMembers() {
+    if (!this.statePath) return [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.statePath, "utf8"));
+      if (!Array.isArray(raw?.ownedMembers)) return [];
+      return raw.ownedMembers.filter((id) => typeof id === "string" && id.length > 0);
+    } catch (err) {
+      if (err.code !== "ENOENT") {
+        this.log("bridge", `state file unreadable, starting with no owned members (${err.message})`);
+      }
+      return [];
+    }
+  }
+
+  #writeOwnedMembers() {
+    if (!this.statePath) return;
+    try {
+      const tmp = `${this.statePath}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify({ ownedMembers: [...this.ownedMembers] }, null, 2)}\n`);
+      fs.renameSync(tmp, this.statePath);
+    } catch (err) {
+      this.log("bridge", `owned-members state write failed (${err.message}) — rename cleanup may be lost on restart`);
+    }
   }
 
   tag(workspace, memberId) {
@@ -155,6 +186,7 @@ export class Bridge {
     const { members, source } = this.#resolveMembers();
 
     const wanted = new Set();
+    let ownedChanged = false;
     for (const workspace of workspaces) {
       for (const member of members) {
         if (!member.enabled) continue;
@@ -167,11 +199,13 @@ export class Bridge {
           this.log(this.tag(workspace, member.id), `member setup failed: ${err.message}`);
           continue;
         }
+        if (!this.ownedMembers.has(member.id)) ownedChanged = true;
         this.ownedMembers.add(member.id);
         this.#ensureLoop(workspace, member);
       }
     }
-    await this.#leaveDisabled(workspaces, members);
+    const leftCount = await this.#leaveDisabled(workspaces, members);
+    if (ownedChanged || leftCount > 0) this.#writeOwnedMembers();
 
     // Loops that are no longer configured (or whose member got muted) stop.
     for (const [key, entry] of [...this.loops]) {
@@ -187,12 +221,19 @@ export class Bridge {
   }
 
   /**
-   * Disabling (or removing) a member deregisters it in im: `im leave`
-   * archives the member and hands its stations back to the user.
+   * Disabling (or removing, or renaming away) a member deregisters it in im:
+   * `im leave` archives the member and hands its stations back to the user.
+   * Returns the number of successful leaves. A left id drops out of the
+   * owned set — responsibility ends with the archive, and a human may then
+   * reuse the id without the bridge leaving it out from under them; a leave
+   * that failed anywhere keeps the id owned so the next tick retries.
    */
   async #leaveDisabled(workspaces, members) {
     const enabledIds = new Set(members.filter((m) => m.enabled).map((m) => m.id));
     const knownIds = new Set([...members.map((m) => m.id), ...this.ownedMembers]);
+    const leftIds = new Set();
+    const failedIds = new Set();
+    let left = 0;
     for (const workspace of workspaces) {
       let roster;
       try {
@@ -207,12 +248,19 @@ export class Bridge {
         if (!entry || entry.status === "archived") continue;
         try {
           await this.runner.leave(workspace, id);
+          left += 1;
+          leftIds.add(id);
           this.log(this.tag(workspace, id), "member disabled — left im (archived, stations released)");
         } catch (err) {
+          failedIds.add(id);
           this.log(this.tag(workspace, id), `leave failed: ${err.message}`);
         }
       }
     }
+    for (const id of leftIds) {
+      if (!failedIds.has(id)) this.ownedMembers.delete(id);
+    }
+    return left;
   }
 
   async #ensureMember(workspace, member) {

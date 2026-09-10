@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Bridge } from "../bridge.mjs";
-import { validateConfig } from "../lib/config.mjs";
+import { readConfigFile, validateConfig } from "../lib/config.mjs";
 
 const WS = "/tmp/im-t3-bridge-test-ws";
 const MEMBER = { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna", options: undefined, runtimeMode: "full-access", enabled: true };
@@ -114,6 +117,29 @@ async function waitFor(predicate, timeoutMs = 2000) {
 
 const quiet = () => {};
 
+/** Write a real bridge config file so `configPath` + state derivation work. */
+function writeBridgeConfig(dir, members) {
+  const configPath = path.join(dir, "t3-bridge.json");
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      t3: { home: "/nonexistent-t3-home-for-tests" },
+      members,
+      workspaces: [WS],
+      rescanSec: 1,
+      receiveTimeoutSec: 1,
+    }),
+  );
+  const loaded = readConfigFile(configPath);
+  assert.equal(loaded.ok, true, JSON.stringify(loaded.errors));
+  return { configPath, config: loaded.config };
+}
+
+const ownedInState = (configPath) => {
+  const statePath = `${configPath.replace(/\.json$/, "")}.state.json`;
+  return JSON.parse(fs.readFileSync(statePath, "utf8")).ownedMembers;
+};
+
 test("guard-join: active member with the exact id never triggers join", async () => {
   const runner = new ScriptedRunner({ roster: [{ id: "t3-codex", status: "active (1s ago)" }] });
   const bridge = new Bridge({ runner, delivery: new FakeDelivery(), config: makeConfig(), logger: quiet });
@@ -183,6 +209,61 @@ test("disabling a member leaves im; removing from config does too", async (t) =>
   bridge.config = makeConfig({ members: [] });
   await bridge.reconcile();
   assert.equal(runner.calls.leave.length, 1); // already archived → no second leave
+});
+
+test("a rename is cleaned up across a bridge restart (persisted owned members)", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "im-t3-bridge-state-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // Generation 1: the bridge joins t3-old and records it in the state file.
+  const first = writeBridgeConfig(dir, [{ id: "t3-old", instance: "codex", model: "gpt-5.6-luna" }]);
+  const runnerA = new ScriptedRunner({ roster: [] });
+  runnerA.rosterSource = () =>
+    runnerA.calls.join.length > 0 ? [{ id: "t3-old", status: "active (1s ago)" }] : [];
+  const bridgeA = new Bridge({ runner: runnerA, delivery: new FakeDelivery(), ...first, logger: quiet });
+  t.after(() => bridgeA.stop());
+  await bridgeA.reconcile();
+  assert.deepEqual(runnerA.calls.join, [[WS, "t3-old"]]);
+  assert.deepEqual(ownedInState(first.configPath), ["t3-old"]);
+
+  // The rename: the table now says t3-new. A restarted bridge (empty memory)
+  // must still archive t3-old via the persisted owned set.
+  const second = writeBridgeConfig(dir, [{ id: "t3-new", instance: "codex", model: "gpt-5.6-luna" }]);
+  const runnerB = new ScriptedRunner({ roster: [] });
+  runnerB.rosterSource = () => [
+    { id: "t3-old", status: "active (1s ago)" },
+    ...(runnerB.calls.join.length > 0 ? [{ id: "t3-new", status: "active (1s ago)" }] : []),
+  ];
+  const bridgeB = new Bridge({ runner: runnerB, delivery: new FakeDelivery(), ...second, logger: quiet });
+  t.after(() => bridgeB.stop());
+  await bridgeB.reconcile();
+  assert.deepEqual(runnerB.calls.join, [[WS, "t3-new"]]);
+  assert.deepEqual(runnerB.calls.leave, [[WS, "t3-old"]]);
+  assert.deepEqual(ownedInState(second.configPath), ["t3-new"]); // responsibility ended
+
+  // Generation 3: the left id must not be re-left nor clobber a manual reuse.
+  runnerB.rosterSource = () => [
+    { id: "t3-old", status: "active (1s ago)" }, // a human re-joined the freed id
+    { id: "t3-new", status: "active (1s ago)" },
+  ];
+  await bridgeB.reconcile();
+  assert.equal(runnerB.calls.leave.length, 1); // t3-old is no longer owned
+  assert.deepEqual(ownedInState(second.configPath), ["t3-new"]);
+});
+
+test("a corrupt state file is tolerated — the bridge starts with no owned members", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "im-t3-bridge-state-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { configPath, config } = writeBridgeConfig(dir, [
+    { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna" },
+  ]);
+  fs.writeFileSync(`${configPath.replace(/\.json$/, "")}.state.json`, "{ not json");
+  const runner = new ScriptedRunner({ roster: [{ id: "t3-codex", status: "active (1s ago)" }] });
+  const bridge = new Bridge({ runner, delivery: new FakeDelivery(), config, configPath, logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile(); // must not throw
+  assert.deepEqual(ownedInState(configPath), ["t3-codex"]); // rewritten clean
+  assert.equal(runner.calls.leave.length, 0);
 });
 
 test("arrival: mission show re-verified, then delivered with the brief", async () => {

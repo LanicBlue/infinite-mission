@@ -60,6 +60,12 @@ tool path (im is a local CLI over SQLite).
      completed-but-unsettled (cosmetic).
 - **Membership end → loop stops** — an archived/removed member is muted for
   the process lifetime; restart the bridge after re-joining.
+- **Rename/remove cleanup survives restarts** — every id the bridge joins is
+  recorded in `<config>.state.json` (`~/.im/t3-bridge.state.json`). Renaming
+  or removing a member in T3 settings archives the old id via `im leave`
+  (releasing its stations) even if the bridge restarted in between; a left id
+  drops out of the file, so a human may reuse it. Station bindings do not
+  migrate to the new id — rebind with `im work set-executor`.
 - **T3 auth** — a bearer token issued offline via `t3 auth session issue`
   (label `im-t3-bridge`, 30-day TTL, auto re-issue on 401/expiry). Revoke
   with `t3 auth session list` / `revoke`.
