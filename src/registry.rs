@@ -87,8 +87,7 @@ pub fn remove(workspace: &Path) -> Result<bool> {
     // resolves symlinks); match caller input against them so `/tmp/x`
     // finds `/private/tmp/x`. Fall back to the raw path for ghosts whose
     // directory no longer exists.
-    let target =
-        std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let target = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let removed = remove_at(&registry_path()?, &target)?;
     mirror_bridge(&[], &[target]);
     Ok(removed)
@@ -120,7 +119,11 @@ fn prune_at(path: &Path) -> Result<Vec<PathBuf>> {
         .filter(|p| p.join(".im").is_dir())
         .cloned()
         .collect();
-    let dropped: Vec<PathBuf> = before.iter().filter(|p| !kept.contains(p)).cloned().collect();
+    let dropped: Vec<PathBuf> = before
+        .iter()
+        .filter(|p| !kept.contains(p))
+        .cloned()
+        .collect();
     std::fs::write(
         path,
         serde_json::to_string_pretty(&Registry { workspaces: kept })? + "\n",
@@ -154,10 +157,10 @@ fn mirror_bridge(added: &[PathBuf], dropped: &[PathBuf]) {
 }
 
 fn mirror_bridge_at(config: &Path, added: &[PathBuf], dropped: &[PathBuf]) -> Result<()> {
-    let raw = std::fs::read_to_string(config)
-        .with_context(|| format!("reading {}", config.display()))?;
-    let mut root: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {}", config.display()))?;
+    let raw =
+        std::fs::read_to_string(config).with_context(|| format!("reading {}", config.display()))?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", config.display()))?;
     // 跟随模式（null 或无 workspaces 键）：桥直接读注册表，没有要维护的
     // 清单——静默成功，别把「无需同步」当失败警告刷屏
     let list = match root.get_mut("workspaces") {
@@ -256,9 +259,10 @@ mod tests {
         dir
     }
     fn bridge_entries(dir: &tempfile::TempDir) -> Vec<String> {
-        let root: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join("t3-bridge.json")).unwrap())
-                .unwrap();
+        let root: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("t3-bridge.json")).unwrap(),
+        )
+        .unwrap();
         root["workspaces"]
             .as_array()
             .unwrap()
@@ -280,7 +284,12 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
         assert_eq!(root["receiveTimeoutSec"], 600);
         // 移除：只掉目标；未在册的移除也无害
-        mirror_bridge_at(&config, &[], &[PathBuf::from("/ws/a"), PathBuf::from("/nope")]).unwrap();
+        mirror_bridge_at(
+            &config,
+            &[],
+            &[PathBuf::from("/ws/a"), PathBuf::from("/nope")],
+        )
+        .unwrap();
         assert_eq!(bridge_entries(&dir), vec!["/ws/b", "/ws/c"]);
         // 跟随模式（null/缺键）拒绝改写且文件原样——现在是静默 Ok
         let follow = bridge_config("null");

@@ -731,7 +731,9 @@ fn console_page_keeps_five_pane_ia_and_ask_controls() {
         page.contains("type: \"result_ack\""),
         "ack must post result_ack"
     );
-    let ack_idx = page.find("case \"result-ack\"").expect("result-ack handler");
+    let ack_idx = page
+        .find("case \"result-ack\"")
+        .expect("result-ack handler");
     let ack_slice = &page[ack_idx..ack_idx + 120];
     assert!(
         !ack_slice.contains("mission_submit"),
