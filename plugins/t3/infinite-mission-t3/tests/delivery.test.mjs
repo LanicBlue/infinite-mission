@@ -114,10 +114,15 @@ test("modelSelectionOf passes options through", () => {
   });
 });
 
-test("dutyPreamble names the member and forbids join/receive", () => {
-  const text = dutyPreamble("t3-codex", "/w");
-  assert.match(text, /im mission submit t3-codex/);
-  assert.match(text, /im mission doc read t3-codex/);
+test("dutyPreamble names the member, pre-binds the mission, forbids join/receive", () => {
+  const text = dutyPreamble("t3-codex", "/w", "ms_aaaabbbbccccdddd");
+  assert.match(text, /im mission submit t3-codex ms_aaaabbbbccccdddd --revision <N>/);
+  assert.match(text, /im mission show ms_aaaabbbbccccdddd --for t3-codex/);
+  assert.match(text, /im mission doc read t3-codex ms_aaaabbbbccccdddd/);
+  // Placeholders invite placeholder submissions: no <missionId> may survive.
+  assert.doesNotMatch(text, /<missionId>/);
+  assert.match(text, /\(needs --result\)/);
+  assert.match(text, /\(needs --feedback\)/);
   assert.match(text, /Never run "im join" or "im receive"/);
 });
 

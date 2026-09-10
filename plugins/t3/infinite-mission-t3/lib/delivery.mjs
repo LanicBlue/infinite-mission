@@ -48,9 +48,10 @@ export function modelSelectionOf(member) {
  * the same contract the DSH bridge proved: the agent itself submits; the
  * bridge never submits on its behalf.
  */
-export function dutyPreamble(member, workspace) {
+export function dutyPreamble(member, workspace, missionId) {
   // Accepts the member object (preferred — carries the display name) or a
-  // bare id (tests, legacy callers).
+  // bare id (tests, legacy callers). missionId is pre-bound so every command
+  // is copy-pasteable — placeholders invite placeholder submissions.
   const memberId = typeof member === "string" ? member : member.id;
   const displayName = typeof member === "string" ? "" : (member.displayName?.trim() ?? "");
   const identity = displayName
@@ -63,15 +64,16 @@ export function dutyPreamble(member, workspace) {
     `failed round:`,
     ``,
     `  1. Re-read the mission at any time:`,
-    `       im mission show <missionId> --for ${memberId}`,
+    `       im mission show ${missionId} --for ${memberId}`,
     `  2. Mission documents (only if the brief lists them):`,
-    `       im mission doc read ${memberId} <missionId> <path>`,
-    `       im mission doc write ${memberId} <missionId> --id <docId> --file <path-or->`,
-    `  3. Submitting IS the deliverable:`,
-    `       im mission submit ${memberId} <missionId> --revision <N> --outcome <permitted> \\`,
-    `         [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>]`,
-    `     Take --revision and the permitted outcomes from the brief. Attach document`,
-    `     receipts from step 2 when the brief requires them.`,
+    `       im mission doc read ${memberId} ${missionId} <path>`,
+    `       im mission doc write ${memberId} ${missionId} --id <docId> --file <path-or->`,
+    `  3. Submitting IS the deliverable (full flag reference; the reminder at the`,
+    `     end of the brief carries the minimal form):`,
+    `       im mission submit ${memberId} ${missionId} --revision <N> --outcome <permitted> \\`,
+    `         [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>] [--result <text>]`,
+    `     Take --revision and the permitted outcomes from the brief; outcomes marked`,
+    `     "(needs --result)" / "(needs --feedback)" require that flag non-empty.`,
     ``,
     `Never run "im join" or "im receive" — the bridge owns the member identity and`,
     `the listening loop. Run im commands from the workspace root (your current project).`,
@@ -278,7 +280,7 @@ export class Delivery {
         role: "user",
         text: ended
           ? `${resultPreamble(member.id, workspacePath)}\n${brief}${resultTailReminder(member.id, missionId)}`
-          : `${dutyPreamble(member, workspacePath)}\n${brief}${dutyTailReminder(member, missionId)}`,
+          : `${dutyPreamble(member, workspacePath, missionId)}\n${brief}${dutyTailReminder(member, missionId)}`,
         attachments: [],
       },
       // Each turn restates the member's selection, so the runtime identity
