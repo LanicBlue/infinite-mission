@@ -679,12 +679,17 @@ impl Store {
             .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload))
             .transpose()?
             .unwrap_or_default();
+        // Only a completed mission has a terminal result: a cancelled or
+        // deleted one may still carry mid-flight rounds, and surfacing their
+        // payloads as "the result" would pass intermediate work off as the
+        // final answer.
+        let completed = mission.ended_disposition.as_deref() == Some("completed");
         Ok(json!({
             "missionId": mission_id,
             "originWork": mission.origin_work,
             "disposition": mission.ended_disposition,
             "outcome": ended["outcome"],
-            "result": round["result"],
+            "result": if completed { round["result"].clone() } else { serde_json::Value::Null },
             "reason": if round["reason"].is_null() { &ended["reason"] } else { &round["reason"] },
             "resolvedBy": round["resolvedBy"],
             "endedAt": mission.ended_at,
@@ -765,6 +770,21 @@ impl Store {
             format!("station '{at}' has no discipline in this mission's contract")
         })?;
 
+        // Payload bounds apply to every outcome — abandon included: result
+        // and reason become round/ended events no matter how the mission
+        // ends, so an oversized payload must not slip through the early
+        // abandon return.
+        if let Some(result) = submission.result {
+            if result.trim().is_empty() || result.len() > 16_384 {
+                bail!("result must be 1..=16384 UTF-8 bytes when given");
+            }
+        }
+        if let Some(reason_text) = submission.reason {
+            if reason_text.len() > 2000 || reason_text.trim().is_empty() {
+                bail!("reason must be 1..=2000 chars when given");
+            }
+        }
+
         // Receipts: minted at THIS station, inside its write rights.
         let mut frozen_receipts = Vec::new();
         for receipt_id in submission.receipt_ids {
@@ -799,11 +819,6 @@ impl Store {
         if outcome == contract::ABANDON {
             if submission.next_node.is_some() {
                 bail!("abandon does not accept a next node");
-            }
-            if let Some(reason_text) = submission.reason {
-                if reason_text.trim().is_empty() {
-                    bail!("reason must be non-empty when given");
-                }
             }
             return self.end_mission_tx(
                 &mission,
@@ -845,16 +860,6 @@ impl Store {
             && submission.result.map(str::trim).unwrap_or("").is_empty()
         {
             bail!("outcome '{outcome}' requires a non-empty result");
-        }
-        if let Some(result) = submission.result {
-            if result.trim().is_empty() || result.len() > 16_384 {
-                bail!("result must be 1..=16384 UTF-8 bytes when given");
-            }
-        }
-        if let Some(reason_text) = submission.reason {
-            if reason_text.len() > 2000 || reason_text.trim().is_empty() {
-                bail!("reason must be 1..=2000 chars when given");
-            }
         }
 
         let terminal = discipline.completion.terminal.iter().any(|o| o == outcome);

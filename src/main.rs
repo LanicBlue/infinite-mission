@@ -19,10 +19,13 @@ fn main() -> Result<()> {
             let mut name: Option<String> = None;
             let rest: Vec<String> = args.collect();
             if rest.first().map(String::as_str) == Some("--name") {
-                match rest.get(1) {
-                    Some(value) if !value.trim().is_empty() => name = Some(value.clone()),
-                    _ => bail!("Usage: im join <id> [--name <display name>]"),
+                // Multi-word names join like `im rename` does — dropping
+                // words silently would label the agent wrong.
+                let words = rest[1..].join(" ");
+                if words.trim().is_empty() {
+                    bail!("Usage: im join <id> [--name <display name>]");
                 }
+                name = Some(words);
             } else if !rest.is_empty() {
                 bail!("Usage: im join <id> [--name <display name>]");
             }
@@ -47,8 +50,16 @@ fn main() -> Result<()> {
             cmd_rename(&id, &text.join(" "))
         }
         "agents" => {
-            let show_all = args.next().as_deref() == Some("--all");
-            cmd_agents(show_all)
+            let mut show_all = false;
+            let mut json = false;
+            for arg in args.by_ref() {
+                match arg.as_str() {
+                    "--all" => show_all = true,
+                    "--json" => json = true,
+                    other => bail!("unknown agents flag: {other} (use --all and/or --json)"),
+                }
+            }
+            cmd_agents(show_all, json)
         }
         "send" => cmd_send_removed(),
         "receive" => cmd_receive(args.collect()),
@@ -184,7 +195,9 @@ fn cmd_rename(id: &str, text: &str) -> Result<()> {
     let store = open_store(&workspace)?;
     let name = if text.trim() == "-" { None } else { Some(text) };
     store.set_agent_display_name(id, name)?;
-    match name {
+    // Print what the store actually settled on (it trims; whitespace-only
+    // clears the name) — never a value that was silently normalized away.
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(name) => println!("{id} now shows as \"{name}\"."),
         None => println!("{id} display name cleared."),
     }
@@ -208,36 +221,64 @@ fn cmd_leave(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_agents(show_all: bool) -> Result<()> {
+fn cmd_agents(show_all: bool, json: bool) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     let agents = store.list_agents(show_all)?;
+    if json {
+        // The machine contract for programmatic consumers (the t3 bridge):
+        // ids, names, and status as stable tokens — never a line format a
+        // free-text display name could corrupt.
+        let now_ts = chrono::Utc::now().timestamp();
+        let rows: Vec<serde_json::Value> = agents
+            .iter()
+            .map(|agent| {
+                serde_json::json!({
+                    "id": agent.id,
+                    "displayName": agent.display_name,
+                    "label": agent.label(),
+                    "status": agent_liveness(agent, now_ts),
+                    "lastSeen": agent.last_seen,
+                    "tier": agent.tier.as_str(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
     if agents.is_empty() {
         println!("No agents online.");
         return Ok(());
     }
     let now_ts = chrono::Utc::now().timestamp();
     for agent in &agents {
-        let status = if agent.status == "archived" {
-            "archived".to_string()
-        } else {
-            match agent.last_seen {
-                Some(ts) => {
-                    let ago = now_ts - ts;
-                    if ago < 60 {
-                        format!("active ({}s ago)", ago)
-                    } else if ago < 600 {
-                        format!("idle ({}m ago)", ago / 60)
-                    } else {
-                        format!("stale ({}m ago)", ago / 60)
-                    }
-                }
-                None => "unknown".to_string(),
-            }
-        };
-        println!("  {} — {status} [{}]", agent.label(), agent.tier.as_str());
+        println!(
+            "  {} — {} [{}]",
+            agent.label(),
+            agent_liveness(agent, now_ts),
+            agent.tier.as_str()
+        );
     }
     Ok(())
+}
+
+fn agent_liveness(agent: &im::records::AgentRecord, now_ts: i64) -> String {
+    if agent.status == "archived" {
+        return "archived".to_string();
+    }
+    match agent.last_seen {
+        Some(ts) => {
+            let ago = now_ts - ts;
+            if ago < 60 {
+                "active".to_string()
+            } else if ago < 600 {
+                "idle".to_string()
+            } else {
+                "stale".to_string()
+            }
+        }
+        None => "unknown".to_string(),
+    }
 }
 
 // --- Inbox (system notices + station arrivals; no peer chat) ---

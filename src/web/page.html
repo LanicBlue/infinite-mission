@@ -523,7 +523,7 @@ function missionCreateModal() {
 
 function askCreateModal() {
 	const works = liveWorks();
-	const options = works.map(w => `<option value="${esc(w.work_key)}">${esc(w.work_key)}${w.executor ? ` · ${esc(w.executor)}` : " · 用户工位"}</option>`).join("");
+	const options = works.map(w => `<option value="${esc(w.work_key)}">${esc(w.work_key)}${w.executor ? ` · ${esc(agentLabel(w.executor))}` : " · 用户工位"}</option>`).join("");
 	openModal(`
 		<form data-form="ask-create">
 		<div class="modal-head"><h3 id="modal-title">快速提问</h3><button type="button" class="close" data-act="modal-close" aria-label="关闭">✕</button></div>

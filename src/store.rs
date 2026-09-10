@@ -102,6 +102,28 @@ fn schema() -> String {
     .to_string()
 }
 
+/// Display names are free labels, but they surface in line-oriented tooling
+/// (`im agents`) and get echoed across console/bridge surfaces — control
+/// characters would corrupt the roster format and oversized names just bloat
+/// logs. Trimmed empty means "no name" (clear), anything else must be short
+/// and printable.
+fn normalize_display_name(display_name: Option<&str>) -> Result<Option<String>> {
+    let Some(raw) = display_name else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > 64 {
+        bail!("display name must be at most 64 characters");
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        bail!("display name must not contain control characters (newlines, tabs, …)");
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 pub struct Store {
     pub conn: Connection,
 }
@@ -292,7 +314,7 @@ impl Store {
         display_name: Option<&str>,
     ) -> Result<(String, String)> {
         let now = chrono::Utc::now().timestamp();
-        let name = display_name.map(str::trim).filter(|n| !n.is_empty());
+        let name = normalize_display_name(display_name)?;
         let candidates = std::iter::once(requested_id.to_string())
             .chain((2..=99).map(|i| format!("{}-{}", requested_id, i)));
         for candidate in candidates {
@@ -322,7 +344,7 @@ impl Store {
     /// Set (or clear with `-`) an agent's display name — the only rename im
     /// will ever need: the id stays the key, stations and threads untouched.
     pub fn set_agent_display_name(&self, id: &str, display_name: Option<&str>) -> Result<()> {
-        let name = display_name.map(str::trim).filter(|n| !n.is_empty());
+        let name = normalize_display_name(display_name)?;
         let updated = self.conn.execute(
             "UPDATE agents SET display_name = ?2 WHERE id = ?1",
             params![id, name],

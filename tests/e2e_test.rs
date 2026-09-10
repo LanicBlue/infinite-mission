@@ -67,6 +67,64 @@ fn join_collision_appends_suffix() {
         .stdout(predicate::str::contains("alice-2"));
 }
 
+/// The display-name CLI surface: multi-word `--name` joins like rename,
+/// control characters are rejected at write time (they would corrupt the
+/// roster lines programmatic consumers parse), and `--json` exposes ids and
+/// names as a machine contract that no free-text name can break.
+#[test]
+fn display_name_cli_surface_is_parse_safe() {
+    let tmp = setup_workspace();
+    let ws = tmp.path();
+
+    // Multi-word --name must not silently drop words.
+    im(ws)
+        .args(["join", "m-1", "--name", "John", "Doe"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Joined as m-1"));
+    im(ws)
+        .args(["rename", "m-1", "   "])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("display name cleared"));
+    im(ws)
+        .args(["rename", "m-1", "GLM — main"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GLM — main"));
+
+    // Control characters are rejected on every write path.
+    im(ws)
+        .args(["rename", "m-1", "two\nlines"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("control characters"));
+    im(ws)
+        .args(["join", "m-2", "--name", "bad\tname"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("control characters"));
+    im(ws)
+        .args(["rename", "m-1", &"x".repeat(65)])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("64"));
+
+    // The JSON roster survives names that break the human line format.
+    let output = im(ws).args(["agents", "--all", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let rows: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("agents --json must be a JSON array");
+    let rows = rows.as_array().expect("array");
+    let m1 = rows
+        .iter()
+        .find(|row| row["id"] == "m-1")
+        .expect("m-1 in roster");
+    assert_eq!(m1["displayName"].as_str(), Some("GLM — main"));
+    assert_eq!(m1["label"].as_str(), Some("GLM — main (m-1)"));
+    assert!(m1["status"].is_string() && m1["tier"].is_string());
+}
+
 #[test]
 fn peer_send_is_rejected() {
     let tmp = setup_workspace();

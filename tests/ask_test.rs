@@ -922,8 +922,54 @@ fn cancellation_is_a_durable_distinct_disposition() {
         .assert()
         .success()
         .stdout(predicate::str::contains("no longer needed"))
-        .stdout(predicate::str::contains("cancelled"));
+        .stdout(predicate::str::contains("cancelled"))
+        // Only a completed mission carries a result — a cancelled one must
+        // not pass mid-flight payloads off as the final answer.
+        .stdout(predicate::str::contains("\"result\": null"));
     assert_eq!(note_count(ws, "origin"), 1);
+}
+
+#[test]
+fn abandon_cannot_smuggle_an_oversized_result_past_validation() {
+    let tmp = setup();
+    let ws = tmp.path();
+    let ms = create_ask(ws, "q1");
+    let oversized = "x".repeat(20_000);
+    // abandon short-circuits before the outcome vocabulary — the payload
+    // bounds must be checked before that early return, same as answered.
+    im(ws)
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "abandon",
+            "--result",
+            &oversized,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("16384"));
+    assert_eq!(note_count(ws, "origin"), 0, "no trace of the losing submit");
+    // The mission is untouched and still answerable.
+    im(ws)
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "still fine",
+        ])
+        .assert()
+        .success();
 }
 
 // --- Leave / user work / self-ask --------------------------------------------
