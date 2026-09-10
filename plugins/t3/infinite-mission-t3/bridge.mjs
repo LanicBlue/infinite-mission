@@ -210,12 +210,14 @@ export class Bridge {
         const key = this.key(workspace, member.id);
         if (this.muted.has(key)) continue;
         wanted.add(key);
+        let ensured = null;
         try {
-          await this.#ensureMember(workspace, member);
+          ensured = await this.#ensureMember(workspace, member);
         } catch (err) {
           this.log(this.tag(workspace, member.id), `member setup failed: ${err.message}`);
           continue;
         }
+        await this.#syncMemberName(workspace, member, ensured);
         if (!this.ownedMembers.has(member.id)) ownedChanged = true;
         this.ownedMembers.add(member.id);
         this.#ensureLoop(workspace, member);
@@ -284,13 +286,32 @@ export class Bridge {
   async #ensureMember(workspace, member) {
     const roster = await this.runner.roster(workspace);
     const exact = roster.find((agent) => agent.id === member.id);
-    if (exact && exact.status !== "archived") return;
+    if (exact && exact.status !== "archived") return exact;
     // Absent OR archived → join reactivates the same id (disable → `im leave`
     // archives it; re-enabling must bring it back).
     await this.runner.join(workspace, member.id);
     const rosterAfter = await this.runner.roster(workspace);
-    if (!rosterAfter.some((agent) => agent.id === member.id)) {
+    const landed = rosterAfter.find((agent) => agent.id === member.id);
+    if (!landed) {
       throw new Error("join landed on a suffixed id (im adds -2 on conflict) — resolve the conflict or rename the member");
+    }
+    return landed;
+  }
+
+  /**
+   * Keep im's display label in step with the member table: name edits in T3
+   * settings land here within a tick as `im rename` (id-level rename no longer
+   * exists — the id is a generated machine key that never changes).
+   */
+  async #syncMemberName(workspace, member, rosterEntry) {
+    if (!rosterEntry) return;
+    const wanted = member.displayName?.trim() || null;
+    if ((rosterEntry.name ?? null) === wanted) return;
+    try {
+      await this.runner.rename(workspace, member.id, wanted);
+      this.log(this.tag(workspace, member.id), `display name → ${wanted ?? "(cleared)"}`);
+    } catch (err) {
+      this.log(this.tag(workspace, member.id), `rename failed: ${err.message}`);
     }
   }
 

@@ -112,6 +112,7 @@ export function validateConfig(raw) {
       if (!instance) add(`${where}.instance`, "is required (a T3 provider instance id)");
       const model = trim(entry.model);
       if (!model) add(`${where}.model`, "is required (see T3's model picker for valid slugs)");
+      const displayName = trim(entry.displayName);
       const runtimeMode = entry.runtimeMode ?? "full-access";
       if (!RUNTIME_MODES.includes(runtimeMode)) {
         add(`${where}.runtimeMode`, `must be one of ${RUNTIME_MODES.join(" | ")}`);
@@ -126,7 +127,7 @@ export function validateConfig(raw) {
       }
       const enabled = entry.enabled ?? true;
       if (typeof enabled !== "boolean") add(`${where}.enabled`, "must be a boolean");
-      members.push({ id: id || `member-${index}`, instance, model, options, runtimeMode, enabled });
+      members.push({ id: id || `member-${index}`, displayName: displayName || undefined, instance, model, options, runtimeMode, enabled });
     });
   }
 
@@ -182,8 +183,10 @@ export function readT3ImMembers(t3Home) {
     if (!MEMBER_ID_RE.test(id) || !instance || !model || seen.has(id)) continue;
     seen.add(id);
     const runtimeMode = RUNTIME_MODES.includes(entry.runtimeMode) ? entry.runtimeMode : "full-access";
+    const displayName = trim(entry?.displayName);
     members.push({
       id,
+      displayName: displayName || undefined,
       instance,
       model,
       options: entry.options && typeof entry.options === "object" && !Array.isArray(entry.options) ? entry.options : undefined,

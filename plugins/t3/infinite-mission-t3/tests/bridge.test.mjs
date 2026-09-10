@@ -35,7 +35,7 @@ class ScriptedRunner {
     this.missionsSource = missions;
     this.resultsSource = results;
     this.calls = {
-      roster: [], join: [], leave: [], receive: [], missionShow: [], missionResult: [], missionEvents: [], missions: [], results: [], workspaces: 0,
+      roster: [], join: [], leave: [], rename: [], receive: [], missionShow: [], missionResult: [], missionEvents: [], missions: [], results: [], workspaces: 0,
     };
   }
   async roster(workspace) {
@@ -45,6 +45,10 @@ class ScriptedRunner {
   async join(workspace, memberId) {
     this.calls.join.push([workspace, memberId]);
     return { code: 0, stdout: `Joined as ${memberId}.` };
+  }
+  async rename(workspace, memberId, name) {
+    this.calls.rename.push([workspace, memberId, name]);
+    return `${memberId} now shows as ${name ?? "(cleared)"}.`;
   }
   async leave(workspace, memberId) {
     this.calls.leave.push([workspace, memberId]);
@@ -843,4 +847,29 @@ test("a delivery in flight absorbs the concurrent triggers: loop arrival, sweep,
   assert.ok(await waitFor(() => runner.calls.receive.length >= 2)); // the loop consumed its arrival and re-hung
   assert.equal(delivery.deliverCalls.length, 1); // exactly one delivery, one thread
   assert.equal(bridge.watching.length, 1);
+});
+
+test("member display names sync into im as renames; in-step names are left alone", async (t) => {
+  // im echoes the name back once set — the scripted runner mirrors that.
+  let imName = null;
+  const runner = new ScriptedRunner({ roster: [] });
+  runner.rosterSource = () => [{ id: "t3-codex", name: imName, status: "active (1s ago)" }];
+  runner.rename = async (workspace, memberId, name) => {
+    runner.calls.rename.push([workspace, memberId, name]);
+    imName = name;
+    return `${memberId} renamed`;
+  };
+  const member = { id: "t3-codex", displayName: "Codex 主力", instance: "codex", model: "gpt-5.6-luna" };
+  const bridge = new Bridge({ runner, delivery: new FakeDelivery(), config: makeConfig({ members: [member] }), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.deepEqual(runner.calls.rename, [[WS, "t3-codex", "Codex 主力"]]);
+  await bridge.reconcile(); // already in step — no second rename
+  assert.equal(runner.calls.rename.length, 1);
+  // Clearing the name in the member table clears it in im (fallback to id).
+  bridge.config = makeConfig({ members: [{ id: "t3-codex", instance: "codex", model: "gpt-5.6-luna" }] });
+  await bridge.reconcile();
+  assert.deepEqual(runner.calls.rename[1], [WS, "t3-codex", null]);
+  await bridge.reconcile();
+  assert.equal(runner.calls.rename.length, 2); // settled again
 });

@@ -23,15 +23,18 @@ export function isMissionThreadId(threadId, memberId, missionId) {
 
 /** `[mission ms_x] NAME — status` → a T3 display title (missionId as fallback).
  * The header may sit a few lines down (result briefs open with a marker), so
- * the first lines are scanned but the match stays line-anchored. */
-export function titleFromBrief(brief, memberId, station, missionId) {
+ * the first lines are scanned but the match stays line-anchored. Shows the
+ * member's display name when set — the id in the title is meaningless noise. */
+export function titleFromBrief(brief, member, station, missionId) {
+  const memberId = typeof member === "string" ? member : member.id;
+  const who = typeof member === "string" ? member : (member.displayName?.trim() || member.id);
   const lines = String(brief).split("\n");
   const header = lines
     .slice(0, 5)
     .map((line) => line.match(/^\[mission ms_[0-9a-f]{6,64}\] (.*)$/))
     .find(Boolean);
   const name = header ? header[1].split(" — ")[0].trim() : "";
-  return `im/${memberId}@${station}: ${name || missionId}`;
+  return `im/${who}@${station}: ${name || missionId}`;
 }
 
 export function modelSelectionOf(member) {
@@ -45,9 +48,16 @@ export function modelSelectionOf(member) {
  * the same contract the DSH bridge proved: the agent itself submits; the
  * bridge never submits on its behalf.
  */
-export function dutyPreamble(memberId, workspace) {
+export function dutyPreamble(member, workspace) {
+  // Accepts the member object (preferred — carries the display name) or a
+  // bare id (tests, legacy callers).
+  const memberId = typeof member === "string" ? member : member.id;
+  const displayName = typeof member === "string" ? "" : (member.displayName?.trim() ?? "");
+  const identity = displayName
+    ? `"${memberId}" (display name "${displayName}")`
+    : `"${memberId}"`;
   return [
-    `You are the InfiniteMission member "${memberId}" in workspace ${workspace}.`,
+    `You are the InfiniteMission member ${identity} in workspace ${workspace}.`,
     `A mission brief follows below the line. Read it, do the work it asks for in this`,
     `workspace, then close your round by submitting — a round without a submit is a`,
     `failed round:`,
@@ -221,7 +231,7 @@ export class Delivery {
       message: {
         messageId: randomUUID(),
         role: "user",
-        text: `${ended ? resultPreamble(member.id, workspacePath) : dutyPreamble(member.id, workspacePath)}\n${brief}`,
+        text: `${ended ? resultPreamble(member.id, workspacePath) : dutyPreamble(member, workspacePath)}\n${brief}`,
         attachments: [],
       },
       // Each turn restates the member's selection, so the runtime identity
@@ -240,7 +250,7 @@ export class Delivery {
       commandId: randomUUID(),
       threadId,
       projectId,
-      title: titleFromBrief(brief, member.id, station, missionId),
+      title: titleFromBrief(brief, member, station, missionId),
       modelSelection: modelSelectionOf(member),
       runtimeMode: member.runtimeMode,
       interactionMode: "default",
