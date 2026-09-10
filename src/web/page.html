@@ -762,7 +762,7 @@ document.addEventListener("click", async e => {
 			markField("question", !question);
 			markField("key", !key);
 			if (!originWork || !targetWork || !question || !key) { const msg = "来源、目标、问题和幂等 key 都必填"; setModalStatus(msg, false); toast(msg, false); break; }
-			if (await act({ type: "ask_create", originWork, targetWork, question, key })) closeModal();
+			if (await act({ type: "mission_create", originWork, targetWork, objective: question, key })) closeModal();
 			break;
 		}
 		case "result-ack": await act({ type: "result_ack", noteId: Number(d.noteId) }); break;

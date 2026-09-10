@@ -1177,7 +1177,7 @@ impl Store {
         }
         let contract = parse_contract(&mission.contract_json)?;
         if contract.template.as_ref().map(|t| t.path.as_str()) != Some("builtin:ask/v1") {
-            bail!("only built-in asks can be cancelled with `im ask cancel`");
+            bail!("only template-less ask missions can be cancelled with `im mission cancel`");
         }
         let origin = mission
             .origin_work

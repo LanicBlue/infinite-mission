@@ -4,10 +4,13 @@
 //! CLI spellings frozen for these tests (assumption — if the implementation
 //! lands with different spellings, update THIS header and the args, never the
 //! invariants):
-//!   im ask <agent> --from <origin> --to <target> --key <key> <question...>
-//!   im answer <agent> <ms> --revision <N> <answer...>
-//!   im decline <agent> <ms> --revision <N> [--reason <text>]
-//!   im ask cancel <agent> <ms> --revision <N> [--reason <text>]
+//!   im mission create <op> --from <origin> --to <target> --key <key>
+//!       --objective <question>   (template-less ask form; no template file)
+//!   im mission submit <agent> <ms> --revision <N> --outcome answered
+//!       --result <answer...>
+//!   im mission submit <agent> <ms> --revision <N> --outcome declined
+//!       --reason <text>
+//!   im mission cancel <agent> <ms> --revision <N> [--reason <text>]
 //!   im results <agent>          (result read plane, duty-station scoped)
 //!   im mission result <ms>      (durable result for one ask)
 //!   im mission create <op> --from <origin> --template <t> --key <k>
@@ -101,7 +104,17 @@ fn seed_tier(ws: &Path, id: &str, tier: &str) {
 fn ask(ws: &Path, agent: &str, from: &str, to: &str, key: &str, question: &str) -> Command {
     let mut cmd = im(ws);
     cmd.args([
-        "ask", agent, "--from", from, "--to", to, "--key", key, question,
+        "mission",
+        "create",
+        agent,
+        "--from",
+        from,
+        "--to",
+        to,
+        "--key",
+        key,
+        "--objective",
+        question,
     ]);
     cmd
 }
@@ -428,18 +441,33 @@ fn answer_ends_mission_and_returns_result_exactly_once() {
 
     // A losing answer (stale revision) must leave NO trace: no note, no end.
     im(ws)
-        .args(["answer", "bob", &ms, "--revision", "99", "too late"])
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "99",
+            "--outcome",
+            "answered",
+            "--result",
+            "too late",
+        ])
         .assert()
         .failure();
     assert_eq!(note_count(ws, "origin"), 0);
 
     im(ws)
         .args([
-            "answer",
+            "mission",
+            "submit",
             "bob",
             &ms,
             "--revision",
             "1",
+            "--outcome",
+            "answered",
+            "--result",
             "the widget ships first",
         ])
         .assert()
@@ -484,11 +512,14 @@ fn decline_ends_ask_and_returns_outcome_to_origin() {
     let ms = create_ask(ws, "q1");
     im(ws)
         .args([
-            "decline",
+            "mission",
+            "submit",
             "bob",
             &ms,
             "--revision",
             "1",
+            "--outcome",
+            "declined",
             "--reason",
             "out of scope",
         ])
@@ -515,7 +546,18 @@ fn answer_rejects_empty_and_preserves_text_over_the_reason_cap() {
     let ms = create_ask(ws, "q1");
 
     im(ws)
-        .args(["answer", "bob", &ms, "--revision", "1", "   "])
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "   ",
+        ])
         .assert()
         .failure();
 
@@ -523,7 +565,18 @@ fn answer_rejects_empty_and_preserves_text_over_the_reason_cap() {
     // rides on reason this fails — answers need their own bounded payload.
     let long = format!("{}END-OF-ANSWER", "x".repeat(2001));
     im(ws)
-        .args(["answer", "bob", &ms, "--revision", "1", &long])
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            &long,
+        ])
         .assert()
         .success();
     im(ws)
@@ -547,16 +600,31 @@ fn target_rebind_hands_the_round_to_the_new_executor() {
 
     // The stale executor cannot answer; attribution follows the current duty.
     im(ws)
-        .args(["answer", "bob", &ms, "--revision", "1", "stale"])
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "stale",
+        ])
         .assert()
         .failure();
     im(ws)
         .args([
-            "answer",
+            "mission",
+            "submit",
             "pat",
             &ms,
             "--revision",
             "1",
+            "--outcome",
+            "answered",
+            "--result",
             "from the new executor",
         ])
         .assert()
@@ -581,11 +649,15 @@ fn origin_rebind_delivers_the_result_to_the_new_executor() {
 
     im(ws)
         .args([
-            "answer",
+            "mission",
+            "submit",
             "bob",
             &ms,
             "--revision",
             "1",
+            "--outcome",
+            "answered",
+            "--result",
             "for whoever holds origin",
         ])
         .assert()
@@ -626,7 +698,18 @@ fn pending_ask_locks_both_origin_and_target_stations() {
 
     // The lock is a pending-ask lock: both stations free again after the end.
     im(ws)
-        .args(["answer", "bob", &ms, "--revision", "1", "done"])
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "done",
+        ])
         .assert()
         .success();
     im(ws)
@@ -656,7 +739,18 @@ fn double_answer_race_admits_exactly_one_result() {
     let j1 = std::thread::spawn(move || {
         barrier.wait();
         im(&ws1)
-            .args(["answer", "bob", &ms1, "--revision", "1", "first"])
+            .args([
+                "mission",
+                "submit",
+                "bob",
+                &ms1,
+                "--revision",
+                "1",
+                "--outcome",
+                "answered",
+                "--result",
+                "first",
+            ])
             .output()
             .unwrap()
             .status
@@ -665,7 +759,18 @@ fn double_answer_race_admits_exactly_one_result() {
     let j2 = std::thread::spawn(move || {
         b2.wait();
         im(&ws2)
-            .args(["answer", "bob", &ms2, "--revision", "1", "second"])
+            .args([
+                "mission",
+                "submit",
+                "bob",
+                &ms2,
+                "--revision",
+                "1",
+                "--outcome",
+                "answered",
+                "--result",
+                "second",
+            ])
             .output()
             .unwrap()
             .status
@@ -703,7 +808,18 @@ fn answer_and_cancel_race_admit_exactly_one_outcome() {
     let j1 = std::thread::spawn(move || {
         barrier.wait();
         im(&ws1)
-            .args(["answer", "bob", &ms_a, "--revision", "1", "raced answer"])
+            .args([
+                "mission",
+                "submit",
+                "bob",
+                &ms_a,
+                "--revision",
+                "1",
+                "--outcome",
+                "answered",
+                "--result",
+                "raced answer",
+            ])
             .output()
             .unwrap()
             .status
@@ -713,7 +829,7 @@ fn answer_and_cancel_race_admit_exactly_one_outcome() {
         b2.wait();
         im(&ws2)
             .args([
-                "ask",
+                "mission",
                 "cancel",
                 "alice",
                 &ms_c,
@@ -763,7 +879,7 @@ fn cancellation_is_a_durable_distinct_disposition() {
     let ms = create_ask(ws, "cancelled");
     im(ws)
         .args([
-            "ask",
+            "mission",
             "cancel",
             "alice",
             &ms,
@@ -803,11 +919,15 @@ fn publisher_leave_keeps_the_result_reachable_at_origin_work() {
     im(ws).args(["leave", "alice"]).assert().success();
     im(ws)
         .args([
-            "answer",
+            "mission",
+            "submit",
             "bob",
             &ms,
             "--revision",
             "1",
+            "--outcome",
+            "answered",
+            "--result",
             "answered after the asker left",
         ])
         .assert()
@@ -855,11 +975,33 @@ fn user_work_on_both_sides_of_an_ask() {
         .stdout(predicate::str::contains("please check the queue"));
     // A manage-tier member resolves it; execute-tier members may not.
     im(ws)
-        .args(["answer", "bob", &ms, "--revision", "1", "nope"])
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "nope",
+        ])
         .assert()
         .failure();
     im(ws)
-        .args(["answer", "boss", &ms, "--revision", "1", "queue checked"])
+        .args([
+            "mission",
+            "submit",
+            "boss",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "queue checked",
+        ])
         .assert()
         .success();
     im(ws)
@@ -904,7 +1046,18 @@ fn self_ask_round_trip() {
     assert_eq!(mission_at(ws, &ms).as_deref(), Some("desk"));
 
     im(ws)
-        .args(["answer", "carol", &ms, "--revision", "1", "self answered"])
+        .args([
+            "mission",
+            "submit",
+            "carol",
+            &ms,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "self answered",
+        ])
         .assert()
         .success();
     im(ws)
@@ -1098,11 +1251,15 @@ fn old_pipeline_flow_regression_alongside_asks() {
         .unwrap();
     im(ws)
         .args([
-            "answer",
+            "mission",
+            "submit",
             "bob",
             &ms_ask,
             "--revision",
             "1",
+            "--outcome",
+            "answered",
+            "--result",
             "side question answered",
         ])
         .assert()

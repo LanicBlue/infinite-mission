@@ -75,11 +75,15 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
   `ended` — iteration counts are derived, never stored. Result notes only wake
   the current origin executor; the terminal events and `im mission result` are
   the durable result authority.
-- **Ask/answer is a degenerate Mission, not a peer chat channel.** `im ask`
-  generates an immutable built-in contract with one target Work, no paths, and
-  terminal `answered|declined` outcomes. The answer is a distinct bounded
-  result payload (up to 16 KiB), not `reason`. At most eight active asks are
-  allowed for one origin→target pair.
+- **A template-less create is the ask form.** `im mission create --to
+  <target-work> --objective <question>` replaces the template file with an
+  immutable built-in contract: one target Work, no paths, terminal
+  `answered|declined` outcomes. The receiver answers through the ordinary
+  mission submit (`--outcome answered --result …`, the answer being a distinct
+  bounded payload up to 16 KiB, not `reason`). At most eight active asks are
+  allowed for one origin→target pair; the origin withdraws its own asks with
+  `im mission cancel` (a durable `cancelled` disposition, distinct from
+  manage-tier `mission end`).
 - **Inbox**: missions parked at user stations, with the reason the sender
   had to give. A manage-tier member resolves them.
 
@@ -203,19 +207,19 @@ Stations    im work create|list|set-executor|set-prompt|delete
             # list shows executor, holding/en-route occupancy, and the one-line summary
 Templates   im template list           (.im/templates/*.yaml)
             im template install <op> <source.yaml> [--name <name>]
-Missions    im mission create|show|events|end
+Missions    im mission create|show|events|result|end
             im mission create <agent> --from <origin-work> --template <name> --key <key>
+            im mission create <agent> --from <origin> --to <target> --key <key>
+                                 --objective <question>          # template-less ask form
             im mission submit <agent> <ms> --revision N --outcome O
                                  [--next-node] [--reason] [--feedback] [--result] [--receipts]
+                                 # asks submit --outcome answered --result <answer>
             im mission abandon <agent> <ms> --revision N [--reason]
+            im mission cancel <agent> <ms> --revision N [--reason]  # origin-side ask withdrawal
             im mission doc read <agent> <ms> <path>
             im mission doc write <agent> <ms> --id <docId> --file <path|->
             im missions <agent>        # active missions at your stations
-Ask         im ask <agent> --from <origin> --to <target> --key <key> <question...>
-            im answer <agent> <ms> --revision N <answer...>
-            im decline <agent> <ms> --revision N --reason <text>
-            im ask cancel <agent> <ms> --revision N [--reason <text>]
-            im results <agent> | im mission result <ms>
+Results     im results <agent> | im mission result <ms>
 Attention   im inbox                   # missions waiting at user stations
 Console     im ui                      # browser console at http://127.0.0.1:4600 (localhost only)
 ```
@@ -232,6 +236,7 @@ works:
       outcomes: [done, need-rework]     # this station's vocabulary
       terminal: []                      # outcomes that end the mission here
       feedbackRequiredOn: []            # outcomes that must carry --feedback
+      resultRequiredOn: []              # outcomes that must carry --result
     documentRights:                     # write does NOT imply read
       read: [spec]
       write: [impl]

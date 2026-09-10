@@ -816,16 +816,16 @@ fn console_origin_ask_and_result_ack_do_not_consume_notes() {
     let asked = im::ui::apply_action(
         &store,
         &serde_json::json!({
-            "type": "ask_create",
+            "type": "mission_create",
             "originWork": "desk",
             "targetWork": "make",
-            "question": "What ships first?",
+            "objective": "What ships first?",
             "key": "q-ui"
         }),
         &ws,
     )
     .unwrap();
-    assert!(asked.contains("created ask"), "got: {asked}");
+    assert!(asked.contains("created"), "got: {asked}");
 
     let ask_id: String = store
         .conn

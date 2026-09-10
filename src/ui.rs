@@ -628,23 +628,59 @@ pub fn apply_action_response(
             ))
         }
         "mission_create" => {
-            let template = action["template"].as_str().context("`template` required")?;
             let key = action["key"].as_str().context("`key` required")?;
             let origin = action["originWork"]
                 .as_str()
                 .filter(|value| !value.is_empty())
                 .context("`originWork` required")?;
-            let template_path = workspace
-                .join(".im")
-                .join("templates")
-                .join(format!("{template}.yaml"));
-            let bytes = std::fs::read(&template_path)
-                .with_context(|| format!("template '{template}' not found"))?;
-            let parsed = crate::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
             let acting = acting_manager(store)?;
+            // Template-less form (the console's quick-ask modal): `targetWork`
+            // + `question` replace the template file with the built-in ask
+            // contract — the same shape as `im mission create --to`.
+            let (template, path, bytes, name, objective) =
+                if let Some(template) = action["template"].as_str() {
+                    if action["targetWork"].as_str().is_some_and(|v| !v.is_empty()) {
+                        bail!("`template` and `targetWork` are mutually exclusive");
+                    }
+                    let template_path = workspace
+                        .join(".im")
+                        .join("templates")
+                        .join(format!("{template}.yaml"));
+                    let bytes = std::fs::read(&template_path)
+                        .with_context(|| format!("template '{template}' not found"))?;
+                    let parsed = crate::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
+                    (
+                        parsed,
+                        format!(".im/templates/{template}.yaml"),
+                        bytes,
+                        action["name"].as_str().map(String::from),
+                        action["objective"].as_str().map(String::from),
+                    )
+                } else {
+                    let target = action["targetWork"]
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .context("`targetWork` required when `template` is absent")?;
+                    let question = action["objective"]
+                        .as_str()
+                        .filter(|value| !value.trim().is_empty())
+                        .context(
+                            "`objective` carries the question and is required with `targetWork`",
+                        )?;
+                    (
+                        crate::contract::ask_template(target)?,
+                        "builtin:ask/v1".to_string(),
+                        format!("builtin:ask/v1:{target}").into_bytes(),
+                        action["name"]
+                            .as_str()
+                            .map(String::from)
+                            .or(Some("ask".to_string())),
+                        Some(question.trim().to_string()),
+                    )
+                };
             let source = crate::mission::TemplateSource {
-                template: &parsed,
-                path: format!(".im/templates/{template}.yaml"),
+                template: &template,
+                path,
                 bytes: &bytes,
             };
             let outcome = store.create_mission_from_work(
@@ -652,56 +688,12 @@ pub fn apply_action_response(
                 origin,
                 &source,
                 key,
-                action["name"].as_str(),
-                action["objective"].as_str(),
+                name.as_deref(),
+                objective.as_deref(),
             )?;
             run_view = outcome.run_view;
             Ok(format!(
                 "{} mission {}",
-                if outcome.existed {
-                    "existing"
-                } else {
-                    "created"
-                },
-                outcome.mission_id
-            ))
-        }
-        "ask_create" => {
-            let origin = action["originWork"]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .context("`originWork` required")?;
-            let target = action["targetWork"]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .context("`targetWork` required")?;
-            let question = action["question"].as_str().context("`question` required")?;
-            let key = action["key"]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .context("`key` required")?;
-            if question.trim().is_empty() {
-                bail!("question must be non-empty");
-            }
-            let template = crate::contract::ask_template(target)?;
-            let source_bytes = format!("builtin:ask/v1:{target}");
-            let source = crate::mission::TemplateSource {
-                template: &template,
-                path: "builtin:ask/v1".to_string(),
-                bytes: source_bytes.as_bytes(),
-            };
-            let acting = acting_manager(store)?;
-            let outcome = store.create_mission_from_work(
-                &acting,
-                origin,
-                &source,
-                &format!("ask:{key}"),
-                Some("ask"),
-                Some(question.trim()),
-            )?;
-            run_view = outcome.run_view;
-            Ok(format!(
-                "{} ask {}",
                 if outcome.existed {
                     "existing"
                 } else {

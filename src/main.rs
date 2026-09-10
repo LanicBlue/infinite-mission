@@ -47,9 +47,6 @@ fn main() -> Result<()> {
         "member" => cmd_member(args.collect()),
         "work" => cmd_work(args.collect()),
         "template" => cmd_template(args.collect()),
-        "ask" => cmd_ask(args.collect()),
-        "answer" => cmd_answer(args.collect()),
-        "decline" => cmd_decline(args.collect()),
         "results" => cmd_results(args.collect()),
         "mission" => cmd_mission(args.collect()),
         "missions" => {
@@ -647,147 +644,6 @@ fn valid_template_name(name: &str) -> bool {
     im::contract::valid_work_key(name) && name.len() <= 64
 }
 
-fn free_text(args: &[String], start: usize, valued_flags: &[&str]) -> String {
-    let mut words = Vec::new();
-    let mut index = start;
-    while index < args.len() {
-        if valued_flags.contains(&args[index].as_str()) {
-            index += 2;
-        } else {
-            words.push(args[index].clone());
-            index += 1;
-        }
-    }
-    words.join(" ")
-}
-
-fn cmd_ask(args: Vec<String>) -> Result<()> {
-    if args.first().map(String::as_str) == Some("cancel") {
-        let agent = args
-            .get(1)
-            .context("Usage: im ask cancel <agent> <ms> --revision <N> [--reason <text>]")?;
-        let mission_id = args.get(2).context("mission id is required")?;
-        let revision: i64 = flag_value(&args[3..], "--revision")?
-            .context("--revision is required")?
-            .parse()
-            .context("invalid --revision value")?;
-        let reason = flag_value(&args[3..], "--reason")?;
-        let workspace = find_workspace()?;
-        let store = open_store(&workspace)?;
-        ensure_agent(&store, agent)?;
-        check_session(&workspace, &store, agent)?;
-        let result = store.cancel_ask(agent, mission_id, revision, reason.as_deref())?;
-        println!(
-            "Ask {} cancelled (revision {}).",
-            result.mission_id, result.revision
-        );
-        return Ok(());
-    }
-
-    let agent = args.first().context(
-        "Usage: im ask <agent> --from <origin-work> --to <target-work> --key <key> <question>",
-    )?;
-    let origin = flag_value(&args[1..], "--from")?.context("--from is required")?;
-    let target = flag_value(&args[1..], "--to")?.context("--to is required")?;
-    let key = flag_value(&args[1..], "--key")?.context("--key is required")?;
-    let question = free_text(&args, 1, &["--from", "--to", "--key"]);
-    if question.trim().is_empty() {
-        bail!("question must be non-empty");
-    }
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    ensure_agent(&store, agent)?;
-    check_session(&workspace, &store, agent)?;
-    let template = im::contract::ask_template(&target)?;
-    let source_bytes = format!("builtin:ask/v1:{target}");
-    let source = im::mission::TemplateSource {
-        template: &template,
-        path: "builtin:ask/v1".to_string(),
-        bytes: source_bytes.as_bytes(),
-    };
-    let outcome = store.create_mission_from_work(
-        agent,
-        &origin,
-        &source,
-        &format!("ask:{key}"),
-        Some("ask"),
-        Some(question.trim()),
-    )?;
-    println!(
-        "{} ask {} — {} → {}",
-        if outcome.existed {
-            "Existing"
-        } else {
-            "Created"
-        },
-        outcome.mission_id,
-        origin,
-        target
-    );
-    if let Some(view) = &outcome.run_view {
-        print_run_view(view, true);
-    }
-    Ok(())
-}
-
-fn cmd_answer(args: Vec<String>) -> Result<()> {
-    let agent = args
-        .first()
-        .context("Usage: im answer <agent> <ms> --revision <N> <answer>")?;
-    let mission_id = args.get(1).context("mission id is required")?;
-    let revision: i64 = flag_value(&args[2..], "--revision")?
-        .context("--revision is required")?
-        .parse()
-        .context("invalid --revision value")?;
-    let answer = free_text(&args, 2, &["--revision"]);
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    ensure_agent(&store, agent)?;
-    check_session(&workspace, &store, agent)?;
-    let submission = im::mission::RoundSubmission {
-        next_node: None,
-        reason: None,
-        feedback: None,
-        result: Some(answer.as_str()),
-        receipt_ids: &[],
-    };
-    let result = store.submit_mission(agent, mission_id, revision, "answered", &submission)?;
-    println!(
-        "Ask {} answered (revision {}).",
-        result.mission_id, result.revision
-    );
-    Ok(())
-}
-
-fn cmd_decline(args: Vec<String>) -> Result<()> {
-    let agent = args
-        .first()
-        .context("Usage: im decline <agent> <ms> --revision <N> --reason <text>")?;
-    let mission_id = args.get(1).context("mission id is required")?;
-    let revision: i64 = flag_value(&args[2..], "--revision")?
-        .context("--revision is required")?
-        .parse()
-        .context("invalid --revision value")?;
-    let reason = flag_value(&args[2..], "--reason")?.context("--reason is required")?;
-    let workspace = find_workspace()?;
-    let store = open_store(&workspace)?;
-    ensure_agent(&store, agent)?;
-    check_session(&workspace, &store, agent)?;
-    let submission = im::mission::RoundSubmission {
-        next_node: None,
-        reason: Some(reason.as_str()),
-        feedback: None,
-        result: None,
-        receipt_ids: &[],
-    };
-    let result = store.submit_mission(agent, mission_id, revision, "declined", &submission)?;
-    println!(
-        "Ask {} declined (revision {}).",
-        result.mission_id, result.revision
-    );
-    Ok(())
-}
-
 fn cmd_results(args: Vec<String>) -> Result<()> {
     let agent = args.first().context("Usage: im results <agent>")?;
     let workspace = find_workspace()?;
@@ -819,41 +675,75 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
         Some("abandon") => cmd_mission_abandon(&args[1..]),
         Some("events") if args.len() == 2 => cmd_mission_events(&args[1]),
         Some("result") if args.len() == 2 => cmd_mission_result(&args[1]),
+        Some("cancel") => cmd_mission_cancel(&args[1..]),
         Some("end") if args.len() >= 3 => cmd_mission_end(&args[1], &args[2], flag_value(&args[3..], "--reason")?),
         Some("doc") => cmd_mission_doc(&args[1..]),
         _ => bail!(
-            "Usage: im mission <create <op> --template <name> --key <unique-key> [--name <n>] [--objective <o>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->>"
+            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question>) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | cancel <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
         ),
     }
 }
 
 fn cmd_mission_create(args: &[String]) -> Result<()> {
     let manager = args.first().context(
-        "Usage: im mission create <op> [--from <origin-work>] --template <name> --key <unique-key>",
+        "Usage: im mission create <op> --from <origin-work> (--template <name> | --to <target-work>) --key <unique-key>",
     )?;
-    let template_name = flag_value(&args[1..], "--template")?.context("--template is required")?;
     let origin_work = flag_value(&args[1..], "--from")?.context("--from is required")?;
     let idem_key =
         flag_value(&args[1..], "--key")?.context("--key (idempotency key) is required")?;
     let name = flag_value(&args[1..], "--name")?;
     let objective = flag_value(&args[1..], "--objective")?;
+    let target_work = flag_value(&args[1..], "--to")?;
+    let template_name = flag_value(&args[1..], "--template")?;
 
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     ensure_agent(&store, manager)?;
     check_session(&workspace, &store, manager)?;
 
-    if !valid_template_name(&template_name) {
-        bail!("template name must be lowercase kebab-case");
-    }
-    let template_path = templates_dir(&workspace).join(format!("{template_name}.yaml"));
-    let bytes = std::fs::read(&template_path)
-        .with_context(|| format!("template '{template_name}' not found in .im/templates/"))?;
-    let template = im::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
-
+    // Template-less form: `--to` replaces the template file with the built-in
+    // ask contract — one target station, terminal answered|declined, the
+    // objective carries the question. Same immutable compile+adjudication
+    // path as file templates.
+    let (template, path, bytes, display_name) = match (&template_name, &target_work) {
+        (Some(_), Some(_)) => bail!("--template and --to are mutually exclusive"),
+        (None, None) => {
+            bail!("either --template <name> or --to <target-work> is required")
+        }
+        (Some(template_name), None) => {
+            if !valid_template_name(template_name) {
+                bail!("template name must be lowercase kebab-case");
+            }
+            let template_path = templates_dir(&workspace).join(format!("{template_name}.yaml"));
+            let bytes = std::fs::read(&template_path).with_context(|| {
+                format!("template '{template_name}' not found in .im/templates/")
+            })?;
+            let template = im::contract::parse_template(&String::from_utf8_lossy(&bytes))?;
+            (
+                template,
+                format!(".im/templates/{template_name}.yaml"),
+                bytes,
+                name.clone(),
+            )
+        }
+        (None, Some(target)) => {
+            let question = objective
+                .as_deref()
+                .context("--objective carries the question and is required with --to")?;
+            if question.trim().is_empty() {
+                bail!("--objective (the question) must be non-empty with --to");
+            }
+            (
+                im::contract::ask_template(target)?,
+                "builtin:ask/v1".to_string(),
+                format!("builtin:ask/v1:{target}").into_bytes(),
+                name.clone().or_else(|| Some("ask".to_string())),
+            )
+        }
+    };
     let source = im::mission::TemplateSource {
         template: &template,
-        path: format!(".im/templates/{template_name}.yaml"),
+        path,
         bytes: &bytes,
     };
     let outcome = store.create_mission_from_work(
@@ -861,7 +751,7 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
         &origin_work,
         &source,
         &idem_key,
-        name.as_deref(),
+        display_name.as_deref(),
         objective.as_deref(),
     )?;
     if outcome.existed {
@@ -1081,6 +971,31 @@ fn cmd_mission_result(mission_id: &str) -> Result<()> {
     let store = open_store(&workspace)?;
     let result = store.mission_result(mission_id)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+/// Origin-side withdrawal of a template-less ask mission: unlike `mission
+/// end` (manage-tier delete) this keeps the mission in history with the
+/// distinct `cancelled` disposition and notifies the origin work.
+fn cmd_mission_cancel(args: &[String]) -> Result<()> {
+    let agent = args
+        .first()
+        .context("Usage: im mission cancel <agent> <ms> --revision <N> [--reason <text>]")?;
+    let mission_id = args.get(1).context("mission id is required")?;
+    let revision: i64 = flag_value(&args[2..], "--revision")?
+        .context("--revision is required")?
+        .parse()
+        .context("invalid --revision value")?;
+    let reason = flag_value(&args[2..], "--reason")?;
+    let workspace = find_workspace()?;
+    let store = open_store(&workspace)?;
+    ensure_agent(&store, agent)?;
+    check_session(&workspace, &store, agent)?;
+    let result = store.cancel_ask(agent, mission_id, revision, reason.as_deref())?;
+    println!(
+        "Mission {} cancelled (revision {}).",
+        result.mission_id, result.revision
+    );
     Ok(())
 }
 
@@ -1372,26 +1287,27 @@ Member tiers (execute ⊂ publish ⊂ manage; manage is console-only)
                                              Validate + atomically install a versioned contract
 
 Missions (Work-to-Work mail; Agent identity authorizes the operation)
-  im mission create <op> --from <origin-work> --template <name> --key <unique-key>
-       [--name <name>] [--objective <text>]
+  im mission create <op> --from <origin-work> (--template <name> | --to <target-work>)
+       --key <unique-key> [--name <name>] [--objective <text>]
                                              `im init` writes example.yaml and pipeline.yaml
                                              (design→plan→build→review→final gate) and seeds
-                                             those four stations.
-  im ask <agent> --from <origin> --to <target> --key <key> <question...>
-                                             Built-in single-node terminal Mission;
-                                             publish+ and current origin duty required.
-  im answer <agent> <ms> --revision N <answer...>
-  im decline <agent> <ms> --revision N --reason <text>
-  im ask cancel <agent> <ms> --revision N [--reason <text>]
-  im results <agent>                        Ended results for current duty stations
-  im mission result <ms>                    Durable terminal result
+                                             those four stations. The template-less --to form
+                                             is the built-in ask contract: single target work,
+                                             terminal answered|declined, the objective carries
+                                             the question, the answer is submitted as --result.
   im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
   im missions <agent>                       Active missions at your stations
   im mission submit <agent> <ms> --revision N --outcome <o>
        [--next-node <station>] [--reason <t>] [--feedback <t>] [--result <t>]
        [--receipts <document:hash,...>]
   im mission abandon <agent> <ms> --revision N [--reason <t>]
+  im mission cancel <agent> <ms> --revision N [--reason <t>]
+                                             Origin-side withdrawal of a template-less ask
+                                             (cancelled disposition; distinct from manage-tier
+                                             `mission end`)
   im mission events <ms>                    Delivery history
+  im mission result <ms>                    Durable terminal result
+  im results <agent>                        Ended results for current duty stations
   im mission end <op> <ms> [--reason <t>]   Manage-tier delete
   im mission doc read <agent> <ms> <path>
   im mission doc write <agent> <ms> --id <docId> --file <path-or->
