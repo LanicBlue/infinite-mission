@@ -99,6 +99,23 @@ pub fn state_json(
                     |row| row.get(0),
                 )
                 .unwrap_or(0);
+            let outbox: i64 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM missions WHERE origin_work = ?1 AND status = 'active'",
+                    rusqlite::params![work.work_key],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let unread_results: i64 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM work_notes
+                     WHERE work_key = ?1 AND kind = 'mission_result' AND read = 0",
+                    rusqlite::params![work.work_key],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
             json!({
                 "work_key": work.work_key,
                 "description": work.description,
@@ -106,6 +123,8 @@ pub fn state_json(
                 "prompt": work.prompt,
                 "holding": holding,
                 "incoming": inbound.get(&work.work_key).copied().unwrap_or(0),
+                "outbox": outbox,
+                "unreadResults": unread_results,
             })
         })
         .collect();
@@ -114,7 +133,7 @@ pub fn state_json(
         .conn
         .prepare(
             "SELECT mission_id, name, objective, at, status, revision,
-                    ended_disposition, created_at, created_by
+                    ended_disposition, created_at, created_by, origin_work
              FROM missions ORDER BY created_at DESC",
         )?
         .query_map([], |row| {
@@ -128,9 +147,77 @@ pub fn state_json(
                 "ended_disposition": row.get::<_, Option<String>>(6)?,
                 "created_at": row.get::<_, i64>(7)?,
                 "created_by": row.get::<_, String>(8)?,
+                "origin_work": row.get::<_, Option<String>>(9)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
+
+    let outbox: Vec<Value> = store
+        .conn
+        .prepare(
+            "SELECT mission_id, name, objective, origin_work, at, revision, created_at
+             FROM missions WHERE origin_work IS NOT NULL AND status = 'active'
+             ORDER BY created_at DESC",
+        )?
+        .query_map([], |row| {
+            Ok(json!({
+                "mission_id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "objective": row.get::<_, String>(2)?,
+                "origin_work": row.get::<_, String>(3)?,
+                "at": row.get::<_, Option<String>>(4)?,
+                "revision": row.get::<_, i64>(5)?,
+                "created_at": row.get::<_, i64>(6)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let result_notes: Vec<(i64, String, String, String, i64, bool)> = store
+        .conn
+        .prepare(
+            "SELECT id, work_key, mission_id, content, created_at, read
+             FROM work_notes WHERE kind = 'mission_result'
+             ORDER BY created_at DESC, id DESC",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get::<_, i64>(5)? != 0,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let results: Vec<Value> = result_notes
+        .into_iter()
+        .map(
+            |(note_id, work_key, mission_id, content, created_at, acked)| {
+                let result = store.mission_result(&mission_id).unwrap_or_default();
+                let summary = result
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .or_else(|| result.get("reason").and_then(Value::as_str))
+                    .unwrap_or(&content);
+                json!({
+                    "note_id": note_id,
+                    "kind": "mission_result",
+                    "work_key": &work_key,
+                    "origin_work": &work_key,
+                    "mission_id": mission_id,
+                    "content": content,
+                    "created_at": created_at,
+                    "acked": acked,
+                    "disposition": result.get("disposition"),
+                    "outcome": result.get("outcome"),
+                    "result": result.get("result"),
+                    "reason": result.get("reason"),
+                    "summary": summary,
+                })
+            },
+        )
+        .collect();
 
     let mut inbox: Vec<Value> = Vec::new();
     for (mission, _) in store.inbox_missions()? {
@@ -167,12 +254,18 @@ pub fn state_json(
             .as_ref()
             .zip(mission.at.as_deref())
             .and_then(|(c, at)| c.works.get(at));
-        let (outcomes, terminal, feedback_on): (Vec<String>, Vec<String>, Vec<String>) = discipline
+        let (outcomes, terminal, feedback_on, result_on): (
+            Vec<String>,
+            Vec<String>,
+            Vec<String>,
+            Vec<String>,
+        ) = discipline
             .map(|d| {
                 (
                     d.completion.outcomes.clone(),
                     d.completion.terminal.clone(),
                     d.completion.feedback_required_on.clone(),
+                    d.completion.result_required_on.clone(),
                 )
             })
             .unwrap_or_default();
@@ -209,6 +302,7 @@ pub fn state_json(
                     // Rejection-style outcomes must carry feedback; the
                     // console modal needs to know to demand it.
                     "feedback": feedback_on.contains(outcome),
+                    "result": result_on.contains(outcome),
                 })
             })
             .collect();
@@ -278,6 +372,7 @@ pub fn state_json(
         inbox.push(json!({
             "mission_id": mission.mission_id,
             "at": mission.at,
+            "origin_work": mission.origin_work,
             "name": mission.name,
             "objective": mission.objective,
             "reason": reason,
@@ -328,6 +423,8 @@ pub fn state_json(
         "agents": agents,
         "works": works,
         "missions": missions,
+        "outbox": outbox,
+        "results": results,
         "inbox": inbox,
         "events": events,
     }))
@@ -415,8 +512,7 @@ pub fn apply_action_response(
             let raw_target = std::path::PathBuf::from(target);
             // 与注册表的物理路径对齐（/tmp → /private/tmp）：守卫、白名单、
             // 删除三处判定必须落在同一条目上
-            let target =
-                std::fs::canonicalize(&raw_target).unwrap_or_else(|_| raw_target.clone());
+            let target = std::fs::canonicalize(&raw_target).unwrap_or_else(|_| raw_target.clone());
             let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
             if target == here {
                 return Err(anyhow::anyhow!(
@@ -534,6 +630,10 @@ pub fn apply_action_response(
         "mission_create" => {
             let template = action["template"].as_str().context("`template` required")?;
             let key = action["key"].as_str().context("`key` required")?;
+            let origin = action["originWork"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .context("`originWork` required")?;
             let template_path = workspace
                 .join(".im")
                 .join("templates")
@@ -547,8 +647,9 @@ pub fn apply_action_response(
                 path: format!(".im/templates/{template}.yaml"),
                 bytes: &bytes,
             };
-            let outcome = store.create_mission(
+            let outcome = store.create_mission_from_work(
                 &acting,
+                origin,
                 &source,
                 key,
                 action["name"].as_str(),
@@ -564,6 +665,61 @@ pub fn apply_action_response(
                 },
                 outcome.mission_id
             ))
+        }
+        "ask_create" => {
+            let origin = action["originWork"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .context("`originWork` required")?;
+            let target = action["targetWork"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .context("`targetWork` required")?;
+            let question = action["question"].as_str().context("`question` required")?;
+            let key = action["key"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .context("`key` required")?;
+            if question.trim().is_empty() {
+                bail!("question must be non-empty");
+            }
+            let template = crate::contract::ask_template(target)?;
+            let source_bytes = format!("builtin:ask/v1:{target}");
+            let source = crate::mission::TemplateSource {
+                template: &template,
+                path: "builtin:ask/v1".to_string(),
+                bytes: source_bytes.as_bytes(),
+            };
+            let acting = acting_manager(store)?;
+            let outcome = store.create_mission_from_work(
+                &acting,
+                origin,
+                &source,
+                &format!("ask:{key}"),
+                Some("ask"),
+                Some(question.trim()),
+            )?;
+            run_view = outcome.run_view;
+            Ok(format!(
+                "{} ask {}",
+                if outcome.existed {
+                    "existing"
+                } else {
+                    "created"
+                },
+                outcome.mission_id
+            ))
+        }
+        "result_ack" => {
+            let note_id = action["noteId"].as_i64().context("`noteId` required")?;
+            let changed = store.conn.execute(
+                "UPDATE work_notes SET read = 1 WHERE id = ?1 AND kind = 'mission_result'",
+                [note_id],
+            )?;
+            if changed == 0 {
+                bail!("result note {note_id} does not exist");
+            }
+            Ok(format!("acknowledged result note {note_id}"))
         }
         "mission_end" => {
             let mission = action["mission"].as_str().context("`mission` required")?;
@@ -588,6 +744,7 @@ pub fn apply_action_response(
                 next_node: action["next_node"].as_str(),
                 reason: action["reason"].as_str(),
                 feedback: action["feedback"].as_str(),
+                result: action["result"].as_str(),
                 receipt_ids: &receipts,
             };
             let result = store.submit_mission(&acting, mission, revision, outcome, &submission)?;

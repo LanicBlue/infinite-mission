@@ -56,6 +56,8 @@ fn state_json_exposes_the_console_data_contract() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "approve",
             "--template",
             "t",
             "--key",
@@ -110,6 +112,8 @@ fn state_json_exposes_the_console_data_contract() {
         "agents",
         "works",
         "missions",
+        "outbox",
+        "results",
         "inbox",
         "events",
         "templates",
@@ -138,20 +142,30 @@ fn state_json_exposes_the_console_data_contract() {
         .expect("make station");
     assert_eq!(make["executor"].as_str().unwrap(), "worker");
     assert_eq!(make["holding"].as_i64().unwrap(), 0, "mailbox moved on");
+    assert_eq!(make["outbox"].as_i64().unwrap(), 0);
+    assert_eq!(make["unreadResults"].as_i64().unwrap(), 0);
     let approve = works
         .iter()
         .find(|w| w["work_key"] == "approve")
         .expect("user station");
     assert!(approve["executor"].is_null());
+    assert_eq!(approve["outbox"].as_i64().unwrap(), 1);
+    assert_eq!(approve["unreadResults"].as_i64().unwrap(), 0);
+    let outbox = state["outbox"].as_array().unwrap();
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0]["origin_work"].as_str().unwrap(), "approve");
+    assert!(state["results"].as_array().unwrap().is_empty());
 
     // Missions carry at/revision; the inbox row carries the human reason.
     let missions = state["missions"].as_array().unwrap();
     assert_eq!(missions.len(), 1);
     assert_eq!(missions[0]["at"].as_str().unwrap(), "approve");
     assert!(missions[0]["revision"].as_i64().unwrap() >= 2);
+    assert_eq!(missions[0]["origin_work"].as_str().unwrap(), "approve");
     let inbox = state["inbox"].as_array().unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0]["mission_id"].as_str().unwrap(), mission_id);
+    assert_eq!(inbox[0]["origin_work"].as_str().unwrap(), "approve");
     assert!(
         inbox[0]["reason"].as_str().unwrap().contains("sign-off"),
         "inbox row lost the reason: {}",
@@ -464,7 +478,10 @@ fn purge_workspace_guards_and_mirrors_the_bridge_list() {
 
     let console_tmp = tempfile::TempDir::new().unwrap();
     let console_ws = console_tmp.path().to_path_buf();
-    im_with_proc_home(&console_ws).arg("init").assert().success();
+    im_with_proc_home(&console_ws)
+        .arg("init")
+        .assert()
+        .success();
 
     let victim_tmp = tempfile::TempDir::new().unwrap();
     let victim = victim_tmp.path().to_path_buf();
@@ -578,7 +595,10 @@ fn remove_workspace_refuses_symlink_alias_of_current_workspace() {
 
     let console_tmp = tempfile::TempDir::new().unwrap();
     let console_ws = console_tmp.path().to_path_buf();
-    im_with_proc_home(&console_ws).arg("init").assert().success();
+    im_with_proc_home(&console_ws)
+        .arg("init")
+        .assert()
+        .success();
     let store = im::store::Store::open(&console_ws.join(".im").join("im.db")).unwrap();
 
     // 别名（符号链接）指向当前工作区：守卫必须在 canonicalize 之后比较，
@@ -625,7 +645,10 @@ fn purge_redeletes_shell_recreated_like_a_running_receiver() {
 
     let console_tmp = tempfile::TempDir::new().unwrap();
     let console_ws = console_tmp.path().to_path_buf();
-    im_with_proc_home(&console_ws).arg("init").assert().success();
+    im_with_proc_home(&console_ws)
+        .arg("init")
+        .assert()
+        .success();
     let victim_tmp = tempfile::TempDir::new().unwrap();
     let victim = victim_tmp.path().to_path_buf();
     im_with_proc_home(&victim).arg("init").assert().success();
@@ -659,4 +682,297 @@ fn purge_redeletes_shell_recreated_like_a_running_receiver() {
         "got: {message}"
     );
     assert!(!victim.join(".im").exists(), "final state must be clean");
+}
+
+/// The console page keeps the five-pane IA and only adds Work-origin / Ask
+/// controls. This is a static interaction contract: selectors the page
+/// actually binds, not a rendered browser session.
+#[test]
+fn console_page_keeps_five_pane_ia_and_ask_controls() {
+    let page = include_str!("../src/web/page.html");
+    assert!(
+        page.contains("[\"inbox\", \"📥 收件箱\"")
+            && page.contains("[\"works\", \"🛠 工位\"")
+            && page.contains("[\"missions\", \"📋 任务\""),
+        "task-face nav must keep inbox|works|missions"
+    );
+    for pane in ["members", "settings"] {
+        assert!(
+            page.contains(&format!("data-nav=\"{pane}\"")),
+            "missing nav pane {pane}"
+        );
+    }
+    assert!(
+        page.contains("let pane = \"inbox\""),
+        "default pane must remain inbox"
+    );
+    assert!(
+        !page.contains("data-nav=\"ask\"") && !page.contains("data-nav=\"results\""),
+        "Ask/results must not become new top-level panes"
+    );
+    for field in ["origin-work", "target-work", "question", "key"] {
+        assert!(
+            page.contains(&format!("data-f=\"{field}\"")),
+            "Ask modal missing field {field}"
+        );
+    }
+    assert!(page.contains("data-act=\"open-ask-create\""));
+    assert!(page.contains("data-act=\"ask-create\""));
+    assert!(page.contains("data-act=\"mission-create\""));
+    assert!(page.contains("data-act=\"result-ack\""));
+    assert!(page.contains("来源工位（from）"));
+    assert!(page.contains("目标工位（to）"));
+    assert!(page.contains("问题（question）"));
+    assert!(page.contains("aria-required=\"true\""));
+    assert!(page.contains("id=\"modal-status\""));
+    assert!(page.contains("role=\"alert\""));
+    assert!(page.contains("aria-labelledby=\"modal-title\""));
+    assert!(
+        page.contains("type: \"result_ack\""),
+        "ack must post result_ack"
+    );
+    let ack_idx = page.find("case \"result-ack\"").expect("result-ack handler");
+    let ack_slice = &page[ack_idx..ack_idx + 120];
+    assert!(
+        !ack_slice.contains("mission_submit"),
+        "result ack must not submit: {ack_slice}"
+    );
+}
+
+#[test]
+fn console_origin_ask_and_result_ack_do_not_consume_notes() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_path_buf();
+    im(&ws).arg("init").assert().success();
+    for id in ["boss", "worker"] {
+        im(&ws).args(["join", id]).assert().success();
+    }
+    {
+        let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+        store
+            .set_agent_tier("workspace", "boss", im::records::Tier::Manage)
+            .unwrap();
+    }
+    im(&ws)
+        .args(["work", "create", "boss", "make", "--executor", "worker"])
+        .assert()
+        .success();
+    im(&ws)
+        .args(["work", "create", "boss", "desk"])
+        .assert()
+        .success();
+    std::fs::write(
+        ws.join(".im").join("templates").join("t.yaml"),
+        "schemaVersion: 4\nname: t\nentry: make\nworks:\n  make:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths: []\n",
+    )
+    .unwrap();
+
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+
+    let missing = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "mission_create", "template": "t", "key": "no-origin" }),
+        &ws,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        missing.contains("originWork"),
+        "mission_create must require originWork, got: {missing}"
+    );
+    let empty = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "mission_create",
+            "template": "t",
+            "key": "empty-origin",
+            "originWork": ""
+        }),
+        &ws,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        empty.contains("originWork"),
+        "empty originWork must be rejected, got: {empty}"
+    );
+
+    let created = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "mission_create",
+            "template": "t",
+            "key": "from-desk",
+            "originWork": "desk",
+            "name": "from desk"
+        }),
+        &ws,
+    )
+    .unwrap();
+    assert!(created.contains("created"), "got: {created}");
+
+    let asked = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "ask_create",
+            "originWork": "desk",
+            "targetWork": "make",
+            "question": "What ships first?",
+            "key": "q-ui"
+        }),
+        &ws,
+    )
+    .unwrap();
+    assert!(asked.contains("created ask"), "got: {asked}");
+
+    let ask_id: String = store
+        .conn
+        .query_row(
+            "SELECT mission_id FROM missions WHERE name = 'ask' ORDER BY created_at DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    im(&ws)
+        .args([
+            "mission",
+            "submit",
+            "worker",
+            &ask_id,
+            "--revision",
+            "1",
+            "--outcome",
+            "answered",
+            "--result",
+            "the inbox round-trip",
+        ])
+        .assert()
+        .success();
+
+    let state = im::ui::state_json(&store, ws.to_str().unwrap(), &["t".into()], &[]).unwrap();
+    let desk = state["works"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["work_key"] == "desk")
+        .expect("desk");
+    assert_eq!(desk["unreadResults"].as_i64().unwrap(), 1);
+    let results = state["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["acked"], false);
+    assert_eq!(results[0]["work_key"], "desk");
+    assert!(
+        results[0]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("inbox round-trip"),
+        "inbox return area lost the result: {}",
+        results[0]
+    );
+    let missions = state["missions"].as_array().unwrap();
+    let ask_row = missions
+        .iter()
+        .find(|m| m["mission_id"] == ask_id)
+        .expect("ask mission");
+    assert_eq!(ask_row["origin_work"].as_str().unwrap(), "desk");
+
+    // list-without-consume: a second snapshot must still see the unread note.
+    let again = im::ui::state_json(&store, ws.to_str().unwrap(), &["t".into()], &[]).unwrap();
+    assert_eq!(again["results"][0]["acked"], false);
+    let unread: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM work_notes WHERE kind = 'mission_result' AND read = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unread, 1);
+
+    store
+        .conn
+        .execute(
+            "INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
+             VALUES ('desk', 'mission_arrived', ?1, 'keep other notes', 1, 0)",
+            [&ask_id],
+        )
+        .unwrap();
+    let note_id = results[0]["note_id"].as_i64().unwrap();
+    let revision_before: i64 = store
+        .conn
+        .query_row(
+            "SELECT revision FROM missions WHERE mission_id = ?1",
+            [&ask_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ack = im::ui::apply_action(
+        &store,
+        &serde_json::json!({ "type": "result_ack", "noteId": note_id }),
+        &ws,
+    )
+    .unwrap();
+    assert!(ack.contains("acknowledged"), "got: {ack}");
+
+    let result_read: i64 = store
+        .conn
+        .query_row(
+            "SELECT read FROM work_notes WHERE id = ?1 AND kind = 'mission_result'",
+            [note_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(result_read, 1);
+    let keep_unread: i64 = store
+        .conn
+        .query_row(
+            "SELECT read FROM work_notes WHERE content = 'keep other notes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(keep_unread, 0, "ack must not consume other notes");
+    let other_kinds_acked: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM work_notes WHERE kind != 'mission_result' AND read = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        other_kinds_acked, 0,
+        "ack must only mark mission_result notes"
+    );
+    let status: String = store
+        .conn
+        .query_row(
+            "SELECT status FROM missions WHERE mission_id = ?1",
+            [&ask_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let revision_after: i64 = store
+        .conn
+        .query_row(
+            "SELECT revision FROM missions WHERE mission_id = ?1",
+            [&ask_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "ended");
+    assert_eq!(
+        revision_before, revision_after,
+        "ack must not mission_submit"
+    );
+
+    let after = im::ui::state_json(&store, ws.to_str().unwrap(), &["t".into()], &[]).unwrap();
+    assert_eq!(after["results"][0]["acked"], true);
+    let desk_after = after["works"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["work_key"] == "desk")
+        .unwrap();
+    assert_eq!(desk_after["unreadResults"].as_i64().unwrap(), 0);
 }

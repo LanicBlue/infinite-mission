@@ -33,6 +33,8 @@ pub struct Completion {
     pub terminal: Vec<String>,
     #[serde(rename = "feedbackRequiredOn", default)]
     pub feedback_required_on: Vec<String>,
+    #[serde(rename = "resultRequiredOn", default)]
+    pub result_required_on: Vec<String>,
 }
 
 /// Write does NOT imply read — rights are independent lists of document ids.
@@ -140,6 +142,36 @@ pub struct TemplateWork {
     pub document_rights: DocumentRights,
 }
 
+/// Built-in one-hop question contract. It is generated at publish time but
+/// uses the same immutable validation and adjudication path as file templates.
+pub fn ask_template(target_work: &str) -> Result<MissionTemplate> {
+    if !valid_work_key(target_work) {
+        bail!("target work key {target_work:?} is not valid (lowercase kebab-case)");
+    }
+    let mut works = BTreeMap::new();
+    works.insert(
+        target_work.to_string(),
+        TemplateWork {
+            completion: Completion {
+                outcomes: vec!["answered".to_string(), "declined".to_string()],
+                terminal: vec!["answered".to_string(), "declined".to_string()],
+                feedback_required_on: Vec::new(),
+                result_required_on: vec!["answered".to_string()],
+            },
+            document_rights: DocumentRights::default(),
+        },
+    );
+    Ok(MissionTemplate {
+        schema_version: 4,
+        name: Some("ask".to_string()),
+        objective: None,
+        entry: target_work.to_string(),
+        paths: Vec::new(),
+        documents: Vec::new(),
+        works,
+    })
+}
+
 pub fn parse_template(text: &str) -> Result<MissionTemplate> {
     let template: MissionTemplate =
         serde_yaml::from_str(text).context("template is not valid YAML for the expected schema")?;
@@ -230,6 +262,11 @@ pub fn validate_contract(contract: &MissionContract) -> Result<()> {
         for requires_feedback in &discipline.completion.feedback_required_on {
             if !discipline.completion.outcomes.contains(requires_feedback) {
                 bail!("work {key}: feedback-required outcome {requires_feedback:?} is not in the vocabulary");
+            }
+        }
+        for requires_result in &discipline.completion.result_required_on {
+            if !discipline.completion.outcomes.contains(requires_result) {
+                bail!("work {key}: result-required outcome {requires_result:?} is not in the vocabulary");
             }
         }
         for list_name in ["read", "write", "evidence"] {

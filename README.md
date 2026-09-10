@@ -44,7 +44,15 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
   last-write-wins) — or **no executor**, which makes it a *user station*,
   the human's inbox. Mission ids are namespaced by a per-workspace uuid
   generated at init.
-- **Missions** are created from YAML templates. The template compiles into
+- **Missions are issued by a Work.** `originWork` is the stable return address
+  and audit context; `createdBy` is the Agent that was authorized to represent
+  that Work at creation time. Rebinding transfers future result delivery to the
+  Work's new executor without rewriting the original Agent attribution.
+- **`at` and `originWork` are different.** `at` is the current executable
+  mailbox and changes on every contract route; `originWork` is immutable and
+  never participates in routing. It is locked against deletion while the
+  Mission is active and receives a result notification when the Mission ends.
+- **Contract Missions** are created from YAML templates. The template compiles into
   an immutable contract: entry station, per-station outcome vocabularies,
   routing paths (`from`/`when`/`to`, optional `iterationPolicy`), document
   declarations, and per-station document rights (read ≠ write).
@@ -64,7 +72,14 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
 - **Documents** are content-addressed: same bytes → same receipt, retries
   are free. Receipts submitted with a round prove what the round produced.
 - **Events are the history.** `created`, `round.completed`, `routed`,
-  `ended` — iteration counts are derived, never stored.
+  `ended` — iteration counts are derived, never stored. Result notes only wake
+  the current origin executor; the terminal events and `im mission result` are
+  the durable result authority.
+- **Ask/answer is a degenerate Mission, not a peer chat channel.** `im ask`
+  generates an immutable built-in contract with one target Work, no paths, and
+  terminal `answered|declined` outcomes. The answer is a distinct bounded
+  result payload (up to 16 KiB), not `reason`. At most eight active asks are
+  allowed for one origin→target pair.
 - **Inbox**: missions parked at user stations, with the reason the sender
   had to give. A manage-tier member resolves them.
 
@@ -90,7 +105,7 @@ im work set-executor boss review <agent>
 
 # a pipeline mission — grill→spec happens in the design agent's session
 # conversation with you; when it settles, the design agent starts delivery:
-im mission create <design-agent> --template pipeline --key v1 \
+im mission create <design-agent> --from design --template pipeline --key v1 \
     --objective "ship the widget"          # the distilled intent
 
 # When the creator is the bound entry executor, create already returns the
@@ -189,12 +204,18 @@ Stations    im work create|list|set-executor|set-prompt|delete
 Templates   im template list           (.im/templates/*.yaml)
             im template install <op> <source.yaml> [--name <name>]
 Missions    im mission create|show|events|end
+            im mission create <agent> --from <origin-work> --template <name> --key <key>
             im mission submit <agent> <ms> --revision N --outcome O
-                                 [--next-node] [--reason] [--feedback] [--receipts]
+                                 [--next-node] [--reason] [--feedback] [--result] [--receipts]
             im mission abandon <agent> <ms> --revision N [--reason]
             im mission doc read <agent> <ms> <path>
             im mission doc write <agent> <ms> --id <docId> --file <path|->
             im missions <agent>        # active missions at your stations
+Ask         im ask <agent> --from <origin> --to <target> --key <key> <question...>
+            im answer <agent> <ms> --revision N <answer...>
+            im decline <agent> <ms> --revision N --reason <text>
+            im ask cancel <agent> <ms> --revision N [--reason <text>]
+            im results <agent> | im mission result <ms>
 Attention   im inbox                   # missions waiting at user stations
 Console     im ui                      # browser console at http://127.0.0.1:4600 (localhost only)
 ```

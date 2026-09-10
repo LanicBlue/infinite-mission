@@ -112,6 +112,8 @@ fn setup() -> (Fixture, String) {
             "mission",
             "create",
             "boss",
+            "--from",
+            "approval",
             "--template",
             "review",
             "--key",
@@ -262,6 +264,8 @@ fn template_install_gates_and_self_heals() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "design",
             "--template",
             "renamed",
             "--key",
@@ -278,6 +282,8 @@ fn template_install_gates_and_self_heals() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "design",
             "--template",
             "../evil",
             "--key",
@@ -298,6 +304,8 @@ fn mission_create_is_idempotent_by_key() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "approval",
             "--template",
             "review",
             "--key",
@@ -337,6 +345,8 @@ fn templates_are_validated_fail_closed() {
                 "mission",
                 "create",
                 "boss",
+                "--from",
+                "approval",
                 "--project",
                 "demo",
                 "--template",
@@ -364,6 +374,8 @@ fn unknown_station_references_are_rejected() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "approval",
             "--project",
             "demo",
             "--template",
@@ -604,6 +616,8 @@ fn abandon_and_manager_delete_endings() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "approval",
             "--template",
             "review",
             "--key",
@@ -843,6 +857,8 @@ paths:
             "mission",
             "create",
             "boss",
+            "--from",
+            "approve",
             "--template",
             "handoff",
             "--key",
@@ -1090,11 +1106,18 @@ fn setup_pipeline() -> (Fixture, String) {
             .assert()
             .success();
     }
+    // A user work for the manage-tier creator to issue the mission from.
+    im(&workspace)
+        .args(["work", "create", "boss", "desk"])
+        .assert()
+        .success();
     im(&workspace)
         .args([
             "mission",
             "create",
             "boss",
+            "--from",
+            "desk",
             "--template",
             "pipeline",
             "--key",

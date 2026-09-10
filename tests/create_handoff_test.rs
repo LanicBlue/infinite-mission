@@ -72,6 +72,10 @@ fn setup(executor: Option<&str>) -> (TempDir, Store) {
     store
         .create_work("owner", "audit", "review", Some("worker"), "Review")
         .unwrap();
+    // A user work the manage-tier creator can issue missions from.
+    store
+        .create_work("owner", "approve", "review", None, "User gate")
+        .unwrap();
     std::fs::write(tmp.path().join(".im/templates/handoff.yaml"), TEMPLATE).unwrap();
     (tmp, store)
 }
@@ -104,6 +108,7 @@ fn route(store: &Store, who: &str, id: &str, revision: i64, outcome: &str) {
                 next_node: None,
                 reason: Some("test"),
                 feedback: None,
+                result: None,
                 receipt_ids: &[],
             },
         )
@@ -225,6 +230,8 @@ fn cli_creation_prints_the_same_full_view_as_show_and_remains_discoverable() {
             "mission",
             "create",
             "owner",
+            "--from",
+            "draft",
             "--template",
             "handoff",
             "--key",
@@ -238,7 +245,14 @@ fn cli_creation_prints_the_same_full_view_as_show_and_remains_discoverable() {
         .get_output()
         .stdout
         .clone();
-    let id = create(&store, "owner").mission_id;
+    // Work-origin CLI keys and legacy Store keys live in partitioned spaces,
+    // so resolve the created mission id from the CLI output itself.
+    let id = String::from_utf8(output.clone())
+        .unwrap()
+        .split_whitespace()
+        .find(|word| word.starts_with("ms_"))
+        .unwrap()
+        .to_string();
     let show = cli(tmp.path())
         .args(["mission", "show", &id, "--for", "owner"])
         .assert()
@@ -268,7 +282,8 @@ fn console_creation_returns_structured_view_only_for_bound_creator() {
         let response = im::ui::apply_action_response(
             &store,
             &serde_json::json!({
-                "type": "mission_create", "template": "handoff", "key": "one"
+                "type": "mission_create", "template": "handoff", "key": "one",
+                "originWork": "approve"
             }),
             tmp.path(),
         )

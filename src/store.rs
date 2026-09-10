@@ -58,12 +58,13 @@ fn schema() -> String {
         at TEXT,
         status TEXT NOT NULL CHECK (status IN ('active', 'ended')),
         revision INTEGER NOT NULL CHECK (revision >= 1),
-        ended_disposition TEXT CHECK (ended_disposition IN ('completed', 'abandoned', 'deleted')),
+        ended_disposition TEXT CHECK (ended_disposition IN ('completed', 'abandoned', 'cancelled', 'deleted')),
         ended_by_work TEXT,
         ended_by_iteration INTEGER,
         ended_at INTEGER,
         created_at INTEGER NOT NULL,
-        created_by TEXT NOT NULL
+        created_by TEXT NOT NULL,
+        origin_work TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_missions_mailbox ON missions (status, at);
 
@@ -183,6 +184,60 @@ impl Store {
         if has_description == 0 {
             tx.execute_batch("ALTER TABLE works ADD COLUMN description TEXT NOT NULL DEFAULT '';")?;
         }
+        let has_origin_work: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('missions') WHERE name = 'origin_work'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_origin_work == 0 {
+            tx.execute_batch("ALTER TABLE missions ADD COLUMN origin_work TEXT;")?;
+        }
+        // SQLite cannot ALTER a CHECK constraint. Rebuild only legacy
+        // mission tables whose disposition vocabulary predates cancellation.
+        let missions_sql: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'missions'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !missions_sql.contains("'cancelled'") {
+            tx.execute_batch(
+                "CREATE TABLE missions_v2 (
+                    mission_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    contract_json TEXT NOT NULL CHECK (json_valid(contract_json)),
+                    at TEXT,
+                    status TEXT NOT NULL CHECK (status IN ('active', 'ended')),
+                    revision INTEGER NOT NULL CHECK (revision >= 1),
+                    ended_disposition TEXT CHECK (ended_disposition IN ('completed', 'abandoned', 'cancelled', 'deleted')),
+                    ended_by_work TEXT,
+                    ended_by_iteration INTEGER,
+                    ended_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    created_by TEXT NOT NULL,
+                    origin_work TEXT
+                 );
+                 INSERT INTO missions_v2
+                    (mission_id, name, objective, contract_json, at, status, revision,
+                     ended_disposition, ended_by_work, ended_by_iteration, ended_at,
+                     created_at, created_by, origin_work)
+                 SELECT mission_id, name, objective, contract_json, at, status, revision,
+                        ended_disposition, ended_by_work, ended_by_iteration, ended_at,
+                        created_at, created_by, origin_work
+                 FROM missions;
+                 DROP TABLE missions;
+                 ALTER TABLE missions_v2 RENAME TO missions;",
+            )?;
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_missions_mailbox
+             ON missions (status, at);
+             CREATE INDEX IF NOT EXISTS idx_missions_origin
+             ON missions (origin_work, status, ended_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_work_notes_unique_result
+             ON work_notes (work_key, mission_id, kind)
+             WHERE kind = 'mission_result';",
+        )?;
         // Tier migration: pre-tier DBs lack agents.tier; add it, then fold
         // the retired managers table into the manage tier and drop it.
         let has_tier: i64 = tx.query_row(

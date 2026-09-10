@@ -83,6 +83,8 @@ pub struct MissionRecord {
     pub ended_at: Option<i64>,
     pub created_at: i64,
     pub created_by: String,
+    /// Work that issued the mission. NULL is retained only for legacy missions.
+    pub origin_work: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

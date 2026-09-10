@@ -129,6 +129,11 @@ fn receive_wait_wakes_on_station_arrival() {
         .args(["work", "create", "boss", "alpha", "--executor", "worker"])
         .assert()
         .success();
+    // A user work for the manage-tier creator to issue the mission from.
+    im(ws)
+        .args(["work", "create", "boss", "desk"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n",
@@ -151,6 +156,8 @@ fn receive_wait_wakes_on_station_arrival() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "desk",
             "--template",
             "t",
             "--key",
@@ -329,13 +336,19 @@ fn gates_follow_the_tier_ladder() {
         .args(["work", "create", "mgmt", "gate"])
         .assert()
         .success();
+    im(ws)
+        .args(["work", "create", "mgmt", "execdesk", "--executor", "exec"])
+        .assert()
+        .success();
 
-    // Execute: mission create fails.
+    // Execute: mission create fails — duty at an origin is not permission.
     im(ws)
         .args([
             "mission",
             "create",
             "exec",
+            "--from",
+            "execdesk",
             "--template",
             "t",
             "--key",
@@ -343,7 +356,7 @@ fn gates_follow_the_tier_ladder() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("below publish tier"));
+        .stderr(predicate::str::contains("publish tier"));
 
     // Publish: mission create is the one gate it passes…
     im(ws)
@@ -351,6 +364,8 @@ fn gates_follow_the_tier_ladder() {
             "mission",
             "create",
             "pub",
+            "--from",
+            "alpha",
             "--template",
             "t",
             "--key",
@@ -560,6 +575,10 @@ fn mission_end_fans_out_to_past_participants() {
         .args(["work", "create", "boss", "beta", "--executor", "inspector"])
         .assert()
         .success();
+    im(ws)
+        .args(["work", "create", "boss", "desk"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  beta:\n    completion: {outcomes: [pass, fail], terminal: [pass], feedbackRequiredOn: [fail]}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: alpha, when: done, to: beta}\n  - {from: beta, when: fail, to: alpha}\n",
@@ -570,6 +589,8 @@ fn mission_end_fans_out_to_past_participants() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "desk",
             "--template",
             "t",
             "--key",
@@ -815,6 +836,8 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "qa",
             "--template",
             "t",
             "--key",
@@ -898,6 +921,11 @@ fn work_list_shows_holding_and_en_route_occupancy() {
         .args(["work", "create", "boss", "beta", "--executor", "worker"])
         .assert()
         .success();
+    // A user work for the manage-tier creator to issue the mission from.
+    im(ws)
+        .args(["work", "create", "boss", "desk"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\n  beta:\n    completion: {outcomes: [ok], terminal: [ok], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths:\n  - {from: alpha, when: done, to: beta}\n",
@@ -908,6 +936,8 @@ fn work_list_shows_holding_and_en_route_occupancy() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "desk",
             "--template",
             "t",
             "--key",
@@ -1073,6 +1103,11 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
         .args(["work", "create", "boss", "alpha", "--executor", "worker"])
         .assert()
         .success();
+    // A user work for the manage-tier creator to issue the mission from.
+    im(ws)
+        .args(["work", "create", "boss", "desk"])
+        .assert()
+        .success();
     std::fs::write(
         ws.join(".im").join("templates").join("t.yaml"),
         "schemaVersion: 4\nname: t\nentry: alpha\nworks:\n  alpha:\n    completion: {outcomes: [done], terminal: [], feedbackRequiredOn: []}\n    documentRights: {read: [], write: []}\npaths: []\n",
@@ -1083,6 +1118,8 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
             "mission",
             "create",
             "boss",
+            "--from",
+            "desk",
             "--template",
             "t",
             "--key",

@@ -442,6 +442,88 @@ fn legacy_works_table_gains_the_description_column() {
 }
 
 #[test]
+fn legacy_missions_table_gains_origin_work_and_cancelled_disposition() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("im.db");
+    {
+        // A pre-origin database: missions without the origin column, and a
+        // disposition vocabulary that predates cancellation.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE missions (
+                mission_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                contract_json TEXT NOT NULL CHECK (json_valid(contract_json)),
+                at TEXT,
+                status TEXT NOT NULL CHECK (status IN ('active', 'ended')),
+                revision INTEGER NOT NULL CHECK (revision >= 1),
+                ended_disposition TEXT CHECK (ended_disposition IN ('completed', 'abandoned', 'deleted')),
+                ended_by_work TEXT,
+                ended_by_iteration INTEGER,
+                ended_at INTEGER,
+                created_at INTEGER NOT NULL,
+                created_by TEXT NOT NULL
+            );
+            INSERT INTO missions (mission_id, name, objective, contract_json, at,
+                                  status, revision, created_at, created_by)
+             VALUES ('ms_legacy', 'old', '', '{}', 'legacy',
+                     'active', 1, 0, 'ghost');",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&db_path).unwrap();
+
+    // The origin column exists; the legacy row survives with origin NULL.
+    let has_origin: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('missions') WHERE name = 'origin_work'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_origin, 1, "migration must add the origin_work column");
+    let (name, status, origin): (String, String, Option<String>) = store
+        .conn
+        .query_row(
+            "SELECT name, status, origin_work FROM missions WHERE mission_id = 'ms_legacy'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((name.as_str(), status.as_str()), ("old", "active"));
+    assert_eq!(origin, None, "legacy rows keep a NULL origin");
+
+    // The CHECK rebuild admits the cancelled disposition on the rebuilt
+    // table (the legacy CHECK would reject it).
+    let inserted = store
+        .conn
+        .execute(
+            "INSERT INTO missions (mission_id, name, objective, contract_json, at,
+                                   status, revision, ended_disposition, created_at, created_by)
+             VALUES ('ms_cancelled', 'ask', '', '{}', NULL,
+                     'ended', 2, 'cancelled', 0, 'ghost')",
+            [],
+        )
+        .expect("rebuilt table must accept the cancelled disposition");
+    assert_eq!(inserted, 1);
+
+    // Result notes are deduplicated per (work, mission) by a partial unique
+    // index installed alongside the column migration.
+    let has_index: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
+             AND name = 'idx_work_notes_unique_result'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_index, 1, "migration must install the result-note index");
+}
+
+#[test]
 fn concurrent_opens_migrate_a_legacy_db_safely() {
     let tmp = tempfile::TempDir::new().unwrap();
     let db_path = tmp.path().join("im.db");

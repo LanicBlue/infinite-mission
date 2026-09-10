@@ -159,7 +159,18 @@ impl Store {
     /// is needed: un-referenced stations are simply gone, key freed.
     pub fn delete_work(&self, manager: &str, work_key: &str) -> Result<()> {
         self.require_tier(manager, Tier::Manage)?;
-        self.get_work(work_key)?; // bails "does not exist" for unknown keys
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let exists: bool = tx.query_row(
+            "SELECT COUNT(*) > 0 FROM works WHERE work_key = ?1",
+            [work_key],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            bail!("work '{work_key}' does not exist in this workspace");
+        }
         let offenders = self.stations_active_missions(work_key)?;
         if !offenders.is_empty() {
             bail!(
@@ -169,16 +180,14 @@ impl Store {
                 offenders.join(", ")
             );
         }
-        let deleted = self
-            .conn
-            .execute("DELETE FROM works WHERE work_key = ?1", [work_key])?;
+        let deleted = tx.execute("DELETE FROM works WHERE work_key = ?1", [work_key])?;
         if deleted == 0 {
             bail!("work '{work_key}' does not exist in this workspace");
         }
         // Stale arrival notes must not outlive the station: a same-key
         // successor bound to the same executor would otherwise inherit them.
-        self.conn
-            .execute("DELETE FROM work_notes WHERE work_key = ?1", [work_key])?;
+        tx.execute("DELETE FROM work_notes WHERE work_key = ?1", [work_key])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -187,8 +196,8 @@ impl Store {
         Ok(self
             .active_mission_references()?
             .into_iter()
-            .filter(|(_, _, referenced)| referenced.contains(work_key))
-            .map(|(mission_id, _, _)| mission_id)
+            .filter(|(_, _, lock_set, _)| lock_set.contains(work_key))
+            .map(|(mission_id, _, _, _)| mission_id)
             .collect())
     }
 
@@ -209,8 +218,8 @@ impl Store {
     /// count — those are the per-station `holding` numbers.
     pub fn inbound_counts(&self) -> Result<std::collections::BTreeMap<String, usize>> {
         let mut counts = std::collections::BTreeMap::new();
-        for (_, at, referenced) in self.active_mission_references()? {
-            for key in referenced {
+        for (_, at, _, contract_references) in self.active_mission_references()? {
+            for key in contract_references {
                 if at.as_deref() != Some(key.as_str()) {
                     *counts.entry(key).or_insert(0) += 1;
                 }
@@ -219,27 +228,33 @@ impl Store {
         Ok(counts)
     }
 
-    /// (mission_id, at, referenced stations) for every active mission. The
-    /// reference set is entry ∪ works keys ∪ path endpoints (a mission's
-    /// `at` always sits inside it).
+    /// (mission_id, at, lock set, contract references) for every active
+    /// mission. The lock set additionally includes `origin_work`, while the
+    /// contract references remain the routing-only set used by inbound counts.
     fn active_mission_references(&self) -> Result<MissionReferences> {
         let mut stmt = self.conn.prepare(
-            "SELECT mission_id, at, contract_json FROM missions WHERE status = 'active'",
+            "SELECT mission_id, at, contract_json, origin_work FROM missions WHERE status = 'active'",
         )?;
-        let rows: Vec<(String, Option<String>, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        let rows: Vec<(String, Option<String>, String, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
             .collect::<Result<_, _>>()?;
         let mut out = Vec::new();
-        for (mission_id, at, contract_json) in rows {
+        for (mission_id, at, contract_json, origin_work) in rows {
             let contract = parse_contract(&contract_json)?;
-            let mut referenced: BTreeSet<String> = BTreeSet::new();
-            referenced.insert(contract.entry.clone());
-            referenced.extend(contract.works.keys().cloned());
+            let mut contract_references: BTreeSet<String> = BTreeSet::new();
+            contract_references.insert(contract.entry.clone());
+            contract_references.extend(contract.works.keys().cloned());
             for edge in &contract.paths {
-                referenced.insert(edge.from.clone());
-                referenced.insert(edge.to.clone());
+                contract_references.insert(edge.from.clone());
+                contract_references.insert(edge.to.clone());
             }
-            out.push((mission_id, at, referenced));
+            let mut lock_set = contract_references.clone();
+            if let Some(origin) = &origin_work {
+                lock_set.insert(origin.clone());
+            }
+            out.push((mission_id, at, lock_set, contract_references));
         }
         Ok(out)
     }
@@ -299,12 +314,51 @@ impl Store {
         name_override: Option<&str>,
         objective_override: Option<&str>,
     ) -> Result<MissionCreateOutcome> {
-        self.require_tier(manager, Tier::Publish)?;
+        self.create_mission_internal(
+            manager,
+            None,
+            source,
+            idempotency_key,
+            name_override,
+            objective_override,
+        )
+    }
+
+    pub fn create_mission_from_work(
+        &self,
+        actor: &str,
+        origin_work: &str,
+        source: &TemplateSource,
+        idempotency_key: &str,
+        name_override: Option<&str>,
+        objective_override: Option<&str>,
+    ) -> Result<MissionCreateOutcome> {
+        self.create_mission_internal(
+            actor,
+            Some(origin_work),
+            source,
+            idempotency_key,
+            name_override,
+            objective_override,
+        )
+    }
+
+    fn create_mission_internal(
+        &self,
+        manager: &str,
+        origin_work: Option<&str>,
+        source: &TemplateSource,
+        idempotency_key: &str,
+        name_override: Option<&str>,
+        objective_override: Option<&str>,
+    ) -> Result<MissionCreateOutcome> {
+        if origin_work.is_none() {
+            self.require_tier(manager, Tier::Publish)?;
+        }
         let contract = contract::compile(source.template, &source.path, source.bytes)?;
 
-        // Station reference validation: every referenced station must exist
-        // and be active — referenced stations are editable but not deletable
-        // for as long as this mission lives.
+        // Assemble contract station references. Their authoritative existence
+        // check happens after BEGIN IMMEDIATE so create cannot race deletion.
         let mut referenced: BTreeSet<String> = BTreeSet::new();
         referenced.insert(contract.entry.clone());
         for key in contract.works.keys() {
@@ -314,26 +368,6 @@ impl Store {
             referenced.insert(edge.from.clone());
             referenced.insert(edge.to.clone());
         }
-        let mut unknown = Vec::new();
-        for key in &referenced {
-            match self.get_work(key) {
-                Ok(_) => {}
-                Err(_) => unknown.push(key.clone()),
-            }
-        }
-        if !unknown.is_empty() {
-            let known: Vec<String> = self
-                .list_works()?
-                .into_iter()
-                .map(|work| work.work_key)
-                .collect();
-            bail!(
-                "template references unknown stations: {} — known in this workspace: {}",
-                unknown.join(", "),
-                known.join(", ")
-            );
-        }
-
         let name = name_override
             .or(source.template.name.as_deref())
             .unwrap_or("mission");
@@ -341,29 +375,125 @@ impl Store {
             .or(source.template.objective.as_deref())
             .unwrap_or("");
         let workspace_id = self.workspace_id()?;
-        let mission_id = format!(
-            "ms_{}",
-            &sha256_hex(&[&workspace_id, idempotency_key])[..32]
-        );
+        let mission_id = match origin_work {
+            Some(origin) => format!(
+                "ms_{}",
+                &sha256_hex(&["work-origin-v1", &workspace_id, origin, idempotency_key])[..32]
+            ),
+            None => format!(
+                "ms_{}",
+                &sha256_hex(&[&workspace_id, idempotency_key])[..32]
+            ),
+        };
         let created = now();
+        let contract_json = serde_json::to_string(&contract)?;
 
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut unknown = Vec::new();
+        for key in &referenced {
+            let exists: bool = tx.query_row(
+                "SELECT COUNT(*) > 0 FROM works WHERE work_key = ?1",
+                [key],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                unknown.push(key.clone());
+            }
+        }
+        if !unknown.is_empty() {
+            let known: Vec<String> = tx
+                .prepare("SELECT work_key FROM works ORDER BY work_key")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            bail!(
+                "template references unknown stations: {} — known in this workspace: {}",
+                unknown.join(", "),
+                known.join(", ")
+            );
+        }
+        if let Some(origin) = origin_work {
+            let (status, tier): (String, String) = tx
+                .query_row(
+                    "SELECT status, tier FROM agents WHERE id = ?1",
+                    [manager],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+                .with_context(|| format!("agent '{manager}' is not registered"))?;
+            if status != "active" {
+                bail!("agent '{manager}' is not active");
+            }
+            let executor: Option<String> = tx
+                .query_row(
+                    "SELECT executor FROM works WHERE work_key = ?1",
+                    [origin],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .with_context(|| format!("origin work '{origin}' does not exist"))?;
+            match executor.as_deref() {
+                Some(executor) if executor == manager => {
+                    if !matches!(tier.as_str(), "publish" | "manage") {
+                        bail!("agent '{manager}' needs publish tier to represent origin work '{origin}'");
+                    }
+                }
+                None if tier == "manage" => {}
+                Some(executor) => {
+                    bail!("origin work '{origin}' is currently held by {executor}, not {manager}")
+                }
+                None => bail!("origin work '{origin}' is a user work and requires manage tier"),
+            }
+            if contract.template.as_ref().map(|t| t.path.as_str()) == Some("builtin:ask/v1") {
+                let active_for_pair: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM missions
+                     WHERE status = 'active' AND origin_work = ?1
+                       AND json_extract(contract_json, '$.entry') = ?2
+                       AND json_extract(contract_json, '$.template.path') = 'builtin:ask/v1'
+                       AND mission_id <> ?3",
+                    params![origin, contract.entry, mission_id],
+                    |row| row.get(0),
+                )?;
+                if active_for_pair >= 8 {
+                    bail!(
+                        "ask queue limit reached for {origin} → {} (8 active); finish or cancel an ask before publishing another",
+                        contract.entry
+                    );
+                }
+            }
+        }
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO missions (
                 mission_id, name, objective, contract_json,
-                at, status, revision, created_at, created_by
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7)",
+                at, status, revision, created_at, created_by, origin_work
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7, ?8)",
             params![
                 mission_id,
                 name,
                 objective,
-                serde_json::to_string(&contract)?,
+                contract_json,
                 contract.entry,
                 created,
-                manager
+                manager,
+                origin_work,
             ],
         )?;
         if inserted == 0 {
+            let existing: (String, String, String, Option<String>) = tx.query_row(
+                "SELECT name, objective, contract_json, origin_work FROM missions WHERE mission_id = ?1",
+                [&mission_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            if origin_work.is_some()
+                && (existing.0 != name
+                    || existing.1 != objective
+                    || existing.2 != contract_json
+                    || existing.3.as_deref() != origin_work)
+            {
+                bail!("idempotency key conflicts with an existing mission request");
+            }
             let run_view = self.creator_run_view(&mission_id, manager)?;
             tx.commit()?;
             return Ok(MissionCreateOutcome {
@@ -381,6 +511,8 @@ impl Store {
                 "entry": contract.entry,
                 "name": name,
                 "objective": objective,
+                "originWork": origin_work,
+                "createdBy": manager,
                 "template": {"path": source.path, "digest": contract.template.as_ref().map(|t| t.digest.clone()).unwrap_or_default()},
             }),
             created,
@@ -425,7 +557,7 @@ impl Store {
             .query_row(
                 "SELECT mission_id, name, objective, contract_json, at, status,
                         revision, ended_disposition, ended_by_work, ended_by_iteration,
-                        ended_at, created_at, created_by
+                        ended_at, created_at, created_by, origin_work
                  FROM missions WHERE mission_id = ?1",
                 [mission_id],
                 map_mission_row,
@@ -488,7 +620,7 @@ impl Store {
             let mut stmt = self.conn.prepare(
                 "SELECT mission_id, name, objective, contract_json, at, status,
                         revision, ended_disposition, ended_by_work, ended_by_iteration,
-                        ended_at, created_at, created_by
+                        ended_at, created_at, created_by, origin_work
                  FROM missions
                  WHERE at = ?1 AND status = 'active'
                  ORDER BY created_at",
@@ -501,12 +633,70 @@ impl Store {
         Ok(missions)
     }
 
+    pub fn results_for_agent(&self, agent_id: &str) -> Result<Vec<MissionRecord>> {
+        self.require_active_agent(agent_id)?;
+        let tier = self.agent_tier(agent_id)?;
+        let mut results = Vec::new();
+        for work in self.list_works()? {
+            let on_duty = work.executor.as_deref() == Some(agent_id)
+                || (work.executor.is_none() && tier == Some(Tier::Manage));
+            if !on_duty {
+                continue;
+            }
+            let mut stmt = self.conn.prepare(
+                "SELECT mission_id, name, objective, contract_json, at, status,
+                        revision, ended_disposition, ended_by_work, ended_by_iteration,
+                        ended_at, created_at, created_by, origin_work
+                 FROM missions
+                 WHERE origin_work = ?1 AND status = 'ended'
+                 ORDER BY ended_at DESC",
+            )?;
+            results.extend(
+                stmt.query_map([&work.work_key], map_mission_row)?
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(results)
+    }
+
+    pub fn mission_result(&self, mission_id: &str) -> Result<serde_json::Value> {
+        let mission = self.get_mission(mission_id)?;
+        if mission.status != "ended" {
+            bail!("Mission has not ended yet");
+        }
+        let events = self.mission_events(mission_id)?;
+        let ended = events
+            .iter()
+            .rev()
+            .find(|event| event.kind == EVENT_ENDED)
+            .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload))
+            .transpose()?
+            .unwrap_or_default();
+        let round = events
+            .iter()
+            .rev()
+            .find(|event| event.kind == EVENT_ROUND)
+            .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(json!({
+            "missionId": mission_id,
+            "originWork": mission.origin_work,
+            "disposition": mission.ended_disposition,
+            "outcome": ended["outcome"],
+            "result": round["result"],
+            "reason": if round["reason"].is_null() { &ended["reason"] } else { &round["reason"] },
+            "resolvedBy": round["resolvedBy"],
+            "endedAt": mission.ended_at,
+        }))
+    }
+
     /// The human attention plane: missions currently parked at user stations.
     pub fn inbox_missions(&self) -> Result<Vec<(MissionRecord, WorkRecord)>> {
         let mut stmt = self.conn.prepare(
             "SELECT m.mission_id, m.name, m.objective, m.contract_json, m.at, m.status,
                     m.revision, m.ended_disposition, m.ended_by_work, m.ended_by_iteration,
-                    m.ended_at, m.created_at, m.created_by, w.executor
+                    m.ended_at, m.created_at, m.created_by, m.origin_work, w.executor
              FROM missions m
              JOIN works w ON w.work_key = m.at
              WHERE m.status = 'active' AND w.executor IS NULL
@@ -622,6 +812,7 @@ impl Store {
                 outcome,
                 agent_id,
                 submission.reason,
+                submission.result,
                 &frozen_receipts,
                 user_station,
             );
@@ -644,6 +835,20 @@ impl Store {
             let feedback_text = submission.feedback.unwrap_or("");
             if feedback_text.trim().is_empty() {
                 bail!("outcome '{outcome}' requires non-empty feedback");
+            }
+        }
+        if discipline
+            .completion
+            .result_required_on
+            .iter()
+            .any(|o| o == outcome)
+            && submission.result.map(str::trim).unwrap_or("").is_empty()
+        {
+            bail!("outcome '{outcome}' requires a non-empty result");
+        }
+        if let Some(result) = submission.result {
+            if result.trim().is_empty() || result.len() > 16_384 {
+                bail!("result must be 1..=16384 UTF-8 bytes when given");
             }
         }
         if let Some(reason_text) = submission.reason {
@@ -670,6 +875,7 @@ impl Store {
                 outcome,
                 agent_id,
                 submission.reason,
+                submission.result,
                 &frozen_receipts,
                 user_station,
             );
@@ -746,6 +952,7 @@ impl Store {
             "resolvedBy": {"executorRef": agent_id, "plane": if user_station { "manager" } else { "agent" }},
             "reason": submission.reason,
             "feedback": submission.feedback,
+            "result": submission.result,
             "documentReceipts": frozen_receipts,
         });
         append_event(
@@ -829,6 +1036,7 @@ impl Store {
         outcome: &str,
         by_agent: &str,
         reason: Option<&str>,
+        result: Option<&str>,
         frozen_receipts: &[serde_json::Value],
         operator_plane: bool,
     ) -> Result<SubmitOutcome> {
@@ -849,6 +1057,7 @@ impl Store {
                 "resolvedBy": {"executorRef": by_agent, "plane": if operator_plane { "manager" } else { "agent" }},
                 "reason": reason,
                 "feedback": null,
+                "result": result,
                 "documentReceipts": frozen_receipts,
             }),
             created,
@@ -880,9 +1089,32 @@ impl Store {
                 "outcome": outcome,
                 "byWork": by_work,
                 "byIteration": iteration,
+                "reason": reason,
+                "result": result,
+                "resolvedBy": {"executorRef": by_agent, "plane": if operator_plane { "manager" } else { "agent" }},
             }),
             created,
         )?;
+        if let Some(origin) = mission.origin_work.as_deref() {
+            let current_executor: Option<String> = tx
+                .query_row(
+                    "SELECT executor FROM works WHERE work_key = ?1",
+                    [origin],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            if current_executor.as_deref() != Some(by_agent) {
+                insert_result_note(
+                    &tx,
+                    origin,
+                    &mission.mission_id,
+                    disposition,
+                    outcome,
+                    created,
+                )?;
+            }
+        }
         tx.commit()?;
 
         // mission.ended fan-out: a workspace notice, not a peer message.
@@ -927,6 +1159,97 @@ impl Store {
     }
 
     /// Manager delete: disposition=deleted, not attributed to any round.
+    pub fn cancel_ask(
+        &self,
+        actor: &str,
+        mission_id: &str,
+        expected_revision: i64,
+        reason: Option<&str>,
+    ) -> Result<SubmitOutcome> {
+        if let Some(reason) = reason {
+            if reason.trim().is_empty() || reason.len() > 2000 {
+                bail!("reason must be 1..=2000 chars when given");
+            }
+        }
+        let mission = self.get_mission(mission_id)?;
+        if mission.status != "active" {
+            bail!("Mission has already ended");
+        }
+        let contract = parse_contract(&mission.contract_json)?;
+        if contract.template.as_ref().map(|t| t.path.as_str()) != Some("builtin:ask/v1") {
+            bail!("only built-in asks can be cancelled with `im ask cancel`");
+        }
+        let origin = mission
+            .origin_work
+            .as_deref()
+            .context("legacy missions have no origin work")?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let (status, revision): (String, i64) = tx.query_row(
+            "SELECT status, revision FROM missions WHERE mission_id = ?1",
+            [mission_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if status != "active" || revision != expected_revision {
+            bail!("Mission state was superseded (current revision: {revision})");
+        }
+        let (agent_status, tier): (String, String) = tx.query_row(
+            "SELECT status, tier FROM agents WHERE id = ?1",
+            [actor],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if agent_status != "active" {
+            bail!("agent '{actor}' is not active");
+        }
+        let executor: Option<String> = tx.query_row(
+            "SELECT executor FROM works WHERE work_key = ?1",
+            [origin],
+            |row| row.get(0),
+        )?;
+        let authorized = match executor.as_deref() {
+            Some(executor) => executor == actor && matches!(tier.as_str(), "publish" | "manage"),
+            None => tier == "manage",
+        };
+        if !authorized {
+            bail!("actor may not cancel asks issued by origin work '{origin}'");
+        }
+        let created = now();
+        let new_revision = revision + 1;
+        let updated = tx.execute(
+            "UPDATE missions SET at = NULL, status = 'ended', revision = ?1,
+                    ended_disposition = 'cancelled', ended_by_work = ?2, ended_at = ?3
+             WHERE mission_id = ?4 AND revision = ?5 AND status = 'active'",
+            params![new_revision, origin, created, mission_id, revision],
+        )?;
+        if updated != 1 {
+            bail!("Mission state was superseded");
+        }
+        append_event(
+            &tx,
+            mission_id,
+            EVENT_ENDED,
+            json!({
+                "disposition": "cancelled",
+                "outcome": "cancelled",
+                "reason": reason,
+                "byWork": origin,
+                "resolvedBy": {"executorRef": actor, "plane": if executor.is_none() { "manager" } else { "agent" }},
+            }),
+            created,
+        )?;
+        insert_result_note(&tx, origin, mission_id, "cancelled", "cancelled", created)?;
+        tx.commit()?;
+        Ok(SubmitOutcome {
+            mission_id: mission_id.to_string(),
+            routed_to: None,
+            iteration_at_target: None,
+            revision: new_revision,
+            mission_ended: true,
+        })
+    }
+
     pub fn delete_mission(
         &self,
         manager: &str,
@@ -963,6 +1286,16 @@ impl Store {
             }),
             created,
         )?;
+        if let Some(origin) = mission.origin_work.as_deref() {
+            insert_result_note(
+                &tx,
+                origin,
+                &mission.mission_id,
+                "deleted",
+                "deleted",
+                created,
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -1043,6 +1376,7 @@ pub struct RoundSubmission<'a> {
     pub next_node: Option<&'a str>,
     pub reason: Option<&'a str>,
     pub feedback: Option<&'a str>,
+    pub result: Option<&'a str>,
     pub receipt_ids: &'a [String],
 }
 
@@ -1054,10 +1388,12 @@ pub struct TemplateSource<'a> {
     pub bytes: &'a [u8],
 }
 
-/// (mission_id, at, referenced stations) per active mission. The reference
-/// set is entry ∪ works keys ∪ path endpoints; a mission's `at` always
-/// sits inside it.
-pub type MissionReferences = Vec<(String, Option<String>, BTreeSet<String>)>;
+/// (mission_id, at, lock set, contract references) per active mission. The
+/// contract references are entry ∪ works keys ∪ path endpoints (a mission's
+/// `at` always sits inside it); the lock set additionally contains
+/// `origin_work`, which locks against deletion but never participates in
+/// routing or inbound counts.
+pub type MissionReferences = Vec<(String, Option<String>, BTreeSet<String>, BTreeSet<String>)>;
 
 fn map_mission_row(row: &rusqlite::Row) -> rusqlite::Result<MissionRecord> {
     Ok(MissionRecord {
@@ -1074,16 +1410,17 @@ fn map_mission_row(row: &rusqlite::Row) -> rusqlite::Result<MissionRecord> {
         ended_at: row.get(10)?,
         created_at: row.get(11)?,
         created_by: row.get(12)?,
+        origin_work: row.get(13)?,
     })
 }
 
 fn map_work_row_by_prefix(row: &rusqlite::Row) -> rusqlite::Result<WorkRecord> {
-    // Row layout: mission columns 0..12, then works executor(13). Only the
+    // Row layout: mission columns 0..13, then works executor(14). Only the
     // executor is needed here; other station facts are re-read by callers.
     Ok(WorkRecord {
         work_key: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
         description: String::new(),
-        executor: row.get(13)?,
+        executor: row.get(14)?,
         prompt: String::new(),
     })
 }
@@ -1123,6 +1460,28 @@ fn insert_arrival_note(
         "INSERT INTO work_notes (work_key, kind, mission_id, content, created_at, read)
          VALUES (?1, 'mission_arrived', ?2, ?3, ?4, 0)",
         params![work_key, mission_id, content, created],
+    )?;
+    Ok(())
+}
+
+fn insert_result_note(
+    tx: &rusqlite::Transaction,
+    work_key: &str,
+    mission_id: &str,
+    disposition: &str,
+    outcome: &str,
+    created: i64,
+) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO work_notes
+            (work_key, kind, mission_id, content, created_at, read)
+         VALUES (?1, 'mission_result', ?2, ?3, ?4, 0)",
+        params![
+            work_key,
+            mission_id,
+            format!("[{mission_id}] result: {disposition} ({outcome})"),
+            created
+        ],
     )?;
     Ok(())
 }
@@ -1282,6 +1641,7 @@ pub struct RunView {
     pub mission_id: String,
     pub name: String,
     pub objective: String,
+    pub origin_work: Option<String>,
     pub at: Option<String>,
     pub status: String,
     pub revision: i64,
@@ -1317,6 +1677,7 @@ impl Store {
                 let reason = self.last_round_reason(&mission.mission_id)?;
                 let from = self
                     .last_routed_from(&mission.mission_id)
+                    .or_else(|| mission.origin_work.clone())
                     .unwrap_or_else(|| mission.created_by.clone());
                 let prompt = if work.prompt.is_empty() {
                     None
@@ -1388,6 +1749,7 @@ impl Store {
             mission_id: mission.mission_id,
             name: mission.name,
             objective: mission.objective,
+            origin_work: mission.origin_work,
             at: mission.at,
             status: mission.status,
             revision: mission.revision,
@@ -1432,8 +1794,9 @@ pub struct InterpolationContext<'a> {
     pub reason: Option<&'a str>,
 }
 
-/// Unknown slots stay literal; `from` falls back to the creator for
-/// never-routed missions; `iteration` renders as 1 when unset.
+/// Unknown slots stay literal; `from` is the last routing station, or the
+/// origin Work for a never-routed Work-origin mission. Legacy missions fall
+/// back to the creating Agent. `iteration` renders as 1 when unset.
 pub fn interpolate_prompt(prompt: &str, context: &InterpolationContext) -> String {
     prompt
         .replace("{mission.name}", context.name)
