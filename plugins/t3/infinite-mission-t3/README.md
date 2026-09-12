@@ -74,6 +74,23 @@ tool path (im is a local CLI over SQLite).
   cores, where the sweep is inert) and re-delivers any result with no live
   thread and no persisted ack. Acked results and live threads make the
   sweep idempotent — a redelivered result cannot loop.
+- **Turn-error reopen (fresh session)** — when a watched turn ends in
+  `error` while its mission is still open (classically: the member's
+  provider/model was switched mid-mission and the thread's history no
+  longer fits the new runtime), the bridge deletes the thread and lets the
+  reconcile sweep redeliver into a FRESH session — every delivery re-reads
+  `mission show`, so nothing is lost. Budgeted per (member × mission):
+  `turnErrorReopen` (default true) gates it, `turnErrorReopenMax`
+  (default 2) reopens before parking; a parked mission needs the member
+  config fixed and its thread deleted in T3 (the sweep heals from there).
+  `interrupted` turns are never reopened — a human stopped them.
+- **Restart orphans are re-adopted by the sweep** — a bridge restart loses
+  the in-memory watchers of live threads. Whenever the reconcile sweep
+  skips over a live thread ("already delivered"), it inspects the turn:
+  an `error` turn takes the reopen path above, an in-flight turn gets a
+  fresh watch (settle/error handling resumes), a thread whose turn never
+  landed is re-delivered into, and a `completed` turn on a parked mission
+  keeps its legacy parked semantics.
 - **Membership end → loop stops** — an archived/removed member is muted for
   the process lifetime; restart the bridge after re-joining.
 - **Rename/remove cleanup survives restarts** — every id the bridge joins is
