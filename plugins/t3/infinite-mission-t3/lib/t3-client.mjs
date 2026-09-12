@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { runCapture } from "./spawn.mjs";
 
 // Refresh a token this long before its stated expiry.
@@ -169,6 +170,11 @@ export class HttpT3Client {
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`thread snapshot for ${threadId} failed: HTTP ${res.status}`);
     return res.json();
+  }
+
+  /** Delete a thread (turn-error reopen: frees it for a fresh redelivery). */
+  async deleteThread(threadId) {
+    await this.dispatch({ type: "thread.delete", commandId: randomUUID(), threadId });
   }
 
   async dispatch(command) {

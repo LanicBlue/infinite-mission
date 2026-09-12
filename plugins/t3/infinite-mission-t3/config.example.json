@@ -1,7 +1,10 @@
 {
   "imBin": "/Users/lanic/.local/bin/im",
   "t3": {
-    "bin": ["node", "/opt/homebrew/lib/node_modules/t3/dist/bin.mjs"],
+    "bin": [
+      "node",
+      "/opt/homebrew/lib/node_modules/t3/dist/bin.mjs"
+    ],
     "home": "~/.t3",
     "label": "im-t3-bridge",
     "tokenTtl": "30d"
@@ -9,7 +12,12 @@
   "receiveTimeoutSec": 600,
   "rescanSec": 60,
   "maxDeliverAttempts": 10,
-  "admin": { "listen": "127.0.0.1:4770", "enabled": true },
+  "turnErrorReopen": true,
+  "turnErrorReopenMax": 2,
+  "admin": {
+    "listen": "127.0.0.1:4770",
+    "enabled": true
+  },
   "workspaces": null,
   "members": [
     {

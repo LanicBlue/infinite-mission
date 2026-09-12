@@ -46,6 +46,15 @@ export function validateConfig(raw) {
     add("maxDeliverAttempts", "must be an integer >= 1");
   }
 
+  const turnErrorReopen = raw.turnErrorReopen ?? true;
+  if (typeof turnErrorReopen !== "boolean") {
+    add("turnErrorReopen", "must be a boolean");
+  }
+  const turnErrorReopenMax = raw.turnErrorReopenMax ?? 2;
+  if (!Number.isInteger(turnErrorReopenMax) || turnErrorReopenMax < 1) {
+    add("turnErrorReopenMax", "must be an integer >= 1");
+  }
+
   const t3raw = raw.t3 ?? {};
   if (t3raw === null || typeof t3raw !== "object" || Array.isArray(t3raw)) {
     add("t3", "must be an object");
@@ -136,7 +145,7 @@ export function validateConfig(raw) {
 
   return {
     ok: true,
-    config: { imBin, receiveTimeoutSec, rescanSec, maxDeliverAttempts, t3, workspaces, members },
+    config: { imBin, receiveTimeoutSec, rescanSec, maxDeliverAttempts, turnErrorReopen, turnErrorReopenMax, t3, workspaces, members },
   };
 }
 
