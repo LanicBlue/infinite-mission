@@ -104,6 +104,7 @@ class FakeDelivery {
     this.hasThreadCalls = [];
     this.failDeliver = false;
     this.threadExists = async () => true;
+    this.turnState = "completed"; // latestTurn.state reported by liveThread
   }
   async deliver(args) {
     if (this.failDeliver) throw new Error("t3 unreachable");
@@ -115,8 +116,14 @@ class FakeDelivery {
     return true;
   }
   async hasThread(memberId, missionId) {
+    return Boolean(await this.liveThread(memberId, missionId));
+  }
+  async liveThread(memberId, missionId) {
     this.hasThreadCalls.push([memberId, missionId]);
-    return this.threadExists(memberId, missionId);
+    if (!(await this.threadExists(memberId, missionId))) return null;
+    const thread = { id: `im-${missionId}`, settledAt: null, settledOverride: null };
+    if (this.turnState !== null) thread.latestTurn = { state: this.turnState };
+    return thread;
   }
 }
 
@@ -959,3 +966,132 @@ test("names im would reject (newline/oversized) are skipped once, not retried ev
   await bridge.reconcile();
   assert.equal(runner.calls.rename.length, 0, "invalid names never reach im rename");
 });
+
+test("watcher reopens a turn-error thread into a fresh session (delete + sweep redeliver)", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL("ms_aaaabbbbccccdddd") }],
+    missionShow: () => ({ ok: true, text: "[mission ms_aaaabbbbccccdddd] Smoke — active" }),
+    missions: ["ms_aaaabbbbccccdddd"],
+  });
+  const delivery = new FakeDelivery();
+  const deleted = [];
+  const fakeT3 = {
+    async threadDetail() {
+      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "error" }, settledAt: null, settledOverride: null } };
+    },
+    async deleteThread(threadId) { deleted.push(threadId); },
+  };
+  const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  await bridge.reconcile(); // poll watchers → turn error, mission open → reopen
+  assert.deepEqual(deleted, ["im-ms_aaaabbbbccccdddd"]);
+  assert.equal(bridge.watching.length, 0); // watch dropped; redelivery re-watches
+  assert.equal(bridge.reopenCounts.get("t3-codex\0ms_aaaabbbbccccdddd"), 1);
+});
+
+test("turn-error reopen is budgeted per (member, mission)", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missions: ["ms_aaaabbbbccccdddd"],
+  });
+  const delivery = new FakeDelivery();
+  const deleted = [];
+  const fakeT3 = {
+    async threadDetail() {
+      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "error" }, settledAt: null, settledOverride: null } };
+    },
+    async deleteThread(threadId) { deleted.push(threadId); },
+  };
+  const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig({ turnErrorReopenMax: 2 }), logger: quiet });
+  t.after(() => bridge.stop());
+  const watch = { workspace: WS, memberId: "t3-codex", missionId: "ms_aaaabbbbccccdddd", threadId: "im-ms_aaaabbbbccccdddd" };
+  for (let round = 1; round <= 3; round += 1) {
+    bridge.watching.push({ ...watch });
+    await bridge.reconcile(); // poll watchers
+  }
+  assert.equal(deleted.length, 2); // rounds 1–2 reopened, round 3 parked
+  assert.equal(bridge.watching.length, 0);
+});
+
+test("turn-error reopen can be disabled (thread left active, legacy behavior)", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missions: ["ms_aaaabbbbccccdddd"],
+  });
+  const delivery = new FakeDelivery();
+  const deleted = [];
+  const fakeT3 = {
+    async threadDetail() {
+      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "error" }, settledAt: null, settledOverride: null } };
+    },
+    async deleteThread(threadId) { deleted.push(threadId); },
+  };
+  const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig({ turnErrorReopen: false }), logger: quiet });
+  t.after(() => bridge.stop());
+  bridge.watching.push({ workspace: WS, memberId: "t3-codex", missionId: "ms_aaaabbbbccccdddd", threadId: "im-ms_aaaabbbbccccdddd" });
+  await bridge.reconcile();
+  assert.deepEqual(deleted, []); // legacy: nothing deleted
+  assert.equal(bridge.watching.length, 0);
+});
+
+test("sweep re-adopts a restart-orphaned errored thread: reopen, then deliver fresh", async (t) => {
+  // No arrival note and no watch — the previous bridge life died around the
+  // turn; the thread errored afterwards with the mission still parked.
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missionShow: () => ({ ok: true, text: "[mission ms_aaaabbbbccccdddd] Swept — active\n  revision: 3" }),
+    missions: [{ id: "ms_aaaabbbbccccdddd", station: "build" }],
+  });
+  const delivery = new FakeDelivery();
+  delivery.turnState = "error";
+  const deleted = [];
+  const fakeT3 = { async deleteThread(threadId) { deleted.push(threadId); } };
+  const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.deepEqual(deleted, ["im-ms_aaaabbbbccccdddd"], "errored orphan reopened on the first sweep");
+  assert.equal(delivery.deliverCalls.length, 0, "delivery waits for the next tick's thread probe");
+  assert.equal(bridge.reopenCounts.get("t3-codex\0ms_aaaabbbbccccdddd"), 1);
+  // Thread now deleted → probe misses → fresh delivery with a fresh watch.
+  delivery.threadExists = async () => false;
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 1);
+  assert.equal(bridge.watching.length, 1);
+});
+
+test("sweep re-arms a watch on a restart-orphaned in-flight turn", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missions: [{ id: "ms_aaaabbbbccccdddd", station: "build" }],
+  });
+  const delivery = new FakeDelivery();
+  delivery.turnState = "running";
+  const fakeT3 = { async deleteThread() { throw new Error("must not delete"); } };
+  const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.equal(bridge.watching.length, 1, "watch re-armed on the live thread");
+  assert.equal(delivery.deliverCalls.length, 0, "round already in flight — no re-inject");
+  await bridge.reconcile(); // watched now → sweep skips; watcher keeps waiting
+  assert.equal(bridge.watching.length, 1);
+  assert.equal(delivery.hasThreadCalls.length, 1, "the watch short-circuits further probes");
+});
+
+test("sweep re-delivers a live thread whose turn never landed", async (t) => {
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    missionShow: () => ({ ok: true, text: "[mission ms_eeeef0f0f0f0f0f0] Turnless — active" }),
+    missions: [{ id: "ms_eeeef0f0f0f0f0f0", station: "build" }],
+  });
+  const delivery = new FakeDelivery();
+  delivery.turnState = null; // thread exists, no turn ever dispatched into it
+  const bridge = new Bridge({ runner, delivery, t3: {}, config: makeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 1, "round re-injected into the live thread");
+  assert.equal(bridge.watching.length, 1, "re-delivery registers its own watch");
+});
+

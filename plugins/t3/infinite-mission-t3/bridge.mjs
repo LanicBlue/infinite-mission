@@ -71,6 +71,8 @@ export class Bridge {
     // member ids only — the member's instance/model is re-read at delivery
     // time, never snapshotted here.
     this.watching = [];
+    // Turn-error reopen budget per (member\0mission); in-memory like the watch list.
+    this.reopenCounts = new Map();
     // `${workspace}\0${memberId}\0${missionId}` of deliveries currently
     // running — the receive loop, the sweep, and the retry queue can all
     // trigger the same mission concurrently; the first one wins.
@@ -528,7 +530,8 @@ export class Bridge {
    * delivery that failed past the retry budget, or the bridge restarted
    * around it. Deliver it again; a live thread (deterministic id) is the
    * ground truth that a round already arrived, so delivered missions —
-   * including follow-up rounds into their existing threads — are skipped.
+   * including follow-up rounds into their existing threads — are re-adopted
+   * by turn state instead of skipped (#reconcileLiveThread).
    */
   async #sweepUndelivered(workspaces, members) {
     if (!this.t3) return;
@@ -548,15 +551,18 @@ export class Bridge {
         for (const { id: missionId, station } of entries) {
           const dedupe = `${workspace}\0${member.id}\0${missionId}`;
           if (queued.has(dedupe) || watched.has(dedupe) || this.inflight.has(dedupe)) continue;
-          let arrived;
+          let thread;
           try {
-            arrived = await this.delivery.hasThread(member.id, missionId);
+            thread = await this.delivery.liveThread(member.id, missionId);
           } catch (err) {
             // T3 unreachable — retries own recovery; re-probe next tick.
             this.log("bridge", `sweep aborted (T3 probe failed): ${err.message}`);
             return;
           }
-          if (arrived) continue;
+          if (thread) {
+            await this.#reconcileLiveThread(workspace, member.id, station, missionId, thread, this.tag(workspace, member.id));
+            continue;
+          }
           this.log(this.tag(workspace, member.id), `sweep: ${missionId}@${station} has no T3 thread — delivering`);
           await this.#tryDeliver(workspace, member.id, station, missionId, this.tag(workspace, member.id));
         }
@@ -665,6 +671,16 @@ export class Bridge {
         } catch (err) {
           this.log(tag, `settle failed for ${watch.missionId}: ${err.message}`);
         }
+      } else if (state === "error" && this.config.turnErrorReopen === true) {
+        // A turn that died mid-flight (classically: the member's provider or
+        // model was switched while the mission was open, and the thread's
+        // accumulated history no longer fits the new runtime). Threads are
+        // disposable scratch — every delivery re-reads `mission show`, the
+        // ledger is the state — so delete the thread and let the reconcile
+        // sweep redeliver into a FRESH session on the member's current
+        // config.
+        await this.#reopenTurnError(tag, watch.memberId, watch.missionId, watch.threadId);
+        continue; // watch dropped: the redelivery registers a new watcher
       } else {
         this.log(
           tag,
@@ -673,6 +689,70 @@ export class Bridge {
       }
     }
     this.watching = stillWatching;
+  }
+
+  /**
+   * Turn errored with the mission still open — delete the thread so the
+   * reconcile sweep redelivers into a fresh session on the member's current
+   * config. Budgeted per (member, mission) so a persistently broken config
+   * cannot loop forever; once exhausted, a human fixes the config and deletes
+   * the parked thread in T3 (the sweep heals). Shared by the turn watcher and
+   * the sweep's re-adoption of restart-orphaned threads.
+   */
+  async #reopenTurnError(tag, memberId, missionId, threadId) {
+    const key = `${memberId}\0${missionId}`;
+    const attempt = (this.reopenCounts.get(key) ?? 0) + 1;
+    if (attempt > this.config.turnErrorReopenMax) {
+      this.log(
+        tag,
+        `turn error on ${missionId}, reopen budget exhausted (${this.config.turnErrorReopenMax}) — thread left active; fix the member config, then delete the thread in T3 to retry`,
+      );
+      return false;
+    }
+    this.reopenCounts.set(key, attempt);
+    try {
+      await this.t3.deleteThread(threadId);
+      this.log(
+        tag,
+        `turn error on ${missionId} — thread ${threadId} deleted (reopen ${attempt}/${this.config.turnErrorReopenMax}); sweep redelivers into a fresh session`,
+      );
+      return true;
+    } catch (err) {
+      this.log(tag, `turn-error reopen failed (${err.message}) — thread left active`);
+      return false;
+    }
+  }
+
+  /**
+   * A bridge restart orphans the watchers of live threads: a turn that errors
+   * afterwards goes unseen (and unreopened), and a turn that completes is
+   * never settled. Whenever the sweep skips over a live thread — "already
+   * delivered" — it first re-adopts it by turn state: an errored turn takes
+   * the reopen path, an in-flight turn gets a fresh watch, a thread whose
+   * turn never landed is re-delivered into, and a completed turn on a parked
+   * mission keeps its legacy parked semantics (follow-up round or operator).
+   */
+  async #reconcileLiveThread(workspace, memberId, station, missionId, thread, tag) {
+    const state = thread.latestTurn?.state ?? null;
+    if (state === "error" && this.config.turnErrorReopen === true) {
+      await this.#reopenTurnError(tag, memberId, missionId, thread.id);
+      return;
+    }
+    if (state === null) {
+      // Thread exists but no turn was ever dispatched into it — the round
+      // never reached the agent (a crash between thread create and turn
+      // start). Inject the brief (followup mode) rather than strand it.
+      this.log(tag, `sweep: live thread ${thread.id} for ${missionId} has no turn — re-delivering the round`);
+      await this.#tryDeliver(workspace, memberId, station, missionId, tag);
+      return;
+    }
+    if (state !== "completed" && state !== "interrupted") {
+      this.watching.push({ workspace, memberId, missionId, threadId: thread.id });
+      this.log(tag, `sweep: re-armed watch on ${thread.id} for ${missionId} (turn ${state}; bridge restarted around it)`);
+      return;
+    }
+    // Completed/interrupted with the mission still parked: the agent likely
+    // skipped its submit — thread left active for a follow-up round.
   }
 
   async #flushRetries() {

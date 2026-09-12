@@ -209,18 +209,29 @@ export class Delivery {
    * on activity, so a revisit round injects right back into it.
    */
   async hasThread(memberId, missionId) {
+    return Boolean(await this.liveThread(memberId, missionId));
+  }
+
+  /**
+   * The live (undeleted, unsettled) thread carrying this member's current
+   * round on the mission — what "already delivered" means to the sweep —
+   * returned with its snapshot (turn state included) so callers can
+   * reconcile a thread whose watcher was lost to a bridge restart.
+   */
+  async liveThread(memberId, missionId) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const snapshot = await this.t3.threadDetail(threadIdFor(memberId, missionId, attempt));
       const thread = snapshot?.thread;
       if (thread && !thread.deletedAt && !thread.settledAt && thread.settledOverride !== "settled") {
-        return true;
+        return thread;
       }
     }
     // The deterministic probes can miss a random-suffix thread (deleted
     // bases squatted their ids); a live one still counts as delivered — a
     // settled one does not, or a revisit round could never find it.
     const reuse = this.#findByPrefix(await this.t3.shell(), memberId, missionId);
-    return Boolean(reuse && !reuse.settledAt && reuse.settledOverride !== "settled");
+    if (reuse && !reuse.settledAt && reuse.settledOverride !== "settled") return reuse;
+    return null;
   }
 
   /**
