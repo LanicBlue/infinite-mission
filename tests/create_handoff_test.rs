@@ -272,12 +272,11 @@ fn cli_creation_prints_the_same_full_view_as_show_and_remains_discoverable() {
 }
 
 #[test]
-fn console_creation_returns_structured_view_only_for_bound_creator() {
-    for (executor, expect_view) in [
-        (Some("owner"), true),
-        (Some("worker"), false),
-        (None, false),
-    ] {
+fn console_creation_never_takes_the_structured_first_round_view() {
+    // The console signs as the built-in `console` identity, which is never a
+    // station executor — creation always lands as a normal arrival note for
+    // whoever is on duty, regardless of how the entry work is bound.
+    for executor in [Some("owner"), Some("worker"), None] {
         let (tmp, store) = setup(executor);
         let response = im::ui::apply_action_response(
             &store,
@@ -289,13 +288,8 @@ fn console_creation_returns_structured_view_only_for_bound_creator() {
         )
         .unwrap();
         assert_eq!(response["ok"], true);
-        assert_eq!(response.get("runView").is_some(), expect_view);
-        if expect_view {
-            assert_eq!(response["runView"]["revision"], 1);
-            assert_eq!(response["runView"]["on_duty"], true);
-            assert_eq!(response["runView"]["documents"][0]["may_write"], true);
-        }
-        assert_eq!(note_count(&store), if expect_view { 0 } else { 1 });
+        assert!(response.get("runView").is_none());
+        assert_eq!(note_count(&store), 1);
     }
 }
 

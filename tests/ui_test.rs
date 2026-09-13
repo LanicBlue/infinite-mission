@@ -978,3 +978,110 @@ fn console_origin_ask_and_result_ack_do_not_consume_notes() {
         .unwrap();
     assert_eq!(desk_after["unreadResults"].as_i64().unwrap(), 0);
 }
+
+/// The console acts as the built-in `console` identity — a global user
+/// identity, not an agent member: gated actions work with zero members,
+/// the id can never be registered, and CLI verbs refuse it as an operator.
+#[test]
+fn console_acts_as_the_builtin_user_identity() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_path_buf();
+    im(&ws).arg("init").assert().success();
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+
+    // Zero members, zero manage tier — the console still creates a station.
+    let created = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "work_create",
+            "work": "desk",
+            "executor": "-",
+            "prompt": ""
+        }),
+        &ws,
+    )
+    .unwrap();
+    assert!(created.contains("station desk created"), "got: {created}");
+    assert!(store.manage_members().unwrap().is_empty());
+
+    // The built-in id is reserved: it can never become a member.
+    im(&ws)
+        .args(["join", im::records::CONSOLE_ACTOR])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("reserved for the console"));
+
+    // And it can never act from the CLI, even on verbs without ensure_agent.
+    im(&ws)
+        .args([
+            "work",
+            "set-executor",
+            im::records::CONSOLE_ACTOR,
+            "desk",
+            "someone",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("can only act from the console"));
+    im(&ws)
+        .args(["mission", "end", im::records::CONSOLE_ACTOR, "ms_none"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("can only act from the console"));
+}
+
+/// A console quick-ask signs as the built-in identity and may represent any
+/// origin work (the origin-representation guard stops member hijack, not the
+/// user); the first round lands at the entry station as a normal arrival.
+#[test]
+fn console_quick_ask_signs_as_console_and_skips_origin_guard() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_path_buf();
+    im(&ws).arg("init").assert().success();
+    im(&ws).args(["join", "worker"]).assert().success();
+
+    let store = im::store::Store::open(&ws.join(".im").join("im.db")).unwrap();
+    im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "work_create",
+            "work": "home",
+            "executor": "-",
+            "prompt": ""
+        }),
+        &ws,
+    )
+    .unwrap();
+    im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "work_create",
+            "work": "desk",
+            "executor": "worker",
+            "prompt": ""
+        }),
+        &ws,
+    )
+    .unwrap();
+    assert!(store.manage_members().unwrap().is_empty());
+
+    let message = im::ui::apply_action(
+        &store,
+        &serde_json::json!({
+            "type": "mission_create",
+            "key": "ask-1",
+            "originWork": "home",
+            "targetWork": "desk",
+            "objective": "is the desk warm?"
+        }),
+        &ws,
+    )
+    .unwrap();
+    assert!(message.contains("created mission ms_"), "got: {message}");
+
+    let mission_id = message.trim().split(' ').next_back().unwrap().to_string();
+    let mission = store.get_mission(&mission_id).unwrap();
+    assert_eq!(mission.created_by, im::records::CONSOLE_ACTOR);
+    assert_eq!(mission.at.as_deref(), Some("desk"));
+    assert_eq!(mission.origin_work.as_deref(), Some("home"));
+}

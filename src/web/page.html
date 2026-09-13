@@ -431,7 +431,7 @@ function inboxPane() {
 	const cards = state.inbox || [];
 	const userWorks = new Set((state.works || []).filter(w => !w.executor).map(w => w.work_key));
 	const returned = (state.results || []).filter(r => !r.acked && userWorks.has(r.work_key));
-	const empty = !cards.length ? `<div class="empty">没有停在用户工位等待决策的任务${returned.length ? "" : `<br><br><span class="hint">起步：终端 <code>im join &lt;你&gt;</code> → 「成员」页把 tier 设为 manage → 「工位」页建工位 → 「任务」页从模板建任务</span>`}</div>` : "";
+	const empty = !cards.length ? `<div class="empty">没有停在用户工位等待决策的任务${returned.length ? "" : `<br><br><span class="hint">起步：「工位」页建工位 → 「任务」页从模板建任务；成员在终端 <code>im join &lt;你&gt;</code> 注册</span>`}</div>` : "";
 	const decisions = cards.map(i => {
 		const terms = (i.routes || []).map(r => `<button class="btn small outcome" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="${esc(r.outcome)}" title="按下后的去向${r.feedback ? "；此 outcome 需填打回 feedback" : ""}">${esc(r.outcome)}${r.feedback ? " ✎" : ""} · ${esc(r.to)}</button>`).join("");
 		const rounds = i.rounds || [];
@@ -450,8 +450,8 @@ function inboxPane() {
 				<span class="chip">到达 ${ago(i.arrived_at)}</span>
 				<span class="chip mono">${esc(i.mission_id.slice(0,15))}…</span>
 				<span class="spacer"></span>
-				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="manage-tier 放弃（来自控制台）">abandon</button>
-				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="manage tier 强制结束（disposition: deleted）">强制结束</button>
+				<button class="btn small" data-act="resolve" data-mission="${esc(i.mission_id)}" data-revision="${i.revision}" data-outcome="abandon" data-reason="用户放弃（来自控制台）">abandon</button>
+				<button class="btn small danger" data-act="end" data-mission="${esc(i.mission_id)}" title="用户强制结束（disposition: deleted）">强制结束</button>
 			</div>
 			<div class="actions-row">${terms}</div>
 		</article>`;
@@ -487,7 +487,7 @@ function resultCard(r) {
 		<div><h2>工位</h2><p class="meta">任务流转的停驻点；不绑值守者即用户工位；点「详情」看完整配置</p></div>
 		<div class="header-actions"><button class="btn primary" data-act="open-work-create">＋ 新建工位</button></div>
 	</header>`;
-	if (!works.length) return header + `<div class="empty">还没有工位<br><br><span class="hint">点右上角「＋ 新建工位」创建；需先在「成员」页设一个 manage tier</span></div>`;
+	if (!works.length) return header + `<div class="empty">还没有工位<br><br><span class="hint">点右上角「＋ 新建工位」创建</span></div>`;
 	return header + works.map(w => `<article class="card">
 		<div class="card-row">
 			<h3 style="margin:0">${esc(w.work_key)}</h3>
@@ -644,7 +644,7 @@ function missionsPane() {
 function membersPane() {
 	const agents = state.agents || [];
 	const tiers = ["execute", "publish", "manage"];
-	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；成员之间没有直连，作业只随工位 prompt 与任务到达；权限是三级阶梯 execute ⊂ publish ⊂ manage（manage 只能在本页的 tier 下拉设置，零 manage 时同样可用）；在册与归档成员都可删除，值守工位须先换绑</p></div></header>
+	return `<header class="detail-header"><div><h2>成员</h2><p class="meta">身份自报注册（重名自动加后缀）；成员之间没有直连，作业只随工位 prompt 与任务到达；tier 阶梯只管成员的终端操作（execute ⊂ publish ⊂ manage，manage 只能在本页的 tier 下拉设置）；控制台以内置身份 <code>console</code> 行事，不受 tier 限制；在册与归档成员都可删除，值守工位须先换绑</p></div></header>
 	<div class="card"><table>
 		<thead><tr><th>身份</th><th>状态</th><th>tier</th><th></th></tr></thead>
 		<tbody>${agents.map(a => `<tr>
@@ -668,7 +668,7 @@ function settingsPane() {
 	<div class="card"><h3>概况</h3><p class="objective">
 		工位 ${liveWorks().length} · 任务 ${(state.missions||[]).length} · 事件 ${(state.events||[]).length}（最近 100 条内）· 在线成员 ${(state.agents||[]).filter(a=>a.status!=="archived").length}
 	</p></div>
-	<div class="card"><h3>权限阶梯</h3><p class="objective">${manage.length ? manage.map(o => `<span class="chip accent mono">${esc(o.id)}</span>`).join(" ") : "暂无 manage 成员 —— 在「成员」页 tier 下拉设置"}<br><span class="hint">execute ⊂ publish ⊂ manage：execute 只执行任务；publish 可建 mission；manage 另管工位与成员。manage 只能由控制台设置</span></p></div>
+	<div class="card"><h3>权限阶梯</h3><p class="objective"><span class="chip accent mono">console</span>（控制台内置身份，全权）<br>${manage.length ? manage.map(o => `<span class="chip accent mono">${esc(o.id)}</span>`).join(" ") : "暂无 manage 成员"}<br><span class="hint">execute ⊂ publish ⊂ manage：execute 只执行任务；publish 可建 mission；manage 另管工位与成员（终端侧）。manage 只能由控制台设置</span></p></div>
 	<div class="card"><h3>任务模板</h3><p class="objective">${(state.templates||[]).map(t => `<span class="chip mono">${esc(t)}</span>`).join(" ") || "无"}</p>
 	<p class="hint">控制台常驻：仅绑 127.0.0.1（对外经网关隧道）；每 2 秒轮询。im 本体仍是无服务 CLI。</p></div>
 	<div class="card"><h3>全局注册表</h3>

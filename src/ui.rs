@@ -432,16 +432,11 @@ pub fn state_json(
     }))
 }
 
-/// The console's acting identity: the first manage-tier member. Manage ⊃
-/// publish, so every gated console action stays covered.
-fn acting_manager(store: &crate::store::Store) -> Result<String> {
-    match store.manage_members()?.into_iter().next() {
-        Some(member) => Ok(member),
-        None => bail!(
-            "no manage-tier member exists yet — set one on this Members page \
-             (tier dropdown), then reload"
-        ),
-    }
+/// The console's acting identity: the built-in user identity. It is not an
+/// agent member (never registered) and `require_tier` treats it as full
+/// power, so every gated console action stays covered with zero members.
+fn acting_manager() -> String {
+    crate::records::CONSOLE_ACTOR.to_string()
 }
 
 pub fn apply_action(
@@ -474,9 +469,8 @@ pub fn apply_action_response(
             let tier = crate::records::Tier::parse(tier_str)
                 .with_context(|| format!("unknown tier {tier_str:?} (execute|publish|manage)"))?;
             // The console is the human operator, full power — the ONLY manage
-            // surface. It must work with zero manage-tier members (bootstrap)
-            // and may set manage itself.
-            store.set_agent_tier("workspace", agent, tier)?;
+            // surface. The built-in identity signs the membership notice.
+            store.set_agent_tier(crate::records::CONSOLE_ACTOR, agent, tier)?;
             Ok(format!("set {agent} → {tier_str} tier"))
         }
         "prune_workspaces" => {
@@ -602,14 +596,10 @@ pub fn apply_action_response(
         "delete_agent" => {
             let agent = action["agent"].as_str().context("`agent` required")?;
             // Deleting needs no acting manager — the user may remove any
-            // member, manage included — so the notice is attributed to
-            // whoever remains.
-            let actor = store
-                .manage_members()?
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| "workspace".to_string());
-            store.delete_agent(&actor, agent)?;
+            // member, manage included — the notice is signed by the
+            // built-in console identity.
+            let actor = crate::records::CONSOLE_ACTOR;
+            store.delete_agent(actor, agent)?;
             let session_file = workspace.join(".im").join("sessions").join(agent);
             let _ = std::fs::remove_file(&session_file);
             Ok(format!("deleted member {agent}"))
@@ -622,7 +612,7 @@ pub fn apply_action_response(
             } else {
                 Some(executor)
             };
-            let acting = acting_manager(store)?;
+            let acting = acting_manager();
             store.set_work_executor(&acting, work, executor)?;
             Ok(format!(
                 "station {work} executor → {}",
@@ -635,7 +625,7 @@ pub fn apply_action_response(
                 .as_str()
                 .filter(|value| !value.is_empty())
                 .context("`originWork` required")?;
-            let acting = acting_manager(store)?;
+            let acting = acting_manager();
             // Template-less form (the console's quick-ask modal): `targetWork`
             // + `question` replace the template file with the built-in ask
             // contract — the same shape as `im mission create --to`.
@@ -717,7 +707,7 @@ pub fn apply_action_response(
         }
         "mission_end" => {
             let mission = action["mission"].as_str().context("`mission` required")?;
-            let acting = acting_manager(store)?;
+            let acting = acting_manager();
             store.delete_mission(&acting, mission, action["reason"].as_str())?;
             Ok(format!("ended mission {mission}"))
         }
@@ -733,7 +723,7 @@ pub fn apply_action_response(
                         .collect()
                 })
                 .unwrap_or_default();
-            let acting = acting_manager(store)?;
+            let acting = acting_manager();
             let submission = crate::mission::RoundSubmission {
                 next_node: action["next_node"].as_str(),
                 reason: action["reason"].as_str(),
@@ -765,7 +755,7 @@ pub fn apply_action_response(
             } else {
                 Some(executor)
             };
-            let acting = acting_manager(store)?;
+            let acting = acting_manager();
             store.create_work(
                 &acting,
                 work,
@@ -777,7 +767,7 @@ pub fn apply_action_response(
         }
         "work_delete" => {
             let work = action["work"].as_str().context("`work` required")?;
-            let acting = acting_manager(store)?;
+            let acting = acting_manager();
             store.delete_work(&acting, work)?;
             Ok(format!("station {work} deleted"))
         }

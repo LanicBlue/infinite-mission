@@ -313,6 +313,12 @@ impl Store {
         requested_id: &str,
         display_name: Option<&str>,
     ) -> Result<(String, String)> {
+        if requested_id == crate::records::CONSOLE_ACTOR {
+            bail!(
+                "'{}' is reserved for the console — pick another member id",
+                crate::records::CONSOLE_ACTOR
+            );
+        }
         let now = chrono::Utc::now().timestamp();
         let name = normalize_display_name(display_name)?;
         let candidates = std::iter::once(requested_id.to_string())
@@ -639,6 +645,11 @@ impl Store {
     }
 
     pub fn require_tier(&self, agent_id: &str, min_tier: Tier) -> Result<()> {
+        if agent_id == crate::records::CONSOLE_ACTOR {
+            // The console's built-in user identity — full power, above the
+            // ladder. Only ui.rs injects it; CLI verbs refuse it up front.
+            return Ok(());
+        }
         if self
             .agent_tier(agent_id)?
             .map(|tier| tier >= min_tier)

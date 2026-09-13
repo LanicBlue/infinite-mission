@@ -449,6 +449,19 @@ fn cmd_history(args: Vec<String>) -> Result<()> {
 
 // --- Member tiers / works / templates ---
 
+/// The built-in console identity is not a member and can never act from the
+/// CLI — verbs that pass an operator straight to the store (no ensure_agent)
+/// must refuse it here; the rest reject it naturally as unregistered.
+fn refuse_console_actor(id: &str) -> Result<()> {
+    if id == im::records::CONSOLE_ACTOR {
+        bail!(
+            "'{}' is the console's built-in identity — it can only act from the console (`im ui`)",
+            im::records::CONSOLE_ACTOR
+        );
+    }
+    Ok(())
+}
+
 /// CLI publish-tier grants: `im grant|revoke <operator> <target>`. The
 /// operator must be manage-tier; manage-tier targets are refused (the
 /// console is the only manage surface).
@@ -571,6 +584,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let executor_arg = if args[3] == "-" { None } else { Some(args[3].as_str()) };
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            refuse_console_actor(&args[1])?;
             store.set_work_executor(&args[1], &args[2], executor_arg)?;
             println!(
                 "Station {} executor → {}",
@@ -585,6 +599,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             })?;
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            refuse_console_actor(&args[1])?;
             // A preset is a full charter: standing prompt + one-line summary.
             store.set_work_prompt(&args[1], &args[2], preset.prompt)?;
             store.set_work_description(&args[1], &args[2], preset.description)?;
@@ -594,6 +609,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
         Some("set-prompt") if args.len() >= 4 && args[3] != "--preset" => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            refuse_console_actor(&args[1])?;
             store.set_work_prompt(&args[1], &args[2], &args[3..].join(" "))?;
             println!("Station prompt updated.");
             Ok(())
@@ -601,6 +617,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
         Some("set-description") if args.len() >= 4 => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            refuse_console_actor(&args[1])?;
             store.set_work_description(&args[1], &args[2], &args[3..].join(" "))?;
             println!("Station description updated.");
             Ok(())
@@ -608,6 +625,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
         Some("delete") if args.len() == 3 => {
             let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
+            refuse_console_actor(&args[1])?;
             store.delete_work(&args[1], &args[2])?;
             println!("Deleted station {}.", args[2]);
             Ok(())
@@ -1109,6 +1127,7 @@ fn cmd_mission_cancel(args: &[String]) -> Result<()> {
 fn cmd_mission_end(manager: &str, mission_id: &str, reason: Option<String>) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
+    refuse_console_actor(manager)?;
     store.delete_mission(manager, mission_id, reason.as_deref())?;
     println!("Mission {mission_id} ended by manage tier (disposition: deleted).");
     Ok(())

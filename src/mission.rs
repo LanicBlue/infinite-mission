@@ -415,36 +415,43 @@ impl Store {
             );
         }
         if let Some(origin) = origin_work {
-            let (status, tier): (String, String) = tx
-                .query_row(
-                    "SELECT status, tier FROM agents WHERE id = ?1",
-                    [manager],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?
-                .with_context(|| format!("agent '{manager}' is not registered"))?;
-            if status != "active" {
-                bail!("agent '{manager}' is not active");
-            }
-            let executor: Option<String> = tx
-                .query_row(
-                    "SELECT executor FROM works WHERE work_key = ?1",
-                    [origin],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .with_context(|| format!("origin work '{origin}' does not exist"))?;
-            match executor.as_deref() {
-                Some(executor) if executor == manager => {
-                    if !matches!(tier.as_str(), "publish" | "manage") {
-                        bail!("agent '{manager}' needs publish tier to represent origin work '{origin}'");
+            // The console's built-in identity may represent any origin — it
+            // IS the user; the agent-table check below only stops members
+            // from hijacking someone else's station as their origin.
+            if manager != crate::records::CONSOLE_ACTOR {
+                let (status, tier): (String, String) = tx
+                    .query_row(
+                        "SELECT status, tier FROM agents WHERE id = ?1",
+                        [manager],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?
+                    .with_context(|| format!("agent '{manager}' is not registered"))?;
+                if status != "active" {
+                    bail!("agent '{manager}' is not active");
+                }
+                let executor: Option<String> = tx
+                    .query_row(
+                        "SELECT executor FROM works WHERE work_key = ?1",
+                        [origin],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .with_context(|| format!("origin work '{origin}' does not exist"))?;
+                match executor.as_deref() {
+                    Some(executor) if executor == manager => {
+                        if !matches!(tier.as_str(), "publish" | "manage") {
+                            bail!("agent '{manager}' needs publish tier to represent origin work '{origin}'");
+                        }
                     }
+                    None if tier == "manage" => {}
+                    Some(executor) => {
+                        bail!(
+                            "origin work '{origin}' is currently held by {executor}, not {manager}"
+                        )
+                    }
+                    None => bail!("origin work '{origin}' is a user work and requires manage tier"),
                 }
-                None if tier == "manage" => {}
-                Some(executor) => {
-                    bail!("origin work '{origin}' is currently held by {executor}, not {manager}")
-                }
-                None => bail!("origin work '{origin}' is a user work and requires manage tier"),
             }
             if contract.template.as_ref().map(|t| t.path.as_str()) == Some("builtin:ask/v1") {
                 let active_for_pair: i64 = tx.query_row(
@@ -749,7 +756,11 @@ impl Store {
         outcome: &str,
         submission: &RoundSubmission,
     ) -> Result<SubmitOutcome> {
-        self.require_active_agent(agent_id)?;
+        // The console's built-in identity submits as the user resolving a
+        // user station — it is not (and cannot be) a registered member.
+        if agent_id != crate::records::CONSOLE_ACTOR {
+            self.require_active_agent(agent_id)?;
+        }
         let mission = self.get_mission(mission_id)?;
         if mission.status == "ended" {
             bail!(

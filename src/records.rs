@@ -1,8 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+/// The console's built-in acting identity: a global user identity, not an
+/// agent member — it never appears in the agents table and can never be
+/// registered. Only `ui.rs` injects it; every CLI operator argument refuses
+/// it, and `require_tier` treats it as full power (the user).
+pub const CONSOLE_ACTOR: &str = "console";
+
 /// Member capability tiers — a linear ladder: Execute < Publish < Manage.
 /// Higher tiers include everything below them. The agents.tier column is the
-/// single source of truth; manage is configured console-only by the user.
+/// single source of truth for members; the console acts as CONSOLE_ACTOR
+/// above the whole ladder, and manage is configured console-only by the user.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
     Execute,
