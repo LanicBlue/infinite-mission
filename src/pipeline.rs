@@ -129,6 +129,31 @@ fn parse_preset_file(path: &Path) -> Option<FilePreset> {
     })
 }
 
+
+/// Overwrite the user-level stock (`~/.im/templates/`, `~/.im/presets/`)
+/// with the compiled-in templates and charters. Run by the installer (and
+/// manually after editing your own stock defaults is NOT advised — the next
+/// refresh wins; long-lived customization belongs in workspace files).
+/// Returns how many files were written.
+pub fn stock_refresh(templates_dir: &Path, presets_dir: &Path) -> Result<usize> {
+    use crate::init::BUILTIN_TEMPLATES;
+    let mut written = 0;
+    std::fs::create_dir_all(templates_dir)?;
+    for (file, template) in BUILTIN_TEMPLATES {
+        std::fs::write(templates_dir.join(file), template)?;
+        written += 1;
+    }
+    std::fs::create_dir_all(presets_dir)?;
+    for preset in PRESETS {
+        std::fs::write(
+            presets_dir.join(format!("{}.md", preset.key)),
+            format_preset(preset.description, preset.prompt),
+        )?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Read the workspace's live presets, sorted by file name (the seed stock's
 /// canonical order is alphabetical by design). A missing directory reads as
 /// empty — callers surface the known-stocks hint, not a crash.

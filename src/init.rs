@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 pub const EXAMPLE_TEMPLATE: &str = include_str!("templates/example.yaml");
@@ -10,12 +10,21 @@ pub const DEV_MIXED_TEMPLATE: &str = include_str!("templates/dev-mixed.yaml");
 /// starter plus the three delivery-line contracts (general / UI / mixed).
 /// Templates are inert until referenced — stations are created by the
 /// workspace's owners, never seeded here.
-const BUILTIN_TEMPLATES: [(&str, &str); 4] = [
+pub const BUILTIN_TEMPLATES: [(&str, &str); 4] = [
     ("example.yaml", EXAMPLE_TEMPLATE),
     ("dev-general.yaml", DEV_GENERAL_TEMPLATE),
     ("dev-ui.yaml", DEV_UI_TEMPLATE),
     ("dev-mixed.yaml", DEV_MIXED_TEMPLATE),
 ];
+
+/// The user-level stock directory: `~/.im`. The installer refreshes
+/// `~/.im/templates/` and `~/.im/presets/` from the compiled-in stock
+/// (`im stock refresh`); `im init` then copies from there into the
+/// workspace, so a user-curated stock is what new workspaces inherit.
+pub fn stock_dir() -> Result<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").context("$HOME is not set")?;
+    Ok(Path::new(&home).join(".im"))
+}
 
 pub fn run() -> Result<()> {
     let workspace = std::env::current_dir()?;
@@ -24,16 +33,39 @@ pub fn run() -> Result<()> {
     std::fs::create_dir_all(dot.join("sessions"))?;
     std::fs::create_dir_all(dot.join("templates"))?;
     std::fs::create_dir_all(dot.join("mission-documents"))?;
+    std::fs::create_dir_all(dot.join("presets"))?;
 
-    for (file, template) in BUILTIN_TEMPLATES {
+    // Seed any missing stock file from the compiled-in stock (a never-
+    // refreshed install still works), then copy stock → workspace. Missing
+    // files only — an existing file (stock or workspace) is never clobbered.
+    let stock = stock_dir()?;
+    let stock_templates = stock.join("templates");
+    let stock_presets = stock.join("presets");
+    for (file, builtin) in BUILTIN_TEMPLATES {
+        let stock_file = stock_templates.join(file);
+        if !stock_file.exists() {
+            std::fs::create_dir_all(&stock_templates)?;
+            std::fs::write(&stock_file, builtin)?;
+        }
         let path = dot.join("templates").join(file);
         if !path.exists() {
-            std::fs::write(&path, template)?;
+            std::fs::copy(&stock_file, &path)?;
         }
     }
-    // Live station-charter presets: files are the runtime source of truth
+    // Station-charter presets: live files are the runtime source of truth
     // (CLI and console read them on every use — edits need no restarts).
     crate::pipeline::seed_preset_files(&dot.join("presets"))?;
+    std::fs::create_dir_all(&stock_presets)?;
+    for entry in std::fs::read_dir(&stock_presets)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            let name = path.file_name().context("stock preset without a name")?;
+            let target = dot.join("presets").join(name);
+            if !target.exists() {
+                std::fs::copy(&path, &target)?;
+            }
+        }
+    }
 
     let store = crate::store::Store::open(&dot.join("im.db"))?;
     drop(store);
@@ -47,12 +79,11 @@ pub fn run() -> Result<()> {
         )?;
     }
     println!("Initialized InfiniteMission workspace at {}", dot.display());
-    println!("  - templates:    .im/templates/ (example, dev-general, dev-ui, dev-mixed)");
-    println!("  - presets:      .im/presets/ (station charters, editable — no restart needed)");
+    println!("  - templates:    .im/templates/ (from ~/.im/templates/ — the user stock)");
+    println!("  - presets:      .im/presets/ (from ~/.im/presets/ — editable, no restart needed)");
     println!("  - documents:    .im/mission-documents/");
     println!(
-        "  - next:         `im join <id>`, create stations with `im work create` (a manager \
-         seeds them via `im work set-prompt`), then `im mission create --template <name>`"
+        "  - next:         `im join <id>`, create stations with `im work create --preset <key>`, then `im mission create --template <name>`"
     );
     Ok(())
 }

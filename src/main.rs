@@ -14,6 +14,7 @@ fn main() -> Result<()> {
 
     match command.as_str() {
         "init" => cmd_init(args.collect()),
+        "stock" => cmd_stock(args.collect()),
         "join" => {
             let id = args.next().unwrap_or_default();
             let mut name: Option<String> = None;
@@ -171,6 +172,24 @@ fn cmd_init(args: Vec<String>) -> Result<()> {
         bail!("Usage: im init");
     }
     im::init::run()
+}
+
+/// Refresh the user-level stock (`~/.im/templates/`, `~/.im/presets/`) from
+/// the compiled-in templates and charters. The installer runs this so a new
+/// binary's stock is current; existing workspace files are never touched.
+fn cmd_stock(args: Vec<String>) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("refresh") => {
+            let stock = im::init::stock_dir()?;
+            let written = im::pipeline::stock_refresh(
+                &stock.join("templates"),
+                &stock.join("presets"),
+            )?;
+            println!("Stock refreshed at {} ({written} files).", stock.display());
+            Ok(())
+        }
+        _ => bail!("Usage: im stock refresh"),
+    }
 }
 
 fn cmd_join(id: &str, display_name: Option<&str>) -> Result<()> {

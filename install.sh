@@ -21,6 +21,9 @@ echo "==> installing to $BIN"
 mkdir -p "$BIN_DIR"
 install -m 0755 target/release/im "$BIN"
 
+echo "==> refreshing user stock (~/.im/templates, ~/.im/presets)"
+"$BIN" stock refresh
+
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)

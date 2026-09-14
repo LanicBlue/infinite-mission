@@ -1172,3 +1172,44 @@ fn leave_unlocks_member_deletion_and_missions_stay_put() {
         "leave released the binding, so delete must pass"
     );
 }
+
+#[test]
+fn init_inherits_the_user_stock_and_refresh_updates_it() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+
+    // A user-curated stock is what new workspaces inherit: a stock template
+    // edit (or an extra preset file) lands in the fresh workspace verbatim.
+    // (The stock is curated BEFORE the workspace's first init — existing
+    // workspace files are never clobbered afterwards.)
+    let home = test_home();
+    std::fs::create_dir_all(home.join(".im").join("templates")).unwrap();
+    std::fs::create_dir_all(home.join(".im").join("presets")).unwrap();
+    std::fs::write(
+        home.join(".im").join("templates").join("example.yaml"),
+        "# my house style starter\nschemaVersion: 4\nname: example\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home.join(".im").join("presets").join("house-lane.md"),
+        "---\ndescription: our lane\n---\nHouse rules only.",
+    )
+    .unwrap();
+
+    im(ws).arg("init").assert().success();
+    let example = std::fs::read_to_string(ws.join(".im").join("templates").join("example.yaml")).unwrap();
+    assert!(example.contains("my house style starter"), "stock must be inherited: {example}");
+    assert!(ws.join(".im").join("presets").join("house-lane.md").exists());
+
+    // `im stock refresh` rewrites the stock from the compiled-in templates;
+    // already-initialized workspaces are untouched.
+    im(ws).args(["stock", "refresh"]).assert().success();
+    let refreshed = std::fs::read_to_string(home.join(".im").join("templates").join("example.yaml")).unwrap();
+    assert!(refreshed.contains("starter mission template"), "refresh restores the built-in: {refreshed}");
+    assert!(home.join(".im").join("presets").join("build.md").exists(), "refresh writes the charters");
+    let still_mine = std::fs::read_to_string(ws.join(".im").join("templates").join("example.yaml")).unwrap();
+    assert!(still_mine.contains("my house style starter"), "workspace files survive a refresh");
+
+    // Clean the shared test home so other tests don't inherit this stock.
+    std::fs::remove_dir_all(home.join(".im")).unwrap();
+}
