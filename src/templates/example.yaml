@@ -1,5 +1,7 @@
-# A starter mission template. A mission is one-shot mail: it carries this
-# contract, travels between stations, and records its own delivery history.
+# A starter mission template. A mission is one-shot mail: it carries its
+# own contract, travels between stations, and records its own delivery
+# history. Submissions never carry a revision — the on-duty identity is the
+# write fence, and the revision counter advances on every committed round.
 schemaVersion: 4
 name: example
 objective: "Two-station build-and-review loop"
@@ -16,6 +18,7 @@ works:
       outcomes: [done, need-rework]   # this station's own vocabulary
       terminal: []                    # none of these end the mission here
       feedbackRequiredOn: []          # outcomes that must carry --feedback
+                                      # (resultRequiredOn: same idea for --result)
     documentRights:                   # write does NOT imply read
       read: [spec]
       write: [impl]
@@ -37,6 +40,10 @@ documents:
   - id: impl
     kind: file
     path: docs/impl.md
+  # Writers may append an @variant suffix to a document id when submitting
+  # (`--id impl@a1b2c3`): it matches THIS declaration for rights, and lands
+  # on a variant path (docs/impl@a1b2c3.md) — per-round versions of one
+  # declared document without cloning declarations.
 
 # The routing table. "when" is the source station's outcome, or "any".
 paths:
