@@ -414,14 +414,16 @@ pub fn state_json(
             .map(|(path, live)| json!({ "path": path.display().to_string(), "live": live }))
             .collect::<Vec<_>>(),
         "templates": templates,
-        "presets": crate::pipeline::PRESETS
-            .iter()
-            .map(|p| json!({
-                "key": p.key,
-                "description": p.description,
-                "prompt": p.prompt,
-            }))
-            .collect::<Vec<_>>(),
+        "presets": crate::pipeline::read_presets(&std::path::Path::new(workspace).join(".im").join("presets"))
+            .map(|presets| presets
+                .iter()
+                .map(|p| json!({
+                    "key": p.key,
+                    "description": p.description,
+                    "prompt": p.prompt,
+                }))
+                .collect::<Vec<_>>())
+            .unwrap_or_default(),
         "agents": agents,
         "works": works,
         "missions": missions,

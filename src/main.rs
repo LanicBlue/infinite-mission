@@ -514,6 +514,20 @@ fn flag_value(args: &[String], flag: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+
+/// Look up one live preset from the workspace's `.im/presets/` directory.
+fn file_preset(workspace: &std::path::Path, key: &str) -> Result<im::pipeline::FilePreset> {
+    im::pipeline::read_presets(&workspace.join(".im").join("presets"))?
+        .into_iter()
+        .find(|preset| preset.key == key)
+        .with_context(|| {
+            let known: Vec<String> = im::pipeline::read_presets(&workspace.join(".im").join("presets"))
+                .map(|presets| presets.iter().map(|p| p.key.clone()).collect())
+                .unwrap_or_default();
+            format!("unknown preset {key:?} (available: {})", known.join(", "))
+        })
+}
+
 fn cmd_work(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("create") if args.len() >= 3 => {
@@ -523,20 +537,17 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             let executor = flag_value(&args[3..], "--executor")?;
             let prompt = flag_value(&args[3..], "--prompt")?;
             let preset_key = flag_value(&args[3..], "--preset")?;
+            let workspace = find_workspace()?;
             let preset = match &preset_key {
-                Some(key) => Some(
-                    im::pipeline::preset(key)
-                        .with_context(|| format!("unknown preset {key:?} (available: {})", im::pipeline::preset_keys()))?,
-                ),
+                Some(key) => Some(file_preset(&workspace, key)?),
                 None => None,
             };
             let description = description
-                .or(preset.map(|p| p.description.to_string()))
+                .or_else(|| preset.as_ref().map(|p| p.description.clone()))
                 .unwrap_or_default();
             let prompt = prompt
-                .or(preset.map(|p| p.prompt.to_string()))
+                .or_else(|| preset.as_ref().map(|p| p.prompt.clone()))
                 .unwrap_or_default();
-            let workspace = find_workspace()?;
             let store = open_store(&workspace)?;
             ensure_agent(&store, manager)?;
             check_session(&workspace, &store, manager)?;
@@ -594,15 +605,13 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Some("set-prompt") if args.len() == 5 && args[3] == "--preset" => {
-            let preset = im::pipeline::preset(&args[4]).with_context(|| {
-                format!("unknown preset {:?} (available: {})", args[4], im::pipeline::preset_keys())
-            })?;
             let workspace = find_workspace()?;
+            let preset = file_preset(&workspace, &args[4])?;
             let store = open_store(&workspace)?;
             refuse_console_actor(&args[1])?;
             // A preset is a full charter: standing prompt + one-line summary.
-            store.set_work_prompt(&args[1], &args[2], preset.prompt)?;
-            store.set_work_description(&args[1], &args[2], preset.description)?;
+            store.set_work_prompt(&args[1], &args[2], &preset.prompt)?;
+            store.set_work_description(&args[1], &args[2], &preset.description)?;
             println!("Station charter updated from preset '{}'.", preset.key);
             Ok(())
         }

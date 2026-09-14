@@ -31,6 +31,9 @@ pub fn run() -> Result<()> {
             std::fs::write(&path, template)?;
         }
     }
+    // Live station-charter presets: files are the runtime source of truth
+    // (CLI and console read them on every use — edits need no restarts).
+    crate::pipeline::seed_preset_files(&dot.join("presets"))?;
 
     let store = crate::store::Store::open(&dot.join("im.db"))?;
     drop(store);
@@ -45,6 +48,7 @@ pub fn run() -> Result<()> {
     }
     println!("Initialized InfiniteMission workspace at {}", dot.display());
     println!("  - templates:    .im/templates/ (example, dev-general, dev-ui, dev-mixed)");
+    println!("  - presets:      .im/presets/ (station charters, editable — no restart needed)");
     println!("  - documents:    .im/mission-documents/");
     println!(
         "  - next:         `im join <id>`, create stations with `im work create` (a manager \

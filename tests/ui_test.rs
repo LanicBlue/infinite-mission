@@ -300,9 +300,9 @@ fn state_json_lists_work_presets_for_the_create_modal() {
     assert_eq!(
         keys,
         vec![
-            "design", "supervisor", "build", "build-ui",
-            "review-impl", "review-impact", "sec-review",
-            "review-audit", "verify", "verify-ui",
+            "build-ui", "build", "design", "review-audit",
+            "review-impact", "review-impl", "sec-review",
+            "supervisor", "verify-ui", "verify",
         ]
     );
     // Every charted preset stays prompt-nonempty; the built-in charters

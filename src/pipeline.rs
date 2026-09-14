@@ -1,10 +1,15 @@
-//! The delivery pipeline: work-prompt presets seeded by `im init` plus the
-//! pipeline mission template. The prompts distill the discipline of
-//! matt-skills-with-to-goal (grilling / to-spec / to-goal / spec-executor /
-//! code-review) into standing station charters; the routing semantics live
-//! entirely in the template — this module adds no new domain mechanics.
+//! Station charter presets. The runtime source of truth is the workspace's
+//! `.im/presets/*.md` files — one file per preset, a `description:` YAML
+//! front-matter line followed by the charter body — so editing a file is
+//! instantly live for every reader (CLI and console alike, no restarts).
+//! The compiled-in table below is only the seed stock `im init` materializes
+//! into a fresh workspace. The charters are deliberately
+//! mission-template-agnostic: they carry the station's duty and discipline
+//! (source-receipt discipline, ACn accounting) and never hard-code one
+//! pipeline's outcome vocabulary — any flow contract can route through them.
 
 use anyhow::Result;
+use std::path::Path;
 
 pub const PIPELINE_TEMPLATE: &str = include_str!("templates/pipeline.yaml");
 
@@ -15,12 +20,8 @@ pub struct WorkPreset {
     pub prompt: &'static str,
 }
 
+/// Seed stock only; the live preset list is read from `.im/presets/`.
 pub const PRESETS: &[WorkPreset] = &[
-    // The dev-line station charters. Deliberately mission-template-agnostic:
-    // charters carry the station's duty and discipline (source-receipt
-    // discipline, ACn accounting, arrival vocabulary comes from each
-    // mission's own show) — they never hard-code one pipeline's outcome
-    // vocabulary, so any flow contract can route through these stations.
     WorkPreset {
         key: "design",
         description: "对齐用户、冻结 spec(ACn 编号)、终验意图符合性(唯一用户触点,不写代码)",
@@ -73,10 +74,80 @@ pub const PRESETS: &[WorkPreset] = &[
     },
 ];
 
-pub fn preset(key: &str) -> Option<&'static WorkPreset> {
-    PRESETS.iter().find(|p| p.key == key)
+/// A preset as read from disk: owned strings, one per `.im/presets/*.md`.
+#[derive(Clone)]
+pub struct FilePreset {
+    pub key: String,
+    pub description: String,
+    pub prompt: String,
 }
 
-pub fn preset_keys() -> String {
-    PRESETS.iter().map(|p| p.key).collect::<Vec<_>>().join(", ")
+/// Materialize the seed stock into a fresh workspace. Existing files are
+/// never clobbered — an edited preset is the workspace's own from then on.
+pub fn seed_preset_files(presets_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(presets_dir)?;
+    for preset in PRESETS {
+        let path = presets_dir.join(format!("{}.md", preset.key));
+        if !path.exists() {
+            std::fs::write(&path, format_preset(preset.description, preset.prompt))?;
+        }
+    }
+    Ok(())
+}
+
+/// The on-disk format: one `description:` front-matter line, then the body.
+pub fn format_preset(description: &str, prompt: &str) -> String {
+    format!("---\ndescription: {description}\n---\n{prompt}\n")
+}
+
+/// Parse one preset file. Files without front-matter keep an empty
+/// description; unparsable names are skipped by the caller, not guessed at.
+fn parse_preset_file(path: &Path) -> Option<FilePreset> {
+    let key = path.file_stem()?.to_str()?.to_string();
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let (description, prompt) = match text.strip_prefix("---\n") {
+        Some(rest) => match rest.split_once("\n---\n") {
+            Some((head, body)) => {
+                let description = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("description:"))
+                    .map(|d| d.trim().to_string())
+                    .unwrap_or_default();
+                (description, body.to_string())
+            }
+            None => (String::new(), text),
+        },
+        None => (String::new(), text),
+    };
+    Some(FilePreset {
+        key,
+        description,
+        prompt: prompt.trim_end().to_string(),
+    })
+}
+
+/// Read the workspace's live presets, sorted by file name (the seed stock's
+/// canonical order is alphabetical by design). A missing directory reads as
+/// empty — callers surface the known-stocks hint, not a crash.
+pub fn read_presets(presets_dir: &Path) -> Result<Vec<FilePreset>> {
+    let mut presets = Vec::new();
+    let entries = match std::fs::read_dir(presets_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(presets),
+        Err(err) => return Err(err.into()),
+    };
+    let mut paths: Vec<_> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        if let Some(preset) = parse_preset_file(&path) {
+            presets.push(preset);
+        }
+    }
+    Ok(presets)
 }

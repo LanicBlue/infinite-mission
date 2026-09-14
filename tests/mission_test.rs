@@ -1734,7 +1734,10 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
         "verify",
         "verify-ui",
     ] {
-        let prompt = im::pipeline::preset(key)
+        let prompt = im::pipeline::read_presets(&ws.join(".im").join("presets"))
+            .unwrap()
+            .into_iter()
+            .find(|preset| preset.key == key)
             .unwrap_or_else(|| panic!("preset {key} missing"))
             .prompt;
         for vocab in [
@@ -1749,4 +1752,49 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
             );
         }
     }
+}
+
+#[test]
+fn preset_files_are_the_runtime_source_of_truth() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+    im(ws).arg("init").assert().success();
+    im(ws).args(["join", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
+
+    // init seeded the stock charters as files; a hand-written preset file is
+    // live immediately — no binary or console restart involved.
+    std::fs::write(
+        ws.join(".im").join("presets").join("night-shift.md"),
+        "---\ndescription: after-hours lane\n---\nShip quietly under the moon.",
+    )
+    .unwrap();
+    im(ws)
+        .args(["work", "create", "boss", "owl", "--preset", "night-shift"])
+        .assert()
+        .success();
+    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
+    let prompt: String = db
+        .query_row("SELECT prompt FROM works WHERE work_key = 'owl'", [], |r| r.get(0))
+        .unwrap();
+    let summary: String = db
+        .query_row("SELECT description FROM works WHERE work_key = 'owl'", [], |r| r.get(0))
+        .unwrap();
+    drop(db);
+    assert_eq!(prompt, "Ship quietly under the moon.");
+    assert_eq!(summary, "after-hours lane");
+
+    // Editing a seeded charter file changes what the next --preset use reads.
+    let build = ws.join(".im").join("presets").join("build.md");
+    let original = std::fs::read_to_string(&build).unwrap();
+    std::fs::write(&build, original.replace("通用实现岗", "夜航实现岗")).unwrap();
+    im(ws)
+        .args(["work", "create", "boss", "night-build", "--preset", "build"])
+        .assert()
+        .success();
+    let edited: String = rusqlite::Connection::open(ws.join(".im").join("im.db"))
+        .unwrap()
+        .query_row("SELECT prompt FROM works WHERE work_key = 'night-build'", [], |r| r.get(0))
+        .unwrap();
+    assert!(edited.contains("夜航实现岗"), "edited file must be what installs: {edited}");
 }
