@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { arrivalHeader, Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf } from "../lib/delivery.mjs";
+import { arrivalHeader, Delivery, slimBrief, slimPreamble, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf } from "../lib/delivery.mjs";
 
 const BRIEF = [
   "[mission ms_aaaabbbbccccdddd] Smoke mission — active",
@@ -537,4 +537,71 @@ test("arrivalHeader falls back to reason, degrades to empty without facts", () =
     eventsText: "#1 t mission.round.completed\n  not json",
   });
   assert.match(broken, /from 'x' on outcome 'y'/);
+});
+
+test("slimBrief drops the stable objective and charter, keeps the round-deciding parts", () => {
+  const brief = [
+    "=== ARRIVAL CONTEXT ===",
+    "Arrival: from 'review-audit' on outcome 'reject-impl' — 2 times routed to this station",
+    "Latest round input for you (feedback, verbatim):",
+    "  fix the null deref",
+    "=== END ARRIVAL CONTEXT ===",
+    "",
+    "[mission ms_aaaabbbbccccdddd] dev-mixed — active",
+    "  objective: 全局任务描述（首投已有）",
+    "  origin work: design",
+    "  at station: build (iteration 2)",
+    "  revision: 9",
+    "  on duty: YES — you hold this station",
+    "  prompt: 通用实现岗(写入)。执行合同=plan 文档。",
+    "- 章程第二行",
+    "允许的 outcomes 以到达 mission 的 show 为准。",
+    "  outcomes: impl-ready, plan-reject, abandon",
+    "  routes:",
+    "    impl-ready -> review-audit",
+    "  documents:",
+    "    impl (file) impl.md [read:n write:y]",
+  ].join("\n");
+  const slim = slimBrief(brief);
+  assert.ok(!slim.includes("全局任务描述"), "objective body must go");
+  assert.ok(!slim.includes("章程第二行"), "charter body must go");
+  assert.match(slim, /objective: \(mission objective — first brief/);
+  assert.match(slim, /prompt: \(station charter — unchanged/);
+  assert.match(slim, /ARRIVAL CONTEXT/);
+  assert.match(slim, /fix the null deref/);
+  assert.match(slim, /at station: build \(iteration 2\)/);
+  assert.match(slim, /outcomes: impl-ready, plan-reject, abandon/);
+  assert.match(slim, /impl \(file\) impl\.md/);
+});
+
+test("slimBrief fails open when the anchors are missing", () => {
+  const odd = "some future CLI shape\n  no known fields";
+  assert.equal(slimBrief(odd), odd);
+});
+
+test("follow-up rounds deliver the slim form; first rounds keep the full brief", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const t3 = new FakeT3();
+  const delivery = new Delivery(t3);
+  const CHARTER = "  prompt: 通用实现岗(写入)。源码纪律。\n- 每轮 commit";
+  const brief1 = `[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${CHARTER}\n  outcomes: impl-ready, abandon`;
+  const brief2 = `=== ARRIVAL CONTEXT ===\nArrival: from 'review-audit' on outcome 'reject-impl'\n=== END ARRIVAL CONTEXT ===\n\n[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${CHARTER}\n  outcomes: impl-ready, abandon`;
+  try {
+    await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId: "ms_aaaabbbbccccdddd", brief: brief1 });
+    await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId: "ms_aaaabbbbccccdddd", brief: brief2 });
+    const texts = t3.dispatched
+      .filter((command) => command.type === "thread.turn.start")
+      .map((command) => command.message.text);
+    assert.match(texts[0], /通用实现岗/);
+    assert.match(texts[0], /全局目标/);
+    assert.doesNotMatch(texts[1], /通用实现岗\(写入\)。源码纪律/);
+    assert.doesNotMatch(texts[1], /全局目标\n/);
+    assert.match(texts[1], /ARRIVAL CONTEXT/);
+    assert.match(texts[1], /outcomes: impl-ready, abandon/);
+    assert.match(texts[1], /Duty discipline and the mission's full context live in this thread's first brief/);
+    // The tail reminder still rides the follow-up turn.
+    assert.match(texts[1], /<im-system-reminder>/);
+  } finally {
+    cleanup();
+  }
 });

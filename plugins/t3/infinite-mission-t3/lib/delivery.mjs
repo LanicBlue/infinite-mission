@@ -83,6 +83,55 @@ function eventBlocks(eventsText) {
  * neither source yields a fact (first park, sweep redelivery of a result) —
  * an empty header is better than a guessed one.
  */
+
+/**
+ * The follow-up preamble: the thread already carries the full duty
+ * discipline from the first brief, and the tail reminder below the brief
+ * restates the submit/abandon menu every round — so a repeat of the full
+ * preamble is banner noise. Two lines: identity + where the protocol lives.
+ */
+export function slimPreamble(member, workspace, missionId) {
+  const memberId = typeof member === "string" ? member : member.id;
+  return [
+    `You are the InfiniteMission member "${memberId}" in workspace ${workspace}, on mission ${missionId}.`,
+    `Duty discipline and the mission's full context live in this thread's first brief; the brief below is the current round.`,
+  ].join("\n");
+}
+
+/**
+ * Slim a duty brief for a follow-up round on an existing thread: drop the
+ * stable `objective:` and `prompt:` sections (they are in the first brief
+ * and re-readable via `im mission show`) and leave a one-line pointer. The
+ * round-deciding parts — arrival context, station/iteration, outcome
+ * vocabulary, routes, documents — stay verbatim. Parsing is line-anchored
+ * on the CLI's stable `  field:` shape; if the expected anchors are not
+ * found the original brief is returned untouched (repetition is safe, a
+ * mangled brief is not).
+ */
+export function slimBrief(brief) {
+  const lines = String(brief).split("\n");
+  const drop = (startMarker) => {
+    const start = lines.findIndex((line) => line.startsWith(startMarker));
+    if (start < 0) return null;
+    let end = start + 1;
+    while (end < lines.length && !/^  \S/.test(lines[end])) end += 1;
+    return [start, end];
+  };
+  const promptRange = drop("  prompt: ");
+  const objectiveRange = drop("  objective: ");
+  if (promptRange === null || objectiveRange === null) return String(brief);
+  const objectivePointer = "  objective: (mission objective — first brief / `im mission show`)";
+  const promptPointer = "  prompt: (station charter — unchanged; first brief / `im mission show` for the full text)";
+  // Replace from the later range first so earlier indices stay valid.
+  for (const [start, end, pointer] of [
+    [objectiveRange[0], objectiveRange[1], objectivePointer],
+    [promptRange[0], promptRange[1], promptPointer],
+  ].sort((a, b) => b[0] - a[0])) {
+    lines.splice(start, end - start, pointer);
+  }
+  return lines.join("\n");
+}
+
 export function arrivalHeader({ station, hop, eventsText }) {
   const lines = [];
   const blocks = eventsText ? eventBlocks(eventsText) : [];
@@ -371,7 +420,14 @@ export class Delivery {
         role: "user",
         text: ended
           ? `${resultPreamble(member.id, workspacePath)}\n${brief}${resultTailReminder(member.id, missionId)}`
-          : `${dutyPreamble(member, workspacePath, missionId)}\n${brief}${dutyTailReminder(member, missionId)}`,
+          : target.mode === "create"
+            ? `${dutyPreamble(member, workspacePath, missionId)}\n${brief}${dutyTailReminder(member.id, missionId)}`
+            // Follow-up round on an existing thread: the stable preamble,
+            // objective, and charter already live in this thread's first
+            // brief — restating them every round is banner noise. The tail
+            // reminder still rides every turn (recency), and the slim
+            // pointers keep the re-read path explicit.
+            : `${slimPreamble(member.id, workspacePath, missionId)}\n${slimBrief(brief)}${dutyTailReminder(member.id, missionId)}`,
         attachments: [],
       },
       // Each turn restates the member's selection, so the runtime identity
