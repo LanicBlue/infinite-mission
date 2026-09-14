@@ -756,7 +756,7 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
 
     // --preset fills the charter (prompt + one-line summary); explicit flags win.
     im(ws)
-        .args(["work", "create", "boss", "qa", "--preset", "review"])
+        .args(["work", "create", "boss", "qa", "--preset", "verify"])
         .assert()
         .success();
     im(ws)
@@ -802,11 +802,11 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
         )
         .unwrap();
     assert!(
-        qa_prompt.contains("verify the implementation"),
+        qa_prompt.contains("必跑站"),
         "qa: {qa_prompt}"
     );
     assert!(
-        qa_summary.contains("two evidence axes"),
+        qa_summary.contains("必跑验证站"),
         "qa summary: {qa_summary}"
     );
     assert_eq!(hotfix_prompt, "just ship it");
@@ -833,12 +833,12 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
         )
         .unwrap();
     assert!(
-        refreshed.0.contains("final gate"),
+        refreshed.0.contains("设计岗"),
         "design charter: {}",
         refreshed.0
     );
     assert!(
-        refreshed.1.contains("final gate"),
+        refreshed.1.contains("对齐用户"),
         "design summary: {}",
         refreshed.1
     );
@@ -895,7 +895,7 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
         .assert()
         .success();
     im(ws)
-        .args(["work", "create", "boss", "qa", "--preset", "review"])
+        .args(["work", "create", "boss", "qa", "--preset", "verify"])
         .assert()
         .success();
 }

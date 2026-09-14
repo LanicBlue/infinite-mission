@@ -1114,17 +1114,6 @@ fn pipeline_template_compiles_and_holds_the_designed_routing() {
         .document_rights
         .read
         .contains(&"spec".to_string()));
-    // Every pipeline preset charter keeps the interpolation slots (the
-    // dev-line charters are deliberately slot-free: vocabulary comes from
-    // each mission's own show, not the charter).
-    for preset in im::pipeline::PRESETS.iter().filter(|p| !p.key.starts_with("dev-")) {
-        assert!(
-            preset.prompt.contains("{mission.objective}"),
-            "{}",
-            preset.key
-        );
-        assert!(preset.prompt.contains("{mission.reason}"), "{}", preset.key);
-    }
 }
 
 /// boss (manager, also resolves the owner user station), arch at design,
@@ -1138,15 +1127,23 @@ fn setup_pipeline() -> (Fixture, String) {
     }
     seed_tier(&workspace, "boss", "manage");
     // init seeds no stations anymore — the pipeline contract's four stations
-    // (and its template, a library asset) are set up here explicitly, with
-    // their preset charters (the {mission.reason} slot in design's is what
-    // the final-gate assertion reads back).
+    // (and its template, a library asset) are set up here explicitly. The
+    // pipeline presets are retired; design's charter is set by hand because
+    // the final-gate assertion reads the {mission.reason} slot back, and the
+    // built-in charters are deliberately slot-free.
     for work in ["design", "plan", "build", "review"] {
         im(&workspace)
-            .args(["work", "create", "boss", work, "--preset", work])
+            .args(["work", "create", "boss", work])
             .assert()
             .success();
     }
+    im(&workspace)
+        .args([
+            "work", "set-prompt", "boss", "design",
+            "Gate the delivery. Approved reason: {mission.reason}",
+        ])
+        .assert()
+        .success();
     std::fs::write(
         workspace
             .join(".im")
@@ -1707,7 +1704,7 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
 
     // A dev-line preset installs as a station charter under any station key.
     im(ws)
-        .args(["work", "create", "boss", "impl", "--preset", "dev-build"])
+        .args(["work", "create", "boss", "impl", "--preset", "build"])
         .assert()
         .success();
     let list = String::from_utf8(
@@ -1726,16 +1723,16 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
     // The charters are mission-template-agnostic: none of the current dev
     // pipeline's outcome vocabulary is hard-coded into a station charter.
     for key in [
-        "dev-design",
-        "dev-supervisor",
-        "dev-build",
-        "dev-build-ui",
-        "dev-review-impl",
-        "dev-review-impact",
-        "dev-sec-review",
-        "dev-review-audit",
-        "dev-verify",
-        "dev-verify-ui",
+        "design",
+        "supervisor",
+        "build",
+        "build-ui",
+        "review-impl",
+        "review-impact",
+        "sec-review",
+        "review-audit",
+        "verify",
+        "verify-ui",
     ] {
         let prompt = im::pipeline::preset(key)
             .unwrap_or_else(|| panic!("preset {key} missing"))

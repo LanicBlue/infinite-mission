@@ -300,21 +300,17 @@ fn state_json_lists_work_presets_for_the_create_modal() {
     assert_eq!(
         keys,
         vec![
-            "design", "plan", "build", "review",
-            "dev-design", "dev-supervisor", "dev-build", "dev-build-ui",
-            "dev-review-impl", "dev-review-impact", "dev-sec-review",
-            "dev-review-audit", "dev-verify", "dev-verify-ui",
+            "design", "supervisor", "build", "build-ui",
+            "review-impl", "review-impact", "sec-review",
+            "review-audit", "verify", "verify-ui",
         ]
     );
+    // Every charted preset stays prompt-nonempty; the built-in charters
+    // deliberately carry no interpolation slots (vocabulary comes from each
+    // mission's own show).
     for preset in presets {
-        if preset["key"].as_str().unwrap().starts_with("dev-") {
-            continue; // dev-line charters are slot-free by design
-        }
         assert!(
-            preset["prompt"]
-                .as_str()
-                .unwrap()
-                .contains("{mission.objective}"),
+            !preset["prompt"].as_str().unwrap().trim().is_empty(),
             "{}",
             preset["key"]
         );
