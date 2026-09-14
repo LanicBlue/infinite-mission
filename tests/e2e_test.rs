@@ -467,8 +467,6 @@ fn gates_follow_the_tier_ladder() {
             "submit",
             "pub",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
             "--reason",
@@ -482,8 +480,6 @@ fn gates_follow_the_tier_ladder() {
             "submit",
             "pub",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "ok",
         ])
@@ -511,8 +507,6 @@ fn gates_follow_the_tier_ladder() {
             "submit",
             "mgmt",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "ok",
         ])
@@ -671,8 +665,6 @@ fn mission_end_fans_out_to_past_participants() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -684,8 +676,6 @@ fn mission_end_fans_out_to_past_participants() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "pass",
         ])
@@ -924,8 +914,6 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
             "abandon",
             "boss",
             &ms,
-            "--revision",
-            "1",
             "--reason",
             "done testing",
         ])
@@ -1039,8 +1027,6 @@ fn work_list_shows_holding_and_en_route_occupancy() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
             "--reason",
@@ -1054,8 +1040,6 @@ fn work_list_shows_holding_and_en_route_occupancy() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "ok",
         ])

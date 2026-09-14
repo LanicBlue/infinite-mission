@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf } from "../lib/delivery.mjs";
+import { arrivalHeader, Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf } from "../lib/delivery.mjs";
 
 const BRIEF = [
   "[mission ms_aaaabbbbccccdddd] Smoke mission — active",
@@ -116,7 +116,8 @@ test("modelSelectionOf passes options through", () => {
 
 test("dutyPreamble names the member, pre-binds the mission, forbids join/receive", () => {
   const text = dutyPreamble("t3-codex", "/w", "ms_aaaabbbbccccdddd");
-  assert.match(text, /im mission submit t3-codex ms_aaaabbbbccccdddd --revision <N>/);
+  assert.match(text, /im mission submit t3-codex ms_aaaabbbbccccdddd --outcome/);
+  assert.doesNotMatch(text, /--revision/);
   assert.match(text, /im mission show ms_aaaabbbbccccdddd --for t3-codex/);
   assert.match(text, /im mission doc read t3-codex ms_aaaabbbbccccdddd/);
   // Placeholders invite placeholder submissions: no <missionId> may survive.
@@ -197,12 +198,12 @@ test("every delivered turn ends with the tail reminder: recency anchor after the
     const duty = turns[0];
     assert.ok(duty.trimEnd().endsWith("</im-system-reminder>"), "duty tail must be the last thing in the turn");
     assert.match(duty, /<im-system-reminder>\n/);
-    assert.match(duty, /im mission submit "t3-codex" "ms_aaaabbbbccccdddd" --revision <N>/);
-    assert.match(duty, /im mission abandon "t3-codex" "ms_aaaabbbbccccdddd" --revision <N>/);
-    assert.match(duty, /Take --revision and the permitted outcomes from the/);
-    // The tail must not smuggle in a concrete revision/outcome — those live
-    // in the brief; extracting them here would parse human-readable output.
-    assert.doesNotMatch(duty, /--revision \d/);
+    assert.match(duty, /im mission submit "t3-codex" "ms_aaaabbbbccccdddd" --outcome/);
+    assert.match(duty, /im mission abandon "t3-codex" "ms_aaaabbbbccccdddd"`/);
+    assert.match(duty, /Take the permitted outcomes from the/);
+    // The tail must not smuggle in a revision flag — revisions are gone from
+    // the submit surface entirely.
+    assert.doesNotMatch(duty, /--revision/);
     // Result tail: read-only action menu, same envelope discipline.
     const result = turns[1];
     assert.ok(result.trimEnd().endsWith("</im-system-reminder>"), "result tail must be the last thing in the turn");
@@ -488,4 +489,52 @@ test("settle reaches a suffixed thread once the deterministic ids are gone", asy
   assert.equal(await delivery.settle("t3-codex", "ms_1111111111111111"), true);
   assert.deepEqual(types(t3), ["thread.settle"]);
   assert.equal(t3.dispatched[0].threadId, hexId);
+});
+
+test("arrivalHeader states the hop, the visit count, and the latest feedback verbatim", () => {
+  const events = [
+    "#1  2026-09-14 10:00:00 mission.created",
+    '  {"createdBy":"dev-design"}',
+    "#2  2026-09-14 10:05:00 mission.round.completed",
+    '  {"iteration":1,"outcome":"spec-ready","feedback":null,"reason":"plan ready"}',
+    "#3  2026-09-14 10:05:00 mission.routed",
+    '  {"from":"design","to":"supervisor","when":"spec-ready"}',
+    "#4  2026-09-14 11:00:00 mission.round.completed",
+    '  {"iteration":2,"outcome":"plan-ready","feedback":null,"reason":"plan attached"}',
+    "#5  2026-09-14 11:00:00 mission.routed",
+    '  {"from":"supervisor","to":"build","when":"plan-ready"}',
+    "#6  2026-09-14 12:00:00 mission.round.completed",
+    '  {"iteration":3,"outcome":"reject-impl","feedback":"fix the null deref in live-apply","reason":"two findings"}',
+    "#7  2026-09-14 12:00:00 mission.routed",
+    '  {"from":"review-audit","to":"build","when":"reject-impl"}',
+  ].join("\n");
+  const header = arrivalHeader({
+    station: "build",
+    hop: { from: "review-audit", to: "build", outcome: "reject-impl" },
+    eventsText: events,
+  });
+  assert.match(header, /=== ARRIVAL CONTEXT ===/);
+  assert.match(header, /from 'review-audit' on outcome 'reject-impl' — 2 times routed to this station/);
+  assert.match(header, /Latest round input for you \(feedback, verbatim\):/);
+  assert.match(header, /  fix the null deref in live-apply/);
+  assert.match(header, /=== END ARRIVAL CONTEXT ===/);
+});
+
+test("arrivalHeader falls back to reason, degrades to empty without facts", () => {
+  const events = [
+    "#1  2026-09-14 10:00:00 mission.round.completed",
+    '  {"outcome":"done","feedback":null,"reason":"all green"}',
+  ].join("\n");
+  const header = arrivalHeader({ station: "verify", hop: null, eventsText: events });
+  assert.match(header, /reason, verbatim/);
+  assert.match(header, /  all green/);
+  // No hop and no routable history → no header rather than a guessed one.
+  assert.equal(arrivalHeader({ station: "build", hop: null, eventsText: null }), "");
+  // Malformed event JSON is skipped, not fatal.
+  const broken = arrivalHeader({
+    station: "build",
+    hop: { from: "x", to: "build", outcome: "y" },
+    eventsText: "#1 t mission.round.completed\n  not json",
+  });
+  assert.match(broken, /from 'x' on outcome 'y'/);
 });

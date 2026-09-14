@@ -97,12 +97,11 @@ fn create(store: &Store, creator: &str) -> MissionCreateOutcome {
         .unwrap()
 }
 
-fn route(store: &Store, who: &str, id: &str, revision: i64, outcome: &str) {
+fn route(store: &Store, who: &str, id: &str, outcome: &str) {
     store
         .submit_mission(
             who,
             id,
-            revision,
             outcome,
             &RoundSubmission {
                 next_node: None,
@@ -187,11 +186,11 @@ fn manage_rights_at_user_station_are_not_an_executor_match() {
 fn later_arrivals_and_retries_use_current_authority_not_creation_revision() {
     let (_tmp, store) = setup(Some("owner"));
     let id = create(&store, "owner").mission_id;
-    route(&store, "owner", &id, 1, "ready");
+    route(&store, "owner", &id, "ready");
     assert!(create(&store, "owner").run_view.is_none());
     assert_eq!(note_count(&store), 1);
     assert_eq!(store.receive_work_notes("worker").unwrap().len(), 1);
-    route(&store, "worker", &id, 2, "back");
+    route(&store, "worker", &id, "back");
     let retry = create(&store, "owner");
     let view = retry.run_view.unwrap();
     assert_eq!(view.revision, 3);
@@ -200,7 +199,7 @@ fn later_arrivals_and_retries_use_current_authority_not_creation_revision() {
     // Returning the current view on a retry does NOT consume a later arrival.
     assert_eq!(note_count(&store), 2);
     assert_eq!(store.receive_work_notes("owner").unwrap().len(), 1);
-    route(&store, "owner", &id, 3, "finish");
+    route(&store, "owner", &id, "finish");
     let ended_retry = create(&store, "owner");
     assert!(ended_retry.existed && ended_retry.run_view.is_none());
     assert_eq!(store.get_mission(&id).unwrap().revision, 4);

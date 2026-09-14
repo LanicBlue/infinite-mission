@@ -16,11 +16,11 @@ Read the spec, verify repo facts, and COMPILE a self-contained execution goal. Y
    - Constraints — boundaries the builder must not cross
    - Context — anything else the builder needs
    The goal must be SELF-CONTAINED: build reads the goal, not the spec.
-4. Submit: im mission submit <you> <ms> --revision <N> --outcome goal-ready --receipts document:<hash> --reason "<one-line summary>"
+4. Submit: im mission submit <you> <ms> --outcome goal-ready --receipts document:<hash> --reason "<one-line summary>"
 
 ## When the spec is not actionable
 If the spec is missing a decision, contradicts itself, or cannot be compiled into decidable criteria — do NOT invent. Submit:
-   im mission submit <you> <ms> --revision <N> --outcome spec-gap --feedback "<exactly which decision or contradiction is missing>" --reason "<same, compact>"
+   im mission submit <you> <ms> --outcome spec-gap --feedback "<exactly which decision or contradiction is missing>" --reason "<same, compact>"
 This returns the mission to design.
 
 ## Returned to you

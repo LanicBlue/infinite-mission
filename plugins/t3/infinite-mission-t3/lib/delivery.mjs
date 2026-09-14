@@ -44,6 +44,86 @@ export function modelSelectionOf(member) {
 }
 
 /**
+ * Split `im mission events` stdout into `#seq <stamp> <kind>` blocks, each
+ * with its (pretty-printed, indented) JSON payload. Malformed blocks are
+ * skipped — the header is additive context, never a gate.
+ */
+function eventBlocks(eventsText) {
+  const blocks = [];
+  const lines = String(eventsText).split("\n");
+  let current = null;
+  for (const line of lines) {
+    if (/^#\d+\s/.test(line)) {
+      if (current) blocks.push(current);
+      current = { head: line, json: "" };
+    } else if (current !== null) {
+      current.json += line;
+    }
+  }
+  if (current) blocks.push(current);
+  return blocks
+    .map((block) => {
+      const start = block.json.indexOf("{");
+      const end = block.json.lastIndexOf("}");
+      if (start < 0 || end <= start) return null;
+      try {
+        return { kind: block.head.trim(), payload: JSON.parse(block.json.slice(start, end + 1)) };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+/**
+ * The arrival header: why the mission is at this station THIS time. Built
+ * from the hop facts on the arrival note (from / outcome) plus the mission's
+ * own event ledger (how many times it has routed here; the latest
+ * round-against-this-station feedback/reason, verbatim). Returns "" when
+ * neither source yields a fact (first park, sweep redelivery of a result) —
+ * an empty header is better than a guessed one.
+ */
+export function arrivalHeader({ station, hop, eventsText }) {
+  const lines = [];
+  const blocks = eventsText ? eventBlocks(eventsText) : [];
+  const hopsHere = blocks.filter(
+    (block) => block.payload && block.payload.to === station,
+  ).length;
+  if (hop && hop.from && hop.outcome) {
+    lines.push(
+      `Arrival: from '${hop.from}' on outcome '${hop.outcome}'` +
+        (hopsHere > 0 ? ` — ${hopsHere} time${hopsHere === 1 ? "" : "s"} routed to this station` : ""),
+    );
+  } else if (hopsHere > 0) {
+    lines.push(`Arrival: ${hopsHere} time${hopsHere === 1 ? "" : "s"} routed to this station`);
+  }
+  // The latest round input addressed to this station's work: feedback from a
+  // rejection first (it is the checklist to work through), else the latest
+  // round's reason. Events are ordered, so the last match wins.
+  let feedback = null;
+  let reason = null;
+  for (const block of blocks) {
+    if (!block.kind.includes("mission.round.completed")) continue;
+    const text = typeof block.payload.feedback === "string" && block.payload.feedback.trim()
+      ? block.payload.feedback
+      : null;
+    if (text) feedback = text;
+    if (typeof block.payload.reason === "string" && block.payload.reason.trim()) {
+      reason = block.payload.reason;
+    }
+  }
+  const input = feedback ?? reason;
+  if (input) {
+    lines.push(
+      feedback ? "Latest round input for you (feedback, verbatim):" : "Latest round input for you (reason, verbatim):",
+    );
+    for (const line of input.split("\n")) lines.push(`  ${line}`);
+  }
+  if (lines.length === 0) return "";
+  return ["=== ARRIVAL CONTEXT ===", ...lines, "=== END ARRIVAL CONTEXT ===", ""].join("\n");
+}
+
+/**
  * Duty discipline travels as the message preamble (not a system prompt) —
  * the same contract the DSH bridge proved: the agent itself submits; the
  * bridge never submits on its behalf.
@@ -70,9 +150,9 @@ export function dutyPreamble(member, workspace, missionId) {
     `       im mission doc write ${memberId} ${missionId} --id <docId> --file <path-or->`,
     `  3. Submitting IS the deliverable (full flag reference; the reminder at the`,
     `     end of the brief carries the minimal form):`,
-    `       im mission submit ${memberId} ${missionId} --revision <N> --outcome <permitted> \\`,
+    `       im mission submit ${memberId} ${missionId} --outcome <permitted> \\`,
     `         [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>] [--result <text>]`,
-    `     Take --revision and the permitted outcomes from the brief; outcomes marked`,
+    `     Take the permitted outcomes from the brief; outcomes marked`,
     `     "(needs --result)" / "(needs --feedback)" require that flag non-empty.`,
     ``,
     `Never run "im join" or "im receive" — the bridge owns the member identity and`,
@@ -101,9 +181,9 @@ export function dutyTailReminder(member, missionId) {
     `----- end of brief -----`,
     `<im-system-reminder>`,
     `You are InfiniteMission member "${memberId}", on duty for mission ${missionId}.`,
-    `Reply by either: (a) \`im mission submit "${memberId}" "${missionId}" --revision <N> --outcome <permitted>\``,
-    `when the work is done, or (b) \`im mission abandon "${memberId}" "${missionId}" --revision <N>\``,
-    `when you cannot proceed. Take --revision and the permitted outcomes from the`,
+    `Reply by either: (a) \`im mission submit "${memberId}" "${missionId}" --outcome <permitted>\``,
+    `when the work is done, or (b) \`im mission abandon "${memberId}" "${missionId}"\``,
+    `when you cannot proceed. Take the permitted outcomes from the`,
     `brief above. Do the work yourself — nested CLI subagent tools bypass this duty`,
     `and their output will not reach the mission. Never run "im join" or "im receive".`,
     `</im-system-reminder>`,

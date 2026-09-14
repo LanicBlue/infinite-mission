@@ -23,7 +23,7 @@ Write the spec document (im mission doc write <you> <ms> --id spec --file <path-
   conversation is recorded — never swallow an open one.
 - Testing decisions — what makes a good test here (external behavior, not implementation details)
 - Out of scope
-Then: im mission submit <you> <ms> --revision <N> --outcome spec-ready --receipts document:<hash> --reason "<one-line summary>"
+Then: im mission submit <you> <ms> --outcome spec-ready --receipts document:<hash> --reason "<one-line summary>"
 
 If you are the mission creator: creation is a publish-tier action (or above) — you create the mission right after
 the conversation settles (im mission create <you> --template pipeline --key <unique> --objective "<distilled intent>"),
@@ -36,7 +36,7 @@ decision, settle it in your session conversation first (the human is your operat
 ## Final review (from review)
 Read the review document: im mission doc read <you> <ms> review.md
 Judge the delivery against the spec:
-- Delivery honors the spec → im mission submit <you> <ms> --revision <N> --outcome accept --reason "<per-criterion one-liners>". This ends the mission.
+- Delivery honors the spec → im mission submit <you> <ms> --outcome accept --reason "<per-criterion one-liners>". This ends the mission.
 - The spec itself was wrong → revise the spec document, then submit --outcome spec-ready (the mission re-enters plan for re-compilation).
 - The implementation deviates and review missed it → submit --outcome reject --feedback "<numbered findings with evidence>" --reason "<same findings, compact>". It returns to build; fix-only, no re-grilling.
 

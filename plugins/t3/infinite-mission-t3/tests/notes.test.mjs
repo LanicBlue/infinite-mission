@@ -78,3 +78,32 @@ test("empty output is a no-op", () => {
   const notes = parseReceiveOutput("");
   assert.deepEqual(notes, { arrivals: [], ended: [], membershipEnd: false, timeout: false, unknown: [] });
 });
+
+test("parses hop facts from an arrival note (from / to / outcome)", () => {
+  const stdout = [
+    "[station build] [ms_aaaabbbbccccdddd] supervisor → build (round: spec-ready)",
+    "  → Run: im mission show ms_aaaabbbbccccdddd --for t3-build (then im missions t3-build)",
+    "",
+  ].join("\n");
+  const notes = parseReceiveOutput(stdout);
+  assert.deepEqual(notes.arrivals, [
+    {
+      station: "build",
+      missionId: "ms_aaaabbbbccccdddd",
+      from: "supervisor",
+      to: "build",
+      outcome: "spec-ready",
+    },
+  ]);
+  assert.deepEqual(notes.unknown, []);
+});
+
+test("first-park arrival keeps no hop facts (no guess)", () => {
+  const stdout = [
+    "[station build] [ms_aaaabbbbccccdddd] dev-general",
+    "  → Run: im mission show ms_aaaabbbbccccdddd --for t3-build (then im missions t3-build)",
+    "",
+  ].join("\n");
+  const notes = parseReceiveOutput(stdout);
+  assert.deepEqual(notes.arrivals, [{ station: "build", missionId: "ms_aaaabbbbccccdddd" }]);
+});

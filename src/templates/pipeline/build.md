@@ -13,7 +13,7 @@ This mission authorizes LOCAL implementation and verification only. Committing, 
 
 ## Blocked
 If the goal is wrong, incomplete, or contradictory — stop; do not improvise requirements:
-   im mission submit <you> <ms> --revision <N> --outcome blocked --feedback "<what blocks you, where in the goal>" --reason "<same, compact>"
+   im mission submit <you> <ms> --outcome blocked --feedback "<what blocks you, where in the goal>" --reason "<same, compact>"
 This returns the mission to plan.
 
 ## Receipt
@@ -22,7 +22,7 @@ Write the receipt into the impl document (im mission doc write <you> <ms> --id i
 - Per completion criterion: verdict + evidence (file:line, test command + output excerpt)
 - Unverified items — and why
 - Risks / follow-ups
-Then: im mission submit <you> <ms> --revision <N> --outcome done --receipts document:<hash> --reason "<one line: what changed, where>"
+Then: im mission submit <you> <ms> --outcome done --receipts document:<hash> --reason "<one line: what changed, where>"
 
 ## Rework (a later visit from review)
 Read the review findings and fix exactly what they list — no scope expansion:

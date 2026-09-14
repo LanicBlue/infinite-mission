@@ -713,7 +713,6 @@ pub fn apply_action_response(
         }
         "mission_submit" => {
             let mission = action["mission"].as_str().context("`mission` required")?;
-            let revision = action["revision"].as_i64().context("`revision` required")?;
             let outcome = action["outcome"].as_str().context("`outcome` required")?;
             let receipts: Vec<String> = action["receipts"]
                 .as_array()
@@ -731,7 +730,7 @@ pub fn apply_action_response(
                 result: action["result"].as_str(),
                 receipt_ids: &receipts,
             };
-            let result = store.submit_mission(&acting, mission, revision, outcome, &submission)?;
+            let result = store.submit_mission(&acting, mission, outcome, &submission)?;
             if result.mission_ended {
                 Ok(format!(
                     "mission {mission} ended (revision {})",

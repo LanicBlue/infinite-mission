@@ -120,18 +120,18 @@ im mission create <design-agent> --from design --template pipeline --key v1 \
 # as the design agent (first round: park the frozen spec):
 im mission show <ms> --for <design-agent>   # optional refresh of the returned view
 im mission doc write <design-agent> <ms> --id spec --file -   # → receipt
-im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready \
+im mission submit <design-agent> <ms> --outcome spec-ready \
     --receipts document:<hash>
 
 # as worker (at build, once the goal reaches you):
 im missions worker            # everything active at your stations
 im mission doc read worker <ms> goal.md
 im mission doc write worker <ms> --id impl --file src/receipt.md   # → receipt
-im mission submit worker <ms> --revision N --outcome done --receipts document:<hash>
+im mission submit worker <ms> --outcome done --receipts document:<hash>
 
 # a human, when a mission hops to a user station (other templates):
 im inbox
-im mission submit boss <ms> --revision N --outcome ok --reason "go ahead"
+im mission submit boss <ms> --outcome ok --reason "go ahead"
 ```
 
 Station prompts interpolate `{mission.name}`, `{mission.objective}`,
@@ -215,10 +215,10 @@ Missions    im mission create|show|events|result|end
             im mission create <agent> --from <origin> --to <target> --key <key>
                                  --objective <question>          # template-less ask form;
                                                                   # receiver submits like any mission
-            im mission submit <agent> <ms> --revision N --outcome O
+            im mission submit <agent> <ms> --outcome O
                                  [--next-node] [--reason] [--feedback] [--result] [--receipts]
-            im mission abandon <agent> <ms> --revision N [--reason]
-            im mission cancel <agent> <ms> --revision N [--reason]  # origin-side ask withdrawal
+            im mission abandon <agent> <ms> [--reason]
+            im mission cancel <agent> <ms> [--reason]  # origin-side ask withdrawal
             im mission doc read <agent> <ms> <path>
             im mission doc write <agent> <ms> --id <docId> --file <path|->
             im missions <agent>        # active missions at your stations

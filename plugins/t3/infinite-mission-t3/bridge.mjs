@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { readConfigFile, readT3ImMembers, defaultConfigPath } from "./lib/config.mjs";
 import { ProcessImRunner } from "./lib/im-cli.mjs";
 import { HttpT3Client } from "./lib/t3-client.mjs";
-import { Delivery } from "./lib/delivery.mjs";
+import { Delivery, arrivalHeader } from "./lib/delivery.mjs";
 import { parseReceiveOutput } from "./lib/notes.mjs";
 import { sleep } from "./lib/spawn.mjs";
 
@@ -398,10 +398,10 @@ export class Bridge {
   }
 
   async #handleArrival(workspace, memberId, arrival, tag) {
-    await this.#tryDeliver(workspace, memberId, arrival.station, arrival.missionId, tag);
+    await this.#tryDeliver(workspace, memberId, arrival.station, arrival.missionId, tag, arrival);
   }
 
-  async #deliveryBrief(workspace, missionId, show) {
+  async #deliveryBrief(workspace, missionId, show, station, hop) {
     // The ended signal is a machine contract, not show-text heuristics: the
     // header's status suffix and any "ended:" line can both be corrupted by
     // mission names and objectives (a multi-line name once turned every
@@ -434,7 +434,17 @@ export class Bridge {
       ended =
         events !== null && /^#\d+\s.*mission\.ended$/m.test(String(events.text));
     }
-    if (!ended) return { brief: show.text, ended: false };
+    if (!ended) {
+      // Arrival context (why THIS station, THIS round) rides at the top of
+      // the duty brief: hop facts from the arrival note plus the ledger's
+      // round count and latest verbatim feedback/reason.
+      const header = arrivalHeader({
+        station,
+        hop,
+        eventsText: events && events.ok ? events.text : null,
+      });
+      return { brief: header ? `${header}\n${show.text}` : show.text, ended: false };
+    }
 
     // mission_result work notes intentionally share the stable arrival-note
     // envelope; the authoritative ended check above is the distinction.
@@ -471,7 +481,7 @@ export class Bridge {
    * redelivers once it is back. The in-flight check is synchronous, so two
    * concurrent triggers (loop arrival × sweep × retry) cannot both deliver.
    */
-  async #tryDeliver(workspace, memberId, station, missionId, tag) {
+  async #tryDeliver(workspace, memberId, station, missionId, tag, hop = null) {
     const inflightKey = `${workspace}\0${memberId}\0${missionId}`;
     if (this.inflight.has(inflightKey)) {
       this.log(tag, `delivery skipped for ${missionId}@${station}: another delivery is in flight`);
@@ -495,7 +505,7 @@ export class Bridge {
         this.log(tag, `stale arrival dropped: ${missionId}@${station} (mission show failed)`);
         return;
       }
-      const { brief, ended } = await this.#deliveryBrief(workspace, missionId, show);
+      const { brief, ended } = await this.#deliveryBrief(workspace, missionId, show, station, hop);
       try {
         const threadId = await this.delivery.deliver({
           workspacePath: workspace,
@@ -793,7 +803,7 @@ export class Bridge {
           this.log(this.tag(item.workspace, item.memberId), `retry dropped: ${item.missionId} no longer shows`);
           continue;
         }
-        const { brief, ended } = await this.#deliveryBrief(item.workspace, item.missionId, show);
+        const { brief, ended } = await this.#deliveryBrief(item.workspace, item.missionId, show, item.station);
         const threadId = await this.delivery.deliver({
           workspacePath: item.workspace,
           member,

@@ -6,13 +6,13 @@
 //! invariants):
 //!   im mission create <op> --from <origin> --to <target> --key <key>
 //!       --objective <question>   (template-less ask form; no template file)
-//!   im mission submit <agent> <ms> --revision <N> --outcome answered
+//!   im mission submit <agent> <ms> --outcome answered
 //!       --result <answer...>
-//!   im mission submit <agent> <ms> --revision <N> --outcome declined
+//!   im mission submit <agent> <ms> --outcome declined
 //!       --reason <text>
 //!   (asks are handled exactly like any other mission — the receiver reads
 //!       the vocabulary and revision from `im mission show`)
-//!   im mission cancel <agent> <ms> --revision <N> [--reason <text>]
+//!   im mission cancel <agent> <ms> [--reason <text>]
 //!   im results <agent>          (result read plane, duty-station scoped)
 //!   im mission result <ms>      (durable result for one ask)
 //!   im mission create <op> --from <origin> --template <t> --key <k>
@@ -441,32 +441,14 @@ fn answer_ends_mission_and_returns_result_exactly_once() {
     let ws = tmp.path();
     let ms = create_ask(ws, "q1");
 
-    // A losing answer (stale revision) must leave NO trace: no note, no end.
+    // Submit no longer carries a revision (identity is the write fence):
+    // a plain answer must end the mission atomically.
     im(ws)
         .args([
             "mission",
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "99",
-            "--outcome",
-            "answered",
-            "--result",
-            "too late",
-        ])
-        .assert()
-        .failure();
-    assert_eq!(note_count(ws, "origin"), 0);
-
-    im(ws)
-        .args([
-            "mission",
-            "submit",
-            "bob",
-            &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -475,15 +457,13 @@ fn answer_ends_mission_and_returns_result_exactly_once() {
         .assert()
         .success();
 
-    // A second answer against the ended mission must fail the same way.
+    // A second answer against the ended mission must fail.
     im(ws)
         .args([
             "mission",
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -535,8 +515,6 @@ fn decline_ends_ask_and_returns_outcome_to_origin() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "declined",
             "--reason",
@@ -570,8 +548,6 @@ fn answer_rejects_empty_and_preserves_text_over_the_reason_cap() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -589,8 +565,6 @@ fn answer_rejects_empty_and_preserves_text_over_the_reason_cap() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -624,8 +598,6 @@ fn target_rebind_hands_the_round_to_the_new_executor() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -639,8 +611,6 @@ fn target_rebind_hands_the_round_to_the_new_executor() {
             "submit",
             "pat",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -672,8 +642,6 @@ fn origin_rebind_delivers_the_result_to_the_new_executor() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -722,8 +690,6 @@ fn pending_ask_locks_both_origin_and_target_stations() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -763,8 +729,6 @@ fn double_answer_race_admits_exactly_one_result() {
                 "submit",
                 "bob",
                 &ms1,
-                "--revision",
-                "1",
                 "--outcome",
                 "answered",
                 "--result",
@@ -783,8 +747,6 @@ fn double_answer_race_admits_exactly_one_result() {
                 "submit",
                 "bob",
                 &ms2,
-                "--revision",
-                "1",
                 "--outcome",
                 "answered",
                 "--result",
@@ -832,8 +794,6 @@ fn answer_and_cancel_race_admit_exactly_one_outcome() {
                 "submit",
                 "bob",
                 &ms_a,
-                "--revision",
-                "1",
                 "--outcome",
                 "answered",
                 "--result",
@@ -852,8 +812,6 @@ fn answer_and_cancel_race_admit_exactly_one_outcome() {
                 "cancel",
                 "alice",
                 &ms_c,
-                "--revision",
-                "1",
                 "--reason",
                 "raced cancel",
             ])
@@ -902,8 +860,6 @@ fn cancellation_is_a_durable_distinct_disposition() {
             "cancel",
             "alice",
             &ms,
-            "--revision",
-            "1",
             "--reason",
             "no longer needed",
         ])
@@ -943,8 +899,6 @@ fn abandon_cannot_smuggle_an_oversized_result_past_validation() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "abandon",
             "--result",
@@ -961,8 +915,6 @@ fn abandon_cannot_smuggle_an_oversized_result_past_validation() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -988,8 +940,6 @@ fn publisher_leave_keeps_the_result_reachable_at_origin_work() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -1045,8 +995,6 @@ fn user_work_on_both_sides_of_an_ask() {
             "submit",
             "bob",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -1060,8 +1008,6 @@ fn user_work_on_both_sides_of_an_ask() {
             "submit",
             "boss",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -1116,8 +1062,6 @@ fn self_ask_round_trip() {
             "submit",
             "carol",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -1185,8 +1129,6 @@ fn legacy_workspace_without_origin_still_runs_old_missions() {
             "submit",
             "bob",
             &ms_old,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -1198,8 +1140,6 @@ fn legacy_workspace_without_origin_still_runs_old_missions() {
             "submit",
             "pat",
             &ms_old,
-            "--revision",
-            "2",
             "--outcome",
             "pass",
         ])
@@ -1275,8 +1215,6 @@ fn old_pipeline_flow_regression_alongside_asks() {
             "submit",
             "bob",
             &ms_flow,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -1288,8 +1226,6 @@ fn old_pipeline_flow_regression_alongside_asks() {
             "submit",
             "pat",
             &ms_flow,
-            "--revision",
-            "2",
             "--outcome",
             "pass",
         ])
@@ -1320,8 +1256,6 @@ fn old_pipeline_flow_regression_alongside_asks() {
             "submit",
             "bob",
             &ms_ask,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -1368,8 +1302,6 @@ fn origin_ledger_shows_in_flight_and_ended_split() {
             "submit",
             "bob",
             &answered,
-            "--revision",
-            "1",
             "--outcome",
             "answered",
             "--result",
@@ -1388,8 +1320,6 @@ fn origin_ledger_shows_in_flight_and_ended_split() {
             "cancel",
             "alice",
             &cancelled,
-            "--revision",
-            "1",
             "--reason",
             "no longer needed",
         ])

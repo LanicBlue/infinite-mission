@@ -389,27 +389,99 @@ fn unknown_station_references_are_rejected() {
 }
 
 #[test]
-fn submit_adjudication_matrix() {
+fn document_variant_ids_write_read_and_resolve() {
     let (fixture, ms) = setup();
     let ws = fixture.workspace;
 
-    // CAS: stale revision is rejected with the current one surfaced.
+    // A variant id writes under the base declaration's rights and lands on
+    // a variant path (docs/impl.md → docs/impl@a1b2c3.md).
     im(&ws)
         .args([
             "mission",
-            "submit",
+            "doc",
+            "write",
             "worker",
             &ms,
-            "--revision",
-            "9",
-            "--outcome",
-            "done",
+            "--id",
+            "impl@a1b2c3",
+            "--file",
+            "-",
         ])
+        .write_stdin("round 3 work\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("document:"));
+    assert!(ws
+        .join(".im")
+        .join("mission-documents")
+        .join(&ms)
+        .join("docs")
+        .join("impl@a1b2c3.md")
+        .exists());
+
+    // Route to audit so the inspector (audit's executor) is on duty there.
+    im(&ws)
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
+        .assert()
+        .success();
+
+    // Read via the variant path honors the base declaration's read rights.
+    im(&ws)
+        .args(["mission", "doc", "read", "inspector", &ms, "docs/impl@a1b2c3.md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("round 3 work"));
+
+    // show resolves the latest write (the variant) and displays its stored
+    // path so the receipt can be followed exactly.
+    let show = im(&ws)
+        .args(["mission", "show", &ms, "--for", "inspector"])
+        .output()
+        .unwrap();
+    let show = String::from_utf8(show.stdout).unwrap();
+    assert!(show.contains("impl@a1b2c3.md"), "variant path shown: {show}");
+
+    // An illegal suffix (path separators / traversal) is rejected.
+    im(&ws)
+        .args([
+            "mission",
+            "doc",
+            "write",
+            "inspector",
+            &ms,
+            "--id",
+            "notes@../evil",
+            "--file",
+            "-",
+        ])
+        .write_stdin("x\n")
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "Mission state was superseded (current revision: 1)",
-        ));
+        .stderr(predicate::str::contains("suffix may only contain"));
+
+    // An undeclared base id is rejected with the base surfaced.
+    im(&ws)
+        .args([
+            "mission",
+            "doc",
+            "write",
+            "inspector",
+            &ms,
+            "--id",
+            "ghost@1",
+            "--file",
+            "-",
+        ])
+        .write_stdin("x\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ghost"));
+}
+
+#[test]
+fn submit_adjudication_matrix() {
+    let (fixture, ms) = setup();
+    let ws = fixture.workspace;
 
     // Attribution: an agent who is not on duty is rejected.
     im(&ws)
@@ -418,8 +490,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -436,8 +506,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "pass",
         ])
@@ -454,8 +522,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -470,8 +536,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "fail",
         ])
@@ -491,8 +555,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "fail",
             "--feedback",
@@ -527,8 +589,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "3",
             "--outcome",
             "done",
             "--receipts",
@@ -544,8 +604,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "4",
             "--outcome",
             "fail",
             "--feedback",
@@ -564,8 +622,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "4",
             "--outcome",
             "pass",
         ])
@@ -578,8 +634,6 @@ fn submit_adjudication_matrix() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "5",
             "--outcome",
             "done",
         ])
@@ -601,8 +655,6 @@ fn abandon_and_manager_delete_endings() {
             "abandon",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--reason",
             "blocked on spec",
         ])
@@ -712,8 +764,6 @@ fn documents_are_content_addressed_and_right_scoped() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -737,8 +787,6 @@ fn documents_are_content_addressed_and_right_scoped() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "pass",
         ])
@@ -770,8 +818,6 @@ fn rebind_is_a_pointer_move_not_a_migration() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -786,8 +832,6 @@ fn rebind_is_a_pointer_move_not_a_migration() {
             "submit",
             "worker-2",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -875,8 +919,6 @@ paths:
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -898,8 +940,6 @@ paths:
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
             "--reason",
@@ -935,8 +975,6 @@ paths:
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "ok",
         ])
@@ -952,8 +990,6 @@ paths:
             "submit",
             "boss",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "ok",
         ])
@@ -982,8 +1018,6 @@ fn events_are_the_history_and_iteration_derives() {
             "submit",
             "worker",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "done",
         ])
@@ -995,8 +1029,6 @@ fn events_are_the_history_and_iteration_derives() {
             "submit",
             "inspector",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "fail",
             "--feedback",
@@ -1163,8 +1195,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "spec-ready",
             "--receipts",
@@ -1202,8 +1232,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "strategist",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "goal-ready",
             "--receipts",
@@ -1230,8 +1258,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "coder",
             &ms,
-            "--revision",
-            "3",
             "--outcome",
             "done",
             "--receipts",
@@ -1249,8 +1275,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "auditor",
             &ms,
-            "--revision",
-            "4",
             "--outcome",
             "rework",
         ])
@@ -1276,8 +1300,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "auditor",
             &ms,
-            "--revision",
-            "4",
             "--outcome",
             "rework",
             "--feedback",
@@ -1303,8 +1325,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "coder",
             &ms,
-            "--revision",
-            "5",
             "--outcome",
             "done",
             "--reason",
@@ -1318,8 +1338,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "auditor",
             &ms,
-            "--revision",
-            "6",
             "--outcome",
             "approved",
             "--reason",
@@ -1341,8 +1359,6 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "7",
             "--outcome",
             "accept",
             "--reason",
@@ -1379,8 +1395,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "1",
             "--outcome",
             "spec-ready",
             "--reason",
@@ -1394,8 +1408,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "strategist",
             &ms,
-            "--revision",
-            "2",
             "--outcome",
             "spec-gap",
             "--feedback",
@@ -1413,8 +1425,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "3",
             "--outcome",
             "spec-ready",
             "--reason",
@@ -1428,8 +1438,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "strategist",
             &ms,
-            "--revision",
-            "4",
             "--outcome",
             "goal-ready",
             "--reason",
@@ -1443,8 +1451,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "coder",
             &ms,
-            "--revision",
-            "5",
             "--outcome",
             "blocked",
             "--feedback",
@@ -1462,8 +1468,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "strategist",
             &ms,
-            "--revision",
-            "6",
             "--outcome",
             "goal-ready",
             "--reason",
@@ -1477,8 +1481,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "coder",
             &ms,
-            "--revision",
-            "7",
             "--outcome",
             "done",
             "--reason",
@@ -1492,8 +1494,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "auditor",
             &ms,
-            "--revision",
-            "8",
             "--outcome",
             "spec-gap",
             "--feedback",
@@ -1512,8 +1512,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "9",
             "--outcome",
             "spec-ready",
             "--reason",
@@ -1527,8 +1525,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "strategist",
             &ms,
-            "--revision",
-            "10",
             "--outcome",
             "goal-ready",
             "--reason",
@@ -1542,8 +1538,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "coder",
             &ms,
-            "--revision",
-            "11",
             "--outcome",
             "done",
             "--reason",
@@ -1557,8 +1551,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "auditor",
             &ms,
-            "--revision",
-            "12",
             "--outcome",
             "approved",
             "--reason",
@@ -1572,8 +1564,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "13",
             "--outcome",
             "reject",
             "--feedback",
@@ -1590,8 +1580,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "coder",
             &ms,
-            "--revision",
-            "14",
             "--outcome",
             "done",
             "--reason",
@@ -1605,8 +1593,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "auditor",
             &ms,
-            "--revision",
-            "15",
             "--outcome",
             "approved",
             "--reason",
@@ -1620,8 +1606,6 @@ fn pipeline_return_edges_cover_spec_gap_blocked_and_reject() {
             "submit",
             "arch",
             &ms,
-            "--revision",
-            "16",
             "--outcome",
             "accept",
             "--reason",
@@ -1656,8 +1640,6 @@ fn concurrent_same_revision_submits_admit_exactly_one() {
                         "submit",
                         "worker",
                         &ms,
-                        "--revision",
-                        "1",
                         "--outcome",
                         "done",
                     ])

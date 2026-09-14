@@ -744,15 +744,16 @@ impl Store {
 
     // --- Submit adjudication ---
 
-    /// The full PS adjudication order, committed in one transaction. The
-    /// mission revision is the sole CAS token; attribution requires the
-    /// submitter to be the station's on-duty executor; the contract is the
-    /// only routing authority.
+    /// The full PS adjudication order, committed in one transaction.
+    /// Attribution requires the submitter to be the station's on-duty
+    /// executor; the contract is the only routing authority. The revision
+    /// counter advances automatically on every committed round — callers
+    /// never pass or compare it (identity + on-duty + document rights are
+    /// the write fence, so an explicit CAS token is redundant ceremony).
     pub fn submit_mission(
         &self,
         agent_id: &str,
         mission_id: &str,
-        expected_revision: i64,
         outcome: &str,
         submission: &RoundSubmission,
     ) -> Result<SubmitOutcome> {
@@ -774,12 +775,6 @@ impl Store {
             .at
             .clone()
             .context("active mission has no station")?;
-        if expected_revision != mission.revision {
-            bail!(
-                "Mission state was superseded (current revision: {}); re-read the mission and retry",
-                mission.revision
-            );
-        }
         let work = self.get_work(&at)?;
         let user_station = work.executor.is_none();
         if user_station {
@@ -1199,7 +1194,6 @@ impl Store {
         &self,
         actor: &str,
         mission_id: &str,
-        expected_revision: i64,
         reason: Option<&str>,
     ) -> Result<SubmitOutcome> {
         if let Some(reason) = reason {
@@ -1228,7 +1222,7 @@ impl Store {
             [mission_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if status != "active" || revision != expected_revision {
+        if status != "active" {
             bail!("Mission state was superseded (current revision: {revision})");
         }
         let (agent_status, tier): (String, String) = tx.query_row(
@@ -1256,8 +1250,8 @@ impl Store {
         let updated = tx.execute(
             "UPDATE missions SET at = NULL, status = 'ended', revision = ?1,
                     ended_disposition = 'cancelled', ended_by_work = ?2, ended_at = ?3
-             WHERE mission_id = ?4 AND revision = ?5 AND status = 'active'",
-            params![new_revision, origin, created, mission_id, revision],
+             WHERE mission_id = ?4 AND status = 'active'",
+            params![new_revision, origin, created, mission_id],
         )?;
         if updated != 1 {
             bail!("Mission state was superseded");
@@ -1524,6 +1518,65 @@ fn insert_result_note(
 
 // --- Documents ---
 
+/// Split a document id into its declared base and optional variant suffix
+/// (`impl@a1b2c3` → `impl`, `a1b2c3`). The suffix is free-form versioning
+/// (a commit hash, a date, a counter): it namespaces per-round variants of
+/// a declared document while rights and contract matching stay keyed on the
+/// base. Ids are file-name derived, so the suffix charset is clamped to
+/// `[A-Za-z0-9._-]` — no path separators, no traversal.
+fn split_document_id(document_id: &str) -> Result<(&str, Option<&str>)> {
+    match document_id.split_once('@') {
+        None => Ok((document_id, None)),
+        Some((base, suffix)) => {
+            if base.is_empty() {
+                bail!("document id {document_id:?} has an empty base before '@'");
+            }
+            if suffix.is_empty() || suffix.len() > 64 {
+                bail!("document id {document_id:?} suffix must be 1..=64 chars");
+            }
+            if !suffix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                bail!(
+                    "document id {document_id:?} suffix may only contain [A-Za-z0-9._-]"
+                );
+            }
+            Ok((base, Some(suffix)))
+        }
+    }
+}
+
+/// The on-disk path for one variant of a declared document path
+/// (`docs/impl.md` + `a1b2c3` → `docs/impl@a1b2c3.md`; a path without an
+/// extension — or a dotfile whose stem is empty — appends `@suffix`
+/// directly).
+fn variant_path(declared_path: &str, suffix: &str) -> String {
+    match declared_path.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem}@{suffix}.{ext}"),
+        _ => format!("{declared_path}@{suffix}"),
+    }
+}
+
+/// Recover the declared path a requested path is a variant of
+/// (`impl@a1b2c3.md` → `impl.md`); `None` when it is not a variant form.
+fn declared_path_of(requested: &str) -> Option<(String, String)> {
+    let (stem, ext) = match requested.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (requested, String::new()),
+    };
+    let (base, suffix) = stem.split_once('@')?;
+    if base.is_empty()
+        || suffix.is_empty()
+        || !suffix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some((format!("{base}{ext}"), suffix.to_string()))
+}
+
 impl Store {
     /// Write a declared document. Content addressing makes retries free: the
     /// same bytes always land on the same receipt. The file lands first, the
@@ -1546,20 +1599,25 @@ impl Store {
         let discipline = contract
             .works
             .get(&at)
-            .context("current station has no discipline in this mission")?;
+            .context("current station has no discipline in this mission's contract")?;
+        let (base_id, suffix) = split_document_id(document_id)?;
         let declaration = contract
             .documents
             .iter()
-            .find(|d| d.id == document_id)
+            .find(|d| d.id == base_id)
             .with_context(|| {
-                format!("document id {document_id:?} is not declared by the mission contract")
+                format!("document id {base_id:?} is not declared by the mission contract")
             })?;
-        if !discipline.document_rights.write.contains(&declaration.id) {
+        if !discipline.document_rights.write.iter().any(|id| id == base_id) {
             bail!(
                 "station '{at}' may not write document {:?} (not in its documentRights.write)",
-                declaration.id
+                base_id
             );
         }
+        let stored_path = match suffix {
+            None => declaration.path.clone(),
+            Some(suffix) => variant_path(&declaration.path, suffix),
+        };
         let work = self.get_work(&at)?;
         self.require_doc_on_duty(agent_id, &work, "write")?;
 
@@ -1570,11 +1628,11 @@ impl Store {
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
         };
-        let key_hash = sha256_hex(&[mission_id, &declaration.path, &content_sha]);
+        let key_hash = sha256_hex(&[mission_id, &stored_path, &content_sha]);
 
         let file_path: PathBuf = documents_root
             .join(mission_id)
-            .join(&declaration.path)
+            .join(&stored_path)
             .to_path_buf();
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)
@@ -1586,7 +1644,7 @@ impl Store {
             "INSERT OR IGNORE INTO mission_documents
                 (key_hash, mission_id, work_key, document_id, path, content_sha256, written_by, written_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![key_hash, mission_id, at, declaration.id, declaration.path, content_sha, agent_id, now()],
+            params![key_hash, mission_id, at, document_id, stored_path, content_sha, agent_id, now()],
         )?;
         Ok(format!("document:{key_hash}"))
     }
@@ -1608,12 +1666,30 @@ impl Store {
         let discipline = contract
             .works
             .get(&at)
-            .context("current station has no discipline in this mission")?;
+            .context("current station has no discipline in this mission's contract")?;
+        // A requested path may be a variant of a declared one
+        // (`impl@a1b2c3.md` reads under the `impl` declaration's rights).
+        let declared_path = if contract
+            .documents
+            .iter()
+            .any(|d| d.path == path)
+        {
+            path.to_string()
+        } else if let Some((base_path, _)) = declared_path_of(path) {
+            contract
+                .documents
+                .iter()
+                .find(|d| d.path == base_path)
+                .map(|_| base_path)
+                .with_context(|| format!("no document declared at path {path:?}"))?
+        } else {
+            bail!("no document declared at path {path:?}")
+        };
         let declaration = contract
             .documents
             .iter()
-            .find(|d| d.path == path)
-            .with_context(|| format!("no document declared at path {path:?}"))?;
+            .find(|d| d.path == declared_path)
+            .expect("declared_path was resolved against the contract");
         if !discipline.document_rights.read.contains(&declaration.id) {
             bail!(
                 "station '{at}' may not read document {:?} (not in its documentRights.read)",
@@ -1773,14 +1849,18 @@ impl Store {
 
         let mut documents = Vec::new();
         for declaration in &contract.documents {
-            let receipt: Option<String> = self
+            // The latest write wins the shown receipt — including variant
+            // ids (`impl@a1b2c3`), whose stored path is shown so readers can
+            // `doc read` exactly what the receipt points at.
+            let receipt: Option<(String, String)> = self
                 .conn
                 .query_row(
-                    "SELECT key_hash FROM mission_documents
-                     WHERE mission_id = ?1 AND document_id = ?2
+                    "SELECT key_hash, path FROM mission_documents
+                     WHERE mission_id = ?1
+                       AND (document_id = ?2 OR document_id LIKE ?2 || '@%')
                      ORDER BY written_at DESC, key_hash DESC LIMIT 1",
                     params![mission.mission_id, declaration.id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
             let (may_read, may_write) = match &discipline {
@@ -1793,10 +1873,14 @@ impl Store {
             documents.push(DocumentResolvedRow {
                 id: declaration.id.clone(),
                 kind: declaration.kind.clone(),
-                path: declaration.path.clone(),
+                path: receipt
+                    .as_ref()
+                    .map(|(_, p)| p.clone())
+                    .unwrap_or_else(|| declaration.path.clone()),
                 may_read,
                 may_write,
-                receipt: receipt.map(|hash| format!("document:{hash}")),
+                receipt: receipt
+                    .map(|(hash, _)| format!("document:{hash}")),
             });
         }
 

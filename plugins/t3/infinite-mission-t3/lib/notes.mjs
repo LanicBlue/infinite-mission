@@ -7,6 +7,13 @@
 const MISSION_ID = "ms_[0-9a-f]{6,64}";
 const RUN_HINT = new RegExp(`^  → Run: im mission show (${MISSION_ID}) --for .+? \\(then`);
 const STATION_LINE = /^\[station (.+?)\] (.*)$/;
+// The arrival body under a station line: either a hop
+// (`[ms_…] <from> → <to> (round: <outcome>)`) or a first park
+// (`[ms_…] <mission name>`). The hop facts (from / outcome) are what the
+// delivered brief's arrival header is built from — losing them forces the
+// member to guess why the mission came back to it.
+const STATION_MISSION = new RegExp(`^\\[(${MISSION_ID})\\] (.*)$`);
+const HOP_BODY = /^(.+?) → (.+?) \(round: (.+?)\)$/;
 const ENDED_LINE = new RegExp(`^\\[from .+?\\] \\[(${MISSION_ID})\\] mission ended: `);
 const MEMBERSHIP_END = /^\[membership\] you are no longer an active member/;
 const TIMEOUT_LINE = /^No new messages \(timed out after \d+s\)\.$/;
@@ -16,7 +23,7 @@ const HINT_LINE = /^  →/;
 
 /**
  * @returns {{
- *   arrivals: Array<{ station: string, missionId: string }>,
+ *   arrivals: Array<{ station: string, missionId: string, from?: string, to?: string, outcome?: string }>,
  *   ended: string[],
  *   membershipEnd: boolean,
  *   timeout: boolean,
@@ -53,8 +60,16 @@ export function parseReceiveOutput(text) {
       // The mission id lives on the "→ Run: im mission show …" hint printed
       // directly under an arrival note. Without it the note is not routable.
       const runHint = (lines[i + 1] ?? "").match(RUN_HINT);
+      const bodyMatch = stationMatch[2].match(STATION_MISSION);
       if (runHint) {
-        arrivals.push({ station: stationMatch[1], missionId: runHint[1] });
+        const arrival = { station: stationMatch[1], missionId: runHint[1] };
+        const hop = bodyMatch ? bodyMatch[2].match(HOP_BODY) : null;
+        if (hop) {
+          arrival.from = hop[1].trim();
+          arrival.to = hop[2].trim();
+          arrival.outcome = hop[3].trim();
+        }
+        arrivals.push(arrival);
       } else {
         unknown.push(line);
       }

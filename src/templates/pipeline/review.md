@@ -19,14 +19,14 @@ Every finding must cite evidence. A finding without evidence is not a finding; "
 
 ## Verdicts
 - All criteria satisfied, no blocking findings:
-  im mission submit <you> <ms> --revision <N> --outcome approved --reason "<per-criterion verdict one-liners>"
+  im mission submit <you> <ms> --outcome approved --reason "<per-criterion verdict one-liners>"
   (the mission goes to design for the final gate)
 - Implementation problems: write the numbered findings into the review document FIRST
   (im mission doc write <you> <ms> --id review --file <path-or->), then
-  im mission submit <you> <ms> --revision <N> --outcome rework --feedback "<finding numbers, one line each>" --reason "<same, compact>"
+  im mission submit <you> <ms> --outcome rework --feedback "<finding numbers, one line each>" --reason "<same, compact>"
   (the mission returns to build)
 - The goal/spec itself is wrong — the criteria do not match reality:
-  im mission submit <you> <ms> --revision <N> --outcome spec-gap --feedback "<what is wrong and why>" --reason "<same, compact>"
+  im mission submit <you> <ms> --outcome spec-gap --feedback "<what is wrong and why>" --reason "<same, compact>"
   (the mission returns to design)
 
 Round details (feedback, receipts): im mission events <ms>

@@ -789,7 +789,7 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
         Some("end") if args.len() >= 3 => cmd_mission_end(&args[1], &args[2], flag_value(&args[3..], "--reason")?),
         Some("doc") => cmd_mission_doc(&args[1..]),
         _ => bail!(
-            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question>) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --revision <N> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> --revision <N> [--reason <text>]\n             | cancel <agent> <ms> --revision <N> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
+            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question>) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> [--reason <text>]\n             | cancel <agent> <ms> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
         ),
     }
 }
@@ -922,7 +922,7 @@ fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
         ),
         None => println!("  ended: {}", view.ended_note()),
     }
-    println!("  revision: {}  ← submit must carry this", view.revision);
+    println!("  revision: {}", view.revision);
     if show_duty {
         println!(
             "  on duty: {}",
@@ -995,12 +995,8 @@ fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
 fn cmd_mission_submit(args: &[String]) -> Result<()> {
     let agent = args
         .first()
-        .context("Usage: im mission submit <agent> <ms> --revision <N> --outcome <o> [...]")?;
+        .context("Usage: im mission submit <agent> <ms> --outcome <o> [...]")?;
     let mission_id = args.get(1).context("mission id is required")?;
-    let revision: i64 = flag_value(&args[2..], "--revision")?
-        .context("--revision is required (take it from `im mission show`)")?
-        .parse()
-        .context("invalid --revision value")?;
     let outcome = flag_value(&args[2..], "--outcome")?.context("--outcome is required")?;
     let next_node = flag_value(&args[2..], "--next-node")?;
     let reason = flag_value(&args[2..], "--reason")?;
@@ -1026,7 +1022,7 @@ fn cmd_mission_submit(args: &[String]) -> Result<()> {
         result: result_text.as_deref(),
         receipt_ids: &receipts,
     };
-    let outcome = store.submit_mission(agent, mission_id, revision, &outcome, &submission)?;
+    let outcome = store.submit_mission(agent, mission_id, &outcome, &submission)?;
     if outcome.mission_ended {
         println!(
             "Mission {} ended (revision {}).",
@@ -1047,12 +1043,8 @@ fn cmd_mission_submit(args: &[String]) -> Result<()> {
 fn cmd_mission_abandon(args: &[String]) -> Result<()> {
     let agent = args
         .first()
-        .context("Usage: im mission abandon <agent> <ms> --revision <N> [--reason <text>]")?;
+        .context("Usage: im mission abandon <agent> <ms> [--reason <text>]")?;
     let mission_id = args.get(1).context("mission id is required")?;
-    let revision: i64 = flag_value(&args[2..], "--revision")?
-        .context("--revision is required")?
-        .parse()
-        .context("invalid --revision value")?;
     let reason = flag_value(&args[2..], "--reason")?;
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
@@ -1067,7 +1059,6 @@ fn cmd_mission_abandon(args: &[String]) -> Result<()> {
     let outcome = store.submit_mission(
         agent,
         mission_id,
-        revision,
         im::contract::ABANDON,
         &submission,
     )?;
@@ -1105,18 +1096,14 @@ fn cmd_mission_result(mission_id: &str) -> Result<()> {
 fn cmd_mission_cancel(args: &[String]) -> Result<()> {
     let agent = args
         .first()
-        .context("Usage: im mission cancel <agent> <ms> --revision <N> [--reason <text>]")?;
+        .context("Usage: im mission cancel <agent> <ms> [--reason <text>]")?;
     let mission_id = args.get(1).context("mission id is required")?;
-    let revision: i64 = flag_value(&args[2..], "--revision")?
-        .context("--revision is required")?
-        .parse()
-        .context("invalid --revision value")?;
     let reason = flag_value(&args[2..], "--reason")?;
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     ensure_agent(&store, agent)?;
     check_session(&workspace, &store, agent)?;
-    let result = store.cancel_ask(agent, mission_id, revision, reason.as_deref())?;
+    let result = store.cancel_ask(agent, mission_id, reason.as_deref())?;
     println!(
         "Mission {} cancelled (revision {}).",
         result.mission_id, result.revision
@@ -1265,8 +1252,8 @@ fn cmd_inbox() -> Result<()> {
         );
         println!("  → im mission show {}", mission.mission_id);
         println!(
-            "  → resolve it: im mission submit <op> {} --revision {} --outcome <outcome>",
-            mission.mission_id, mission.revision
+            "  → resolve it: im mission submit <op> {} --outcome <outcome>",
+            mission.mission_id
         );
     }
     Ok(())
@@ -1468,11 +1455,11 @@ Missions (Work-to-Work mail; Agent identity authorizes the operation)
   im missions --from <work>                 Origin ledger: in-flight + ended
                                              missions this work sent out (the
                                              in-flight half `im results` omits)
-  im mission submit <agent> <ms> --revision N --outcome <o>
+  im mission submit <agent> <ms> --outcome <o>
        [--next-node <station>] [--reason <t>] [--feedback <t>] [--result <t>]
        [--receipts <document:hash,...>]
-  im mission abandon <agent> <ms> --revision N [--reason <t>]
-  im mission cancel <agent> <ms> --revision N [--reason <t>]
+  im mission abandon <agent> <ms> [--reason <t>]
+  im mission cancel <agent> <ms> [--reason <t>]
                                              Origin-side withdrawal of a template-less ask
                                              (cancelled disposition; distinct from manage-tier
                                              `mission end`)
@@ -1499,10 +1486,10 @@ QUICK START
      the human — no mission round-trips. Then the design agent starts delivery:
      im mission create <design-agent> --from design --template pipeline --key v1 --objective "ship X"
      → im mission doc write <design-agent> <ms> --id spec --file -
-     → im mission submit <design-agent> <ms> --revision 1 --outcome spec-ready
+     → im mission submit <design-agent> <ms> --outcome spec-ready
   3. Agents loop: im missions <me> → im mission show <ms> --for <me>
      → im mission doc write <me> <ms> --id <doc> --file -
-     → im mission submit <me> <ms> --revision N --outcome <o> [--feedback <t>]
+     → im mission submit <me> <ms> --outcome <o> [--feedback <t>]
   4. review approved → design holds the final gate (accept ends the mission,
      reject sends implementation fixes back to build).
   5. im inbox shows anything parked at user stations (other templates).
