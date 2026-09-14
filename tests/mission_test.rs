@@ -156,6 +156,10 @@ fn manager_can_validate_and_install_a_versioned_template_without_overwrite() {
     im(ws).arg("init").assert().success();
     im(ws).args(["join", "boss"]).assert().success();
     seed_tier(ws, "boss", "manage");
+    im(ws)
+        .args(["work", "create", "boss", "design"])
+        .assert()
+        .success();
 
     let source = ws.join("visual-gate.yaml");
     std::fs::write(
@@ -204,6 +208,10 @@ fn template_install_gates_and_self_heals() {
     im(ws).args(["join", "boss"]).assert().success();
     im(ws).args(["join", "peon"]).assert().success();
     seed_tier(ws, "boss", "manage");
+    im(ws)
+        .args(["work", "create", "boss", "design"])
+        .assert()
+        .success();
 
     let source = ws.join("gate.yaml");
     std::fs::write(
@@ -1127,6 +1135,24 @@ fn setup_pipeline() -> (Fixture, String) {
         im(&workspace).args(["join", id]).assert().success();
     }
     seed_tier(&workspace, "boss", "manage");
+    // init seeds no stations anymore — the pipeline contract's four stations
+    // (and its template, a library asset) are set up here explicitly, with
+    // their preset charters (the {mission.reason} slot in design's is what
+    // the final-gate assertion reads back).
+    for work in ["design", "plan", "build", "review"] {
+        im(&workspace)
+            .args(["work", "create", "boss", work, "--preset", work])
+            .assert()
+            .success();
+    }
+    std::fs::write(
+        workspace
+            .join(".im")
+            .join("templates")
+            .join("pipeline.yaml"),
+        im::pipeline::PIPELINE_TEMPLATE,
+    )
+    .unwrap();
     for (work, agent) in [
         ("design", "arch"),
         ("plan", "strategist"),

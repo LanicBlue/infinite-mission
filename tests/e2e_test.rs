@@ -692,11 +692,26 @@ fn mission_end_fans_out_to_past_participants() {
 }
 
 #[test]
-fn init_seeds_pipeline_stations_and_reseeds_deleted_ones() {
+fn init_writes_builtin_templates_and_seeds_no_stations() {
     let tmp = setup_workspace();
     let ws = tmp.path();
 
-    // Four stations out of the box, plus the template.
+    // The four built-in templates, and nothing else — the retired pipeline
+    // line no longer lands in fresh workspaces.
+    for file in [
+        "example.yaml",
+        "dev-general.yaml",
+        "dev-ui.yaml",
+        "dev-mixed.yaml",
+    ] {
+        assert!(
+            ws.join(".im").join("templates").join(file).exists(),
+            "builtin template {file} missing"
+        );
+    }
+    assert!(!ws.join(".im").join("templates").join("pipeline.yaml").exists());
+
+    // Stations belong to the workspace's owners: init seeds none.
     let list = String::from_utf8(
         im(ws)
             .args(["work", "list"])
@@ -708,64 +723,20 @@ fn init_seeds_pipeline_stations_and_reseeds_deleted_ones() {
     )
     .unwrap();
     for key in ["design", "plan", "build", "review"] {
-        assert!(list.contains(key), "seeded station {key} missing: {list}");
+        assert!(
+            !list.contains(&format!("{key} —")),
+            "init must not seed station {key}: {list}"
+        );
     }
-    assert!(ws
-        .join(".im")
-        .join("templates")
-        .join("pipeline.yaml")
-        .exists());
 
-    // Seeded stations carry their preset charters.
-    let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
-    let design_prompt: String = db
-        .query_row(
-            "SELECT prompt FROM works WHERE work_key = 'design'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(
-        design_prompt.contains("final gate"),
-        "design charter missing: {design_prompt}"
-    );
-    drop(db);
-
-    // Re-init is a no-op for existing stations.
+    // Re-init is a no-op for existing templates (never clobbers edits).
+    let example = ws.join(".im").join("templates").join("example.yaml");
+    std::fs::write(&example, "# locally edited\n").unwrap();
     im(ws).arg("init").assert().success();
-    let relist = String::from_utf8(
-        im(ws)
-            .args(["work", "list"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .unwrap();
-    assert!(relist.contains("design"));
-
-    // A deleted pipeline station is re-seeded on the next init.
-    im(ws).args(["join", "boss"]).assert().success();
-    seed_tier(ws, "boss", "manage");
-    im(ws)
-        .args(["work", "delete", "boss", "design"])
-        .assert()
-        .success();
-    im(ws).arg("init").assert().success();
-    let reseeded = String::from_utf8(
-        im(ws)
-            .args(["work", "list"])
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .unwrap();
-    assert!(
-        reseeded.contains("design"),
-        "deleted pipeline key should have been re-seeded: {reseeded}"
+    assert_eq!(
+        std::fs::read_to_string(&example).unwrap(),
+        "# locally edited\n",
+        "re-init must not overwrite a locally edited template"
     );
 }
 

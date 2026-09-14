@@ -2,6 +2,20 @@ use anyhow::Result;
 use std::path::Path;
 
 pub const EXAMPLE_TEMPLATE: &str = include_str!("templates/example.yaml");
+pub const DEV_GENERAL_TEMPLATE: &str = include_str!("templates/dev-general.yaml");
+pub const DEV_UI_TEMPLATE: &str = include_str!("templates/dev-ui.yaml");
+pub const DEV_MIXED_TEMPLATE: &str = include_str!("templates/dev-mixed.yaml");
+
+/// Built-in templates every fresh workspace starts with: the `example`
+/// starter plus the three delivery-line contracts (general / UI / mixed).
+/// Templates are inert until referenced — stations are created by the
+/// workspace's owners, never seeded here.
+const BUILTIN_TEMPLATES: [(&str, &str); 4] = [
+    ("example.yaml", EXAMPLE_TEMPLATE),
+    ("dev-general.yaml", DEV_GENERAL_TEMPLATE),
+    ("dev-ui.yaml", DEV_UI_TEMPLATE),
+    ("dev-mixed.yaml", DEV_MIXED_TEMPLATE),
+];
 
 pub fn run() -> Result<()> {
     let workspace = std::env::current_dir()?;
@@ -11,20 +25,15 @@ pub fn run() -> Result<()> {
     std::fs::create_dir_all(dot.join("templates"))?;
     std::fs::create_dir_all(dot.join("mission-documents"))?;
 
-    let example = dot.join("templates").join("example.yaml");
-    if !example.exists() {
-        std::fs::write(&example, EXAMPLE_TEMPLATE)?;
-    }
-    let pipeline = dot.join("templates").join("pipeline.yaml");
-    if !pipeline.exists() {
-        std::fs::write(&pipeline, crate::pipeline::PIPELINE_TEMPLATE)?;
+    for (file, template) in BUILTIN_TEMPLATES {
+        let path = dot.join("templates").join(file);
+        if !path.exists() {
+            std::fs::write(&path, template)?;
+        }
     }
 
-    // Seed the delivery-pipeline stations (design/plan/build/review). Runs
-    // before any manager exists, so seeding writes the works table directly;
-    // existing stations are never clobbered.
     let store = crate::store::Store::open(&dot.join("im.db"))?;
-    let seeded = crate::pipeline::seed_pipeline_works(&store)?;
+    drop(store);
 
     crate::registry::register(&workspace)?;
     append_if_missing(&workspace.join(".gitignore"), ".im/")?;
@@ -35,18 +44,11 @@ pub fn run() -> Result<()> {
         )?;
     }
     println!("Initialized InfiniteMission workspace at {}", dot.display());
-    println!("  - templates:    .im/templates/ (example.yaml, pipeline.yaml)");
+    println!("  - templates:    .im/templates/ (example, dev-general, dev-ui, dev-mixed)");
     println!("  - documents:    .im/mission-documents/");
-    if seeded.is_empty() {
-        println!("  - stations:     design/plan/build/review already present (untouched)");
-    } else {
-        println!("  - stations:     {}", seeded.join(", "));
-    }
     println!(
-        "  - next:         bind executors — `im work set-executor <manager> <work> <agent>` \
-         for design/plan/build/review (unbound stations are user stations: every hop \
-         there waits for a manager); the design executor should also be a manager — \
-         it creates pipeline missions after the grill conversation"
+        "  - next:         `im join <id>`, create stations with `im work create` (a manager \
+         seeds them via `im work set-prompt`), then `im mission create --template <name>`"
     );
     Ok(())
 }

@@ -1,0 +1,64 @@
+# 混合任务交付线(v4):写入串行(build→build-ui 接力);验证串行(verify→verify-ui);其余同 dev-general。
+schemaVersion: 4
+name: dev-mixed
+objective: "混合任务交付:设计冻结 spec → 主管方案审查+plan → 通用实现→(串行接力)UI 实现 → 审查环 → 必跑验证(verify→verify-ui)→ 主管证据复核 → 设计终验"
+
+entry: design
+
+works:
+  design:
+    completion:
+      outcomes: [spec-ready, accept, reject-quality]
+      terminal: [accept]
+      feedbackRequiredOn: [reject-quality]
+    documentRights: {read: [spec, plan, impl, review, audit, evidence, residuals], write: [spec]}
+  supervisor:
+    completion:
+      outcomes: [spec-reject, plan-ready, reject-impl, reject-ui, quality-passed]
+      terminal: []
+      feedbackRequiredOn: [spec-reject, reject-impl, reject-ui]
+    documentRights: {read: [spec, plan, impl, review, audit, evidence, residuals], write: [plan, residuals]}
+  build:
+    completion: {outcomes: [impl-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
+    documentRights: {read: [plan, audit], write: [impl]}
+  build-ui:
+    completion: {outcomes: [ui-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
+    documentRights: {read: [plan, audit], write: [impl]}
+  review-audit:
+    completion: {outcomes: [reject-impl, reject-ui, approved], terminal: [], feedbackRequiredOn: [reject-impl, reject-ui]}
+    documentRights: {read: [spec, impl], write: [review, audit]}
+  verify:
+    completion: {outcomes: [verify-passed, verify-failed], terminal: [], feedbackRequiredOn: [verify-failed]}
+    documentRights: {read: [spec, plan, evidence], write: [evidence]}
+  verify-ui:
+    completion: {outcomes: [ui-verified, ui-failed], terminal: [], feedbackRequiredOn: [ui-failed]}
+    documentRights: {read: [spec, plan, evidence], write: [evidence]}
+
+documents:
+  - {id: spec,     kind: file, path: spec.md}
+  - {id: plan,     kind: file, path: plan.md}
+  - {id: impl,     kind: file, path: impl.md}
+  - {id: review,   kind: file, path: review.md}
+  - {id: audit,    kind: file, path: audit.md}
+  - {id: evidence, kind: file, path: evidence.md}
+  - {id: residuals, kind: file, path: residuals.md}
+
+paths:
+  - {from: design,       when: spec-ready,      to: supervisor}
+  - {from: design,       when: reject-quality,  to: supervisor,  iterationPolicy: increment}
+  - {from: supervisor,   when: spec-reject,     to: design,      iterationPolicy: increment}
+  - {from: supervisor,   when: plan-ready,      to: build}
+  - {from: supervisor,   when: reject-impl,     to: build,       iterationPolicy: increment}
+  - {from: supervisor,   when: reject-ui,       to: build-ui,    iterationPolicy: increment}
+  - {from: supervisor,   when: quality-passed,  to: design,      iterationPolicy: increment}
+  - {from: build,        when: impl-ready,      to: build-ui}
+  - {from: build,        when: plan-reject,   to: supervisor,  iterationPolicy: increment}
+  - {from: build-ui,     when: ui-ready,        to: review-audit, iterationPolicy: increment}
+  - {from: build-ui,     when: plan-reject,   to: supervisor,  iterationPolicy: increment}
+  - {from: review-audit, when: reject-impl,     to: build,       iterationPolicy: increment}
+  - {from: review-audit, when: reject-ui,       to: build-ui,    iterationPolicy: increment}
+  - {from: review-audit, when: approved,        to: verify}
+  - {from: verify,       when: verify-passed,   to: verify-ui}
+  - {from: verify,       when: verify-failed,   to: supervisor,  iterationPolicy: increment}
+  - {from: verify-ui,    when: ui-verified,     to: supervisor,  iterationPolicy: increment}
+  - {from: verify-ui,    when: ui-failed,       to: supervisor,  iterationPolicy: increment}
