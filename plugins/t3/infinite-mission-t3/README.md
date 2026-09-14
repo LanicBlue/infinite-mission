@@ -210,8 +210,14 @@ on the launcher links to it.
 ## Tests
 
 ```sh
-node --test "tests/"*.test.mjs
+node tests/run.mjs   # wrapper: --test-timeout 60s + --test-force-exit + a
+                     # 5-min wall clock that TERM→SIGKILLs the whole group
 ```
+
+Always go through the wrapper. A bare `node --test` whose runner wedges
+leaves per-file child processes spinning full-core with a live-but-idle
+parent (TERM does not reach them); the wrapper's fences guarantee the run
+self-terminates either way.
 
 Covers the note parser (closed shapes + garbage), config validation,
 delivery decision paths (create / follow-up / unarchive / create-race
