@@ -43,6 +43,89 @@ export function modelSelectionOf(member) {
   return selection;
 }
 
+/** Render IM core's structured assignment snapshot for an agent consumer.
+ * This is presentation only: all mission semantics and adjudication remain
+ * in the snapshot/core. */
+export function briefFromRunView(view) {
+  const lines = [`[mission ${view.missionId}] ${view.name} — ${view.status}`];
+  if (view.objective) lines.push(`  objective: ${view.objective}`);
+  if (view.originWork) lines.push(`  origin work: ${view.originWork}`);
+  if (view.parent) {
+    lines.push(
+      `  parent mission: ${view.parent.missionId} (round revision ${view.parent.revision}, requested by ${view.parent.requestedByWork})`,
+    );
+  }
+  if (view.at) lines.push(`  at station: ${view.at} (iteration ${view.iteration ?? 1})`);
+  else lines.push("  ended: mission is no longer in the mail stream");
+  lines.push(`  revision: ${view.revision}`);
+  if (Array.isArray(view.memberStations) && view.memberStations.length > 0) {
+    lines.push(`  member stations: ${view.memberStations.join(", ")}`);
+  }
+  lines.push(`  on duty: ${view.onDuty ? "YES — you hold this station" : "no"}`);
+  if (view.arrival) {
+    const arrival = view.arrival;
+    if (arrival.kind === "route") {
+      lines.push(
+        `  arrived from: ${arrival.from ?? "?"} on ${arrival.outcome ?? "?"} (event #${arrival.eventSeq})`,
+      );
+    } else if (arrival.kind === "child-result") {
+      lines.push(
+        `  child result: ${arrival.childMissionId ?? "?"} returned ${arrival.outcome ?? "?"} (event #${arrival.eventSeq})`,
+      );
+    } else {
+      lines.push(`  arrived from: ${arrival.from ?? "?"} (event #${arrival.eventSeq})`);
+    }
+    if (arrival.feedback) lines.push(`  incoming feedback: ${arrival.feedback}`);
+    else if (arrival.reason) lines.push(`  incoming reason: ${arrival.reason}`);
+  }
+  if (view.currentStep) lines.push(`  current step: ${view.currentStep}`);
+  if (view.stationCharterSha256 && view.at) {
+    lines.push(
+      `  station charter: sha256:${view.stationCharterSha256} (read: im work show ${view.at})`,
+    );
+  }
+  const outcomes = Array.isArray(view.outcomes)
+    ? view.outcomes.map((outcome) => {
+        let label = outcome;
+        if (view.resultRequiredOn?.includes(outcome)) label += " (needs --result)";
+        if (view.feedbackRequiredOn?.includes(outcome)) label += " (needs --feedback)";
+        return label;
+      })
+    : [];
+  if (outcomes.length > 0) lines.push(`  outcomes: ${[...outcomes, "abandon"].join(", ")}`);
+  if (Array.isArray(view.routes) && view.routes.length > 0) {
+    lines.push("  routes:");
+    for (const route of view.routes) {
+      lines.push(
+        `    ${route.outcome} -> ${route.to?.length ? route.to.join(" | ") : "(none)"}${route.terminal ? " [terminal]" : ""}`,
+      );
+    }
+  }
+  if (Array.isArray(view.children) && view.children.length > 0) {
+    lines.push("  child missions:");
+    for (const child of view.children) {
+      lines.push(
+        `    ${child.missionId} — ${child.status}${child.outcome ? ` outcome=${child.outcome}` : ""}`,
+      );
+      if (child.result) lines.push(`      result: ${child.result}`);
+      else if (child.reason) lines.push(`      reason: ${child.reason}`);
+    }
+  }
+  if (Array.isArray(view.documents) && view.documents.length > 0) {
+    lines.push("  documents:");
+    for (const document of view.documents) {
+      const receipt = document.receipt ? ` receipt=${document.receipt}` : "";
+      const inherited = document.sourceMissionId
+        ? ` inherited-from=${document.sourceMissionId}`
+        : "";
+      lines.push(
+        `    ${document.id} (${document.kind}) ${document.path}${receipt}${inherited} [read:${document.mayRead ? "y" : "n"} write:${document.mayWrite ? "y" : "n"}]`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
 /**
  * Split `im mission events` stdout into `#seq <stamp> <kind>` blocks, each
  * with its (pretty-printed, indented) JSON payload. Malformed blocks are
@@ -85,8 +168,8 @@ function eventBlocks(eventsText) {
  */
 
 /**
- * The follow-up preamble: the thread already carries the full duty
- * discipline from the first brief, and the tail reminder below the brief
+ * The follow-up preamble: the thread already carries member identity and the
+ * stable mission context from the first brief, and the tail reminder below
  * restates the submit/abandon menu every round — so a repeat of the full
  * preamble is banner noise. Two lines: identity + where the protocol lives.
  */
@@ -94,13 +177,13 @@ export function slimPreamble(member, workspace, missionId) {
   const memberId = typeof member === "string" ? member : member.id;
   return [
     `You are the InfiniteMission member "${memberId}" in workspace ${workspace}, on mission ${missionId}.`,
-    `Duty discipline and the mission's full context live in this thread's first brief; the brief below is the current round.`,
+    `Stable mission context lives in this thread's first brief; the brief below is the current round. Read the station charter with im work show when its hash is listed.`,
   ].join("\n");
 }
 
 /**
  * Slim a duty brief for a follow-up round on an existing thread: drop the
- * stable `objective:` and `prompt:` sections (they are in the first brief
+ * stable `objective:` and `current step:` sections (they are in the first brief
  * and re-readable via `im mission show`) and leave a one-line pointer. The
  * round-deciding parts — arrival context, station/iteration, outcome
  * vocabulary, routes, documents — stay verbatim. Parsing is line-anchored
@@ -117,15 +200,15 @@ export function slimBrief(brief) {
     while (end < lines.length && !/^  \S/.test(lines[end])) end += 1;
     return [start, end];
   };
-  const promptRange = drop("  prompt: ");
+  const stepRange = drop("  current step: ");
   const objectiveRange = drop("  objective: ");
-  if (promptRange === null || objectiveRange === null) return String(brief);
+  if (stepRange === null || objectiveRange === null) return String(brief);
   const objectivePointer = "  objective: (mission objective — first brief / `im mission show`)";
-  const promptPointer = "  prompt: (station charter — unchanged; first brief / `im mission show` for the full text)";
+  const stepPointer = "  current step: (unchanged; see the first brief)";
   // Replace from the later range first so earlier indices stay valid.
   for (const [start, end, pointer] of [
     [objectiveRange[0], objectiveRange[1], objectivePointer],
-    [promptRange[0], promptRange[1], promptPointer],
+    [stepRange[0], stepRange[1], stepPointer],
   ].sort((a, b) => b[0] - a[0])) {
     lines.splice(start, end - start, pointer);
   }
@@ -189,8 +272,9 @@ export function dutyPreamble(member, workspace, missionId) {
   return [
     `You are the InfiniteMission member ${identity} in workspace ${workspace}.`,
     `A mission brief follows below the line. Read it, do the work it asks for in this`,
-    `workspace, then close your round by submitting — a round without a submit is a`,
-    `failed round:`,
+    `workspace, then close your round by submitting. The only exception is an open`,
+    `parent round with linked child Missions: keep it open, yield execution, and resume`,
+    `when IM returns the child result to this Mission. Otherwise, no submit is a failed round:`,
     ``,
     `  1. Re-read the mission at any time:`,
     `       im mission show ${missionId} --for ${memberId}`,
@@ -232,7 +316,8 @@ export function dutyTailReminder(member, missionId) {
     `You are InfiniteMission member "${memberId}", on duty for mission ${missionId}.`,
     `Reply by either: (a) \`im mission submit "${memberId}" "${missionId}" --outcome <permitted>\``,
     `when the work is done, or (b) \`im mission abandon "${memberId}" "${missionId}"\``,
-    `when you cannot proceed. Take the permitted outcomes from the`,
+    `when you cannot proceed. If this round has active linked child Missions, yield without`,
+    `submitting; IM will return their results to this same Mission. Take the permitted outcomes from the`,
     `brief above. Do the work yourself — nested CLI subagent tools bypass this duty`,
     `and their output will not reach the mission. Never run "im join" or "im receive".`,
     `</im-system-reminder>`,
@@ -260,7 +345,7 @@ export function resultTailReminder(memberId, missionId) {
  * Preamble for a returned Work-origin result: the Mission is already ended,
  * so there is no round to close — the deliverable is reading and relaying
  * the durable result. Deliberately contains no submit instruction; the brief
- * below the line carries the result JSON and the event history.
+ * below the line carries the durable result JSON.
  */
 export function resultPreamble(memberId, workspace) {
   return [
@@ -268,7 +353,7 @@ export function resultPreamble(memberId, workspace) {
     `A mission you originated has ENDED and its result is addressed to you below the line.`,
     `This is a read-only delivery: do NOT run im mission submit, im mission abandon, or`,
     `im mission cancel for this mission — it is closed and every such command will fail.`,
-    `Read the result and the event history in the brief, then report the outcome to the`,
+    `Read the result in the brief, then report the outcome to the`,
     `user in your own words.`,
     ``,
     `Never run "im join" or "im receive" — the bridge owns the member identity and`,
@@ -281,6 +366,10 @@ export function resultPreamble(memberId, workspace) {
 export class Delivery {
   constructor(t3) {
     this.t3 = t3;
+    // Consumer-local delivery memory. Absence (including a bridge restart)
+    // deliberately forces one full IM snapshot; it never becomes mission
+    // authority and is safe to lose.
+    this.contextByThread = new Map();
   }
 
   #sameRoot(a, b) {
@@ -394,7 +483,15 @@ export class Delivery {
    * returned Work-origin result: the brief is read-only, so the turn carries
    * the result preamble instead of the submit-duty one.
    */
-  async deliver({ workspacePath, member, station, missionId, brief, ended = false }) {
+  async deliver({
+    workspacePath,
+    member,
+    station,
+    missionId,
+    brief,
+    ended = false,
+    contextKey = station,
+  }) {
     // One shell fetch serves both the project lookup and the prefix search
     // in #resolveTarget (the fallback path for deleted deterministic ids).
     const shell = await this.t3.shell();
@@ -411,6 +508,16 @@ export class Delivery {
       });
     }
 
+    const previousContext = this.contextByThread.get(target.threadId);
+    const sessionStatus = target.thread?.session?.status ?? null;
+    const fullSnapshot =
+      target.mode === "create" ||
+      target.thread?.latestTurn === null ||
+      previousContext === undefined ||
+      previousContext !== contextKey ||
+      sessionStatus === "error" ||
+      sessionStatus === "stopped";
+
     await this.t3.dispatch({
       type: "thread.turn.start",
       commandId: randomUUID(),
@@ -420,7 +527,7 @@ export class Delivery {
         role: "user",
         text: ended
           ? `${resultPreamble(member.id, workspacePath)}\n${brief}${resultTailReminder(member.id, missionId)}`
-          : target.mode === "create"
+          : fullSnapshot
             ? `${dutyPreamble(member, workspacePath, missionId)}\n${brief}${dutyTailReminder(member.id, missionId)}`
             // Follow-up round on an existing thread: the stable preamble,
             // objective, and charter already live in this thread's first
@@ -437,6 +544,7 @@ export class Delivery {
       interactionMode: "default",
       createdAt: new Date().toISOString(),
     });
+    if (!ended) this.contextByThread.set(target.threadId, contextKey);
     return target.threadId;
   }
 

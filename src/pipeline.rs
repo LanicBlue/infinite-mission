@@ -39,7 +39,7 @@ pub const PRESETS: &[WorkPreset] = &[
     },
     WorkPreset {
         key: "build-ui",
-        description: "UI 实现(按 plan,每轮 commit+impl@<HEAD短hash> 凭据,混合任务接力 build)",
+        description: "UI 实现(按 plan,每轮 commit+impl-ui@<HEAD短hash> 凭据,混合任务接力 build)",
         prompt: include_str!("templates/dev-stations/build-ui.md"),
     },
     WorkPreset {
@@ -69,7 +69,7 @@ pub const PRESETS: &[WorkPreset] = &[
     },
     WorkPreset {
         key: "verify-ui",
-        description: "UI 验证站:verify 之后串行,交互+可视化证据(只读执行)",
+        description: "UI 验证站:verify 之后串行,交互+可视化证据→evidence-ui@HEAD(只读执行)",
         prompt: include_str!("templates/dev-stations/verify-ui.md"),
     },
 ];
@@ -128,7 +128,6 @@ fn parse_preset_file(path: &Path) -> Option<FilePreset> {
         prompt: prompt.trim_end().to_string(),
     })
 }
-
 
 /// Overwrite the user-level stock (`~/.im/templates/`, `~/.im/presets/`)
 /// with the compiled-in templates and charters. Run by the installer (and

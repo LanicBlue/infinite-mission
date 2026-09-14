@@ -475,14 +475,7 @@ fn gates_follow_the_tier_ladder() {
         .assert()
         .success();
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "pub",
-            &ms,
-            "--outcome",
-            "ok",
-        ])
+        .args(["mission", "submit", "pub", &ms, "--outcome", "ok"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("resolved by a manage-tier member"));
@@ -502,14 +495,7 @@ fn gates_follow_the_tier_ladder() {
 
     // Manage: everything above passes.
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "mgmt",
-            &ms,
-            "--outcome",
-            "ok",
-        ])
+        .args(["mission", "submit", "mgmt", &ms, "--outcome", "ok"])
         .assert()
         .success();
 }
@@ -660,25 +646,11 @@ fn mission_end_fans_out_to_past_participants() {
 
     // build → review → terminal pass: worker is a past participant.
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .success();
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "inspector",
-            &ms,
-            "--outcome",
-            "pass",
-        ])
+        .args(["mission", "submit", "inspector", &ms, "--outcome", "pass"])
         .assert()
         .success();
 
@@ -709,7 +681,11 @@ fn init_writes_builtin_templates_and_seeds_no_stations() {
             "builtin template {file} missing"
         );
     }
-    assert!(!ws.join(".im").join("templates").join("pipeline.yaml").exists());
+    assert!(!ws
+        .join(".im")
+        .join("templates")
+        .join("pipeline.yaml")
+        .exists());
 
     // Stations belong to the workspace's owners: init seeds none.
     let list = String::from_utf8(
@@ -801,10 +777,7 @@ fn work_presets_fill_charters_and_the_station_lock_governs_delete() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(
-        qa_prompt.contains("必跑站"),
-        "qa: {qa_prompt}"
-    );
+    assert!(qa_prompt.contains("必跑站"), "qa: {qa_prompt}");
     assert!(
         qa_summary.contains("必跑验证站"),
         "qa summary: {qa_summary}"
@@ -1006,14 +979,7 @@ fn work_list_shows_holding_and_en_route_occupancy() {
         .assert()
         .success();
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "ok",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "ok"])
         .assert()
         .success();
     let after = String::from_utf8(
@@ -1197,18 +1163,37 @@ fn init_inherits_the_user_stock_and_refresh_updates_it() {
     .unwrap();
 
     im(ws).arg("init").assert().success();
-    let example = std::fs::read_to_string(ws.join(".im").join("templates").join("example.yaml")).unwrap();
-    assert!(example.contains("my house style starter"), "stock must be inherited: {example}");
-    assert!(ws.join(".im").join("presets").join("house-lane.md").exists());
+    let example =
+        std::fs::read_to_string(ws.join(".im").join("templates").join("example.yaml")).unwrap();
+    assert!(
+        example.contains("my house style starter"),
+        "stock must be inherited: {example}"
+    );
+    assert!(ws
+        .join(".im")
+        .join("presets")
+        .join("house-lane.md")
+        .exists());
 
     // `im stock refresh` rewrites the stock from the compiled-in templates;
     // already-initialized workspaces are untouched.
     im(ws).args(["stock", "refresh"]).assert().success();
-    let refreshed = std::fs::read_to_string(home.join(".im").join("templates").join("example.yaml")).unwrap();
-    assert!(refreshed.contains("starter mission template"), "refresh restores the built-in: {refreshed}");
-    assert!(home.join(".im").join("presets").join("build.md").exists(), "refresh writes the charters");
-    let still_mine = std::fs::read_to_string(ws.join(".im").join("templates").join("example.yaml")).unwrap();
-    assert!(still_mine.contains("my house style starter"), "workspace files survive a refresh");
+    let refreshed =
+        std::fs::read_to_string(home.join(".im").join("templates").join("example.yaml")).unwrap();
+    assert!(
+        refreshed.contains("starter mission template"),
+        "refresh restores the built-in: {refreshed}"
+    );
+    assert!(
+        home.join(".im").join("presets").join("build.md").exists(),
+        "refresh writes the charters"
+    );
+    let still_mine =
+        std::fs::read_to_string(ws.join(".im").join("templates").join("example.yaml")).unwrap();
+    assert!(
+        still_mine.contains("my house style starter"),
+        "workspace files survive a refresh"
+    );
 
     // Clean the shared test home so other tests don't inherit this stock.
     std::fs::remove_dir_all(home.join(".im")).unwrap();

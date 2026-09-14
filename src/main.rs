@@ -181,10 +181,8 @@ fn cmd_stock(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("refresh") => {
             let stock = im::init::stock_dir()?;
-            let written = im::pipeline::stock_refresh(
-                &stock.join("templates"),
-                &stock.join("presets"),
-            )?;
+            let written =
+                im::pipeline::stock_refresh(&stock.join("templates"), &stock.join("presets"))?;
             println!("Stock refreshed at {} ({written} files).", stock.display());
             Ok(())
         }
@@ -533,16 +531,16 @@ fn flag_value(args: &[String], flag: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-
 /// Look up one live preset from the workspace's `.im/presets/` directory.
 fn file_preset(workspace: &std::path::Path, key: &str) -> Result<im::pipeline::FilePreset> {
     im::pipeline::read_presets(&workspace.join(".im").join("presets"))?
         .into_iter()
         .find(|preset| preset.key == key)
         .with_context(|| {
-            let known: Vec<String> = im::pipeline::read_presets(&workspace.join(".im").join("presets"))
-                .map(|presets| presets.iter().map(|p| p.key.clone()).collect())
-                .unwrap_or_default();
+            let known: Vec<String> =
+                im::pipeline::read_presets(&workspace.join(".im").join("presets"))
+                    .map(|presets| presets.iter().map(|p| p.key.clone()).collect())
+                    .unwrap_or_default();
             format!("unknown preset {key:?} (available: {})", known.join(", "))
         })
 }
@@ -610,6 +608,24 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             }
             Ok(())
         }
+        Some("show") if args.len() >= 2 => {
+            let workspace = find_workspace()?;
+            let store = open_store(&workspace)?;
+            let work = store.get_work(&args[1])?;
+            if args[2..].iter().any(|arg| arg == "--json") {
+                println!("{}", serde_json::to_string_pretty(&work)?);
+            } else {
+                println!("[station {}]", work.work_key);
+                println!("  executor: {}", work.executor.as_deref().unwrap_or("(user)"));
+                if !work.description.is_empty() {
+                    println!("  description: {}", work.description);
+                }
+                if !work.prompt.is_empty() {
+                    println!("  charter: {}", work.prompt);
+                }
+            }
+            Ok(())
+        }
         Some("set-executor") if args.len() == 4 => {
             let executor_arg = if args[3] == "-" { None } else { Some(args[3].as_str()) };
             let workspace = find_workspace()?;
@@ -659,7 +675,7 @@ fn cmd_work(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         _ => bail!(
-            "Usage: im work <create <op> <work-key> [--description <t>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | set-description <op> <work> <text...> | delete <op> <work>>"
+            "Usage: im work <create <op> <work-key> [--description <t>] [--executor <agent>] [--prompt <text>] [--preset design|plan|build|review]\n             | list | show <work> [--json] | set-executor <op> <work> <agent-or->\n             | set-prompt <op> <work> <text...> | set-prompt <op> <work> --preset <name>\n             | set-description <op> <work> <text...> | delete <op> <work>>"
         ),
     }
 }
@@ -808,7 +824,11 @@ fn cmd_results(args: Vec<String>) -> Result<()> {
 fn cmd_mission(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("create") => cmd_mission_create(&args[1..]),
-        Some("show") if args.len() >= 2 => cmd_mission_show(&args[1], flag_value(&args[2..], "--for")?.as_deref()),
+        Some("show") if args.len() >= 2 => cmd_mission_show(
+            &args[1],
+            flag_value(&args[2..], "--for")?.as_deref(),
+            args[2..].iter().any(|arg| arg == "--json"),
+        ),
         Some("submit") => cmd_mission_submit(&args[1..]),
         Some("abandon") => cmd_mission_abandon(&args[1..]),
         Some("events") if args.len() == 2 => cmd_mission_events(&args[1]),
@@ -817,7 +837,7 @@ fn cmd_mission(args: Vec<String>) -> Result<()> {
         Some("end") if args.len() >= 3 => cmd_mission_end(&args[1], &args[2], flag_value(&args[3..], "--reason")?),
         Some("doc") => cmd_mission_doc(&args[1..]),
         _ => bail!(
-            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question>) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>]\n             | submit <agent> <ms> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> [--reason <text>]\n             | cancel <agent> <ms> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
+            "Usage: im mission <create <op> --from <origin-work> (--template <name> | --to <target-work> --objective <question> [--parent <mission>]) --key <unique-key> [--name <n>]\n             | show <ms> [--for <agent>] [--json]\n             | submit <agent> <ms> --outcome <o> [--next-node <station>] [--reason <text>] [--feedback <text>] [--result <text>] [--receipts <a,b>]\n             | abandon <agent> <ms> [--reason <text>]\n             | cancel <agent> <ms> [--reason <text>]\n             | events <ms> | result <ms> | end <op> <ms> [--reason <text>]\n             | doc <read <agent> <ms> <path> | write <agent> <ms> --id <docId> --file <path-or->"
         ),
     }
 }
@@ -833,6 +853,7 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
     let objective = flag_value(&args[1..], "--objective")?;
     let target_work = flag_value(&args[1..], "--to")?;
     let template_name = flag_value(&args[1..], "--template")?;
+    let parent_mission_id = flag_value(&args[1..], "--parent")?;
 
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
@@ -889,8 +910,11 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
         &origin_work,
         &source,
         &idem_key,
-        display_name.as_deref(),
-        objective.as_deref(),
+        &im::mission::MissionCreateOverrides {
+            name_override: display_name.as_deref(),
+            objective_override: objective.as_deref(),
+            parent_mission_id: parent_mission_id.as_deref(),
+        },
     )?;
     if outcome.existed {
         println!(
@@ -920,7 +944,7 @@ fn cmd_mission_create(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
+fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>, json: bool) -> Result<()> {
     let workspace = find_workspace()?;
     let store = open_store(&workspace)?;
     if let Some(agent) = for_agent {
@@ -928,7 +952,11 @@ fn cmd_mission_show(mission_id: &str, for_agent: Option<&str>) -> Result<()> {
         let _ = agent;
     }
     let view = store.run_view(mission_id, for_agent)?;
-    print_run_view(&view, for_agent.is_some());
+    if json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+    } else {
+        print_run_view(&view, for_agent.is_some());
+    }
     Ok(())
 }
 
@@ -951,6 +979,9 @@ fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
         None => println!("  ended: {}", view.ended_note()),
     }
     println!("  revision: {}", view.revision);
+    if !view.member_stations.is_empty() {
+        println!("  member stations: {}", view.member_stations.join(", "));
+    }
     if show_duty {
         println!(
             "  on duty: {}",
@@ -961,8 +992,56 @@ fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
             }
         );
     }
-    if let Some(prompt) = &view.prompt {
-        println!("  prompt: {prompt}");
+    if let Some(step) = &view.current_step {
+        println!("  current step: {step}");
+    }
+    if let Some(hash) = &view.station_charter_sha256 {
+        if let Some(at) = &view.at {
+            println!("  station charter: sha256:{hash} (im work show {at})");
+        }
+    }
+    if let Some(parent) = &view.parent {
+        println!(
+            "  parent mission: {} (round revision {}, requested by {})",
+            parent.mission_id, parent.revision, parent.requested_by_work
+        );
+    }
+    if let Some(arrival) = &view.arrival {
+        match arrival.kind.as_str() {
+            "route" => println!(
+                "  arrived from: {} on {} (event #{})",
+                arrival.from.as_deref().unwrap_or("?"),
+                arrival.outcome.as_deref().unwrap_or("?"),
+                arrival.event_seq
+            ),
+            "child-result" => println!(
+                "  child result: {} returned {} (event #{})",
+                arrival.child_mission_id.as_deref().unwrap_or("?"),
+                arrival.outcome.as_deref().unwrap_or("?"),
+                arrival.event_seq
+            ),
+            _ => println!(
+                "  arrived from: {} (event #{})",
+                arrival.from.as_deref().unwrap_or("?"),
+                arrival.event_seq
+            ),
+        }
+        if let Some(feedback) = &arrival.feedback {
+            println!("  incoming feedback: {feedback}");
+        } else if let Some(reason) = &arrival.reason {
+            println!("  incoming reason: {reason}");
+        }
+    }
+    if !view.children.is_empty() {
+        println!("  child missions:");
+        for child in &view.children {
+            let outcome = child
+                .outcome
+                .as_deref()
+                .map(|value| format!(" outcome={value}"))
+                .unwrap_or_default();
+            println!("    {} — {}{}", child.mission_id, child.status, outcome);
+        }
     }
     if !view.outcomes.is_empty() {
         // Teach the submit requirements inline: an executor that learns
@@ -1012,9 +1091,14 @@ fn print_run_view(view: &im::mission::RunView, show_duty: bool) {
                 .as_deref()
                 .map(|r| format!(" receipt={r}"))
                 .unwrap_or_default();
+            let source = doc
+                .source_mission_id
+                .as_deref()
+                .map(|mission| format!(" inherited-from={mission}"))
+                .unwrap_or_default();
             println!(
-                "    {} ({}) {}{} [{}]",
-                doc.id, doc.kind, doc.path, receipt, rights
+                "    {} ({}) {}{}{} [{}]",
+                doc.id, doc.kind, doc.path, receipt, source, rights
             );
         }
     }
@@ -1084,12 +1168,7 @@ fn cmd_mission_abandon(args: &[String]) -> Result<()> {
         result: None,
         receipt_ids: &[],
     };
-    let outcome = store.submit_mission(
-        agent,
-        mission_id,
-        im::contract::ABANDON,
-        &submission,
-    )?;
+    let outcome = store.submit_mission(agent, mission_id, im::contract::ABANDON, &submission)?;
     println!(
         "Mission {} abandoned (revision {}).",
         outcome.mission_id, outcome.revision
@@ -1477,8 +1556,12 @@ Missions (Work-to-Work mail; Agent identity authorizes the operation)
                                              is a built-in one-station contract: the objective
                                              carries the question, the outcomes are generated
                                              for you, and the result returns to the origin
-                                             work. The receiver handles it like any mission.
-  im mission show <ms> [--for <agent>]      Run view: prompt/rights/routes/revision
+                                             work. Add --parent <mission> to bind an ask to
+                                             the parent's current round and inherit readable
+                                             document snapshots. The receiver handles it like
+                                             any mission.
+  im mission show <ms> [--for <agent>] [--json]
+                                             Run view: current step/arrival/rights/routes
   im missions <agent>                       Active missions at your stations
   im missions --from <work>                 Origin ledger: in-flight + ended
                                              missions this work sent out (the

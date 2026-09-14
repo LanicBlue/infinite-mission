@@ -101,10 +101,30 @@ export class ProcessImRunner {
     );
   }
 
-  /** @returns {Promise<{ ok: boolean, text: string }>} */
+  /** Structured, self-contained assignment snapshot from IM core. */
   async missionShow(workspace, missionId, memberId) {
-    const res = await this.#run(["mission", "show", missionId, "--for", memberId], workspace);
-    return { ok: res.code === 0, text: res.stdout };
+    const structured = await this.#run(
+      ["mission", "show", missionId, "--for", memberId, "--json"],
+      workspace,
+    );
+    if (structured.code === 0) {
+      try {
+        const view = JSON.parse(structured.stdout);
+        if (view && typeof view === "object" && view.missionId === missionId) {
+          return { ok: true, text: structured.stdout, view };
+        }
+      } catch {
+        // Older cores ignore unknown flags and print the human view. Retry
+        // without --json below; the bridge keeps its legacy event fallback.
+      }
+    }
+
+    const legacy = await this.#run(
+      ["mission", "show", missionId, "--for", memberId],
+      workspace,
+    );
+    if (legacy.code !== 0) return { ok: false, text: legacy.stdout, view: null };
+    return { ok: true, text: legacy.stdout, view: null };
   }
 
   /** Durable terminal result for a Work-origin mission (newer IM cores). */

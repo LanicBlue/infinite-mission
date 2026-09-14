@@ -91,8 +91,11 @@ fn create(store: &Store, creator: &str) -> MissionCreateOutcome {
                 bytes: TEMPLATE.as_bytes(),
             },
             "one",
-            None,
-            Some("ship safely"),
+            &im::mission::MissionCreateOverrides {
+                name_override: None,
+                objective_override: Some("ship safely"),
+                parent_mission_id: None,
+            },
         )
         .unwrap()
 }
@@ -131,7 +134,7 @@ fn creator_gets_complete_view_atomically_without_first_arrival() {
     assert_eq!(view.revision, 1);
     assert_eq!(view.iteration, Some(1));
     assert_eq!(view.at.as_deref(), Some("draft"));
-    assert_eq!(view.prompt.as_deref(), Some("Freeze handoff: ship safely"));
+    assert_eq!(view.current_step.as_deref(), Some("design"));
     assert_eq!(view.outcomes, ["ready", "finish"]);
     assert_eq!(view.terminal, ["finish"]);
     assert_eq!(view.routes.len(), 3); // ready, finish and the reserved abandon route

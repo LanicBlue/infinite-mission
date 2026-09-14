@@ -505,6 +505,153 @@ fn answer_ends_mission_and_returns_result_exactly_once() {
 }
 
 #[test]
+fn child_ask_inherits_parent_documents_and_returns_to_parent_round() {
+    let tmp = setup();
+    let ws = tmp.path();
+    std::fs::write(
+        ws.join(".im/templates/parent.yaml"),
+        r#"schemaVersion: 4
+name: parent
+entry: origin
+works:
+  origin:
+    completion: {outcomes: [done], terminal: [done], feedbackRequiredOn: []}
+    documentRights: {read: [spec], write: [spec]}
+documents:
+  - {id: spec, kind: file, path: spec.md}
+paths: []
+"#,
+    )
+    .unwrap();
+    im(ws)
+        .args([
+            "mission",
+            "create",
+            "alice",
+            "--from",
+            "origin",
+            "--template",
+            "parent",
+            "--key",
+            "parent-flow",
+        ])
+        .assert()
+        .success();
+    let parent = mission_ids(ws).into_iter().next().unwrap();
+    let source = ws.join("parent-spec.txt");
+    std::fs::write(&source, "frozen parent bytes").unwrap();
+    im(ws)
+        .args([
+            "mission",
+            "doc",
+            "write",
+            "alice",
+            &parent,
+            "--id",
+            "spec",
+            "--file",
+            source.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    im(ws)
+        .args([
+            "mission",
+            "create",
+            "alice",
+            "--from",
+            "origin",
+            "--to",
+            "lab",
+            "--parent",
+            &parent,
+            "--key",
+            "child-review",
+            "--objective",
+            "review the frozen spec",
+        ])
+        .assert()
+        .success();
+    let child = mission_ids(ws)
+        .into_iter()
+        .find(|mission_id| mission_id != &parent)
+        .unwrap();
+
+    // Rewriting the parent's human-facing path cannot mutate the child's
+    // inherited receipt snapshot.
+    std::fs::write(&source, "new parent bytes").unwrap();
+    im(ws)
+        .args([
+            "mission",
+            "doc",
+            "write",
+            "alice",
+            &parent,
+            "--id",
+            "spec",
+            "--file",
+            source.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    im(ws)
+        .args(["mission", "show", &child, "--for", "bob", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&parent))
+        .stdout(predicate::str::contains("sourceMissionId"));
+    im(ws)
+        .args(["mission", "doc", "read", "bob", &child, "spec.md"])
+        .assert()
+        .success()
+        .stdout("frozen parent bytes\n");
+
+    // A blocking child belongs to this exact parent round.
+    im(ws)
+        .args(["mission", "submit", "alice", &parent, "--outcome", "done"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unfinished child mission"));
+
+    im(ws)
+        .args([
+            "mission",
+            "submit",
+            "bob",
+            &child,
+            "--outcome",
+            "answered",
+            "--result",
+            "review passed",
+        ])
+        .assert()
+        .success();
+    im(ws)
+        .args(["receive", "alice"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&parent))
+        .stdout(predicate::str::contains(&child));
+    im(ws)
+        .args(["mission", "show", &parent, "--for", "alice", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("child-result"))
+        .stdout(predicate::str::contains("review passed"));
+    im(ws)
+        .args(["results", "alice"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No mission results"));
+    im(ws)
+        .args(["mission", "submit", "alice", &parent, "--outcome", "done"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn decline_ends_ask_and_returns_outcome_to_origin() {
     let tmp = setup();
     let ws = tmp.path();
@@ -1115,8 +1262,11 @@ fn legacy_workspace_without_origin_still_runs_old_missions() {
                 bytes: REVIEW_TEMPLATE.as_bytes(),
             },
             "old-k",
-            None,
-            None,
+            &im::mission::MissionCreateOverrides {
+                name_override: None,
+                objective_override: None,
+                parent_mission_id: None,
+            },
         )
         .unwrap();
     let ms_old = mission_ids(ws)
@@ -1124,25 +1274,11 @@ fn legacy_workspace_without_origin_still_runs_old_missions() {
         .find(|id| *id != ms_ask)
         .unwrap();
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "bob",
-            &ms_old,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "bob", &ms_old, "--outcome", "done"])
         .assert()
         .success();
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "pat",
-            &ms_old,
-            "--outcome",
-            "pass",
-        ])
+        .args(["mission", "submit", "pat", &ms_old, "--outcome", "pass"])
         .assert()
         .success();
     im(ws)
@@ -1210,25 +1346,11 @@ fn old_pipeline_flow_regression_alongside_asks() {
         .unwrap();
 
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "bob",
-            &ms_flow,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "bob", &ms_flow, "--outcome", "done"])
         .assert()
         .success();
     im(ws)
-        .args([
-            "mission",
-            "submit",
-            "pat",
-            &ms_flow,
-            "--outcome",
-            "pass",
-        ])
+        .args(["mission", "submit", "pat", &ms_flow, "--outcome", "pass"])
         .assert()
         .success();
 

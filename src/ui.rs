@@ -682,8 +682,11 @@ pub fn apply_action_response(
                 origin,
                 &source,
                 key,
-                name.as_deref(),
-                objective.as_deref(),
+                &crate::mission::MissionCreateOverrides {
+                    name_override: name.as_deref(),
+                    objective_override: objective.as_deref(),
+                    parent_mission_id: None,
+                },
             )?;
             run_view = outcome.run_view;
             Ok(format!(

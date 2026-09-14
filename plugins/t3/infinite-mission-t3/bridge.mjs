@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { readConfigFile, readT3ImMembers, defaultConfigPath } from "./lib/config.mjs";
 import { ProcessImRunner } from "./lib/im-cli.mjs";
 import { HttpT3Client } from "./lib/t3-client.mjs";
-import { Delivery, arrivalHeader } from "./lib/delivery.mjs";
+import { Delivery, arrivalHeader, briefFromRunView } from "./lib/delivery.mjs";
 import { parseReceiveOutput } from "./lib/notes.mjs";
 import { sleep } from "./lib/spawn.mjs";
 
@@ -402,19 +402,20 @@ export class Bridge {
   }
 
   async #deliveryBrief(workspace, missionId, show, station, hop) {
-    // The ended signal is a machine contract, not show-text heuristics: the
-    // header's status suffix and any "ended:" line can both be corrupted by
-    // mission names and objectives (a multi-line name once turned every
-    // result delivery into a duty turn that watch-settled and
-    // sweep-redelivered forever). Layered instead: `im mission result`
-    // succeeds exactly for ended missions; older cores fall back to the
-    // event history, whose `#seq stamp mission.ended` lines are
-    // machine-written and cannot be forged through payloads (JSON keeps
-    // them single-line).
-    let ended = false;
+    // Current cores own the complete assignment semantics and expose one
+    // structured snapshot. The bridge only renders/delivers it. Older cores
+    // keep the result/events probes strictly as a compatibility fallback.
+    const coreBrief = show.view ? briefFromRunView(show.view) : show.text;
+    let ended = show.view?.status === "ended";
     let result = null;
     let events = null;
-    if (typeof this.runner.missionResult === "function") {
+    if (show.view && ended && typeof this.runner.missionResult === "function") {
+      try {
+        result = await this.runner.missionResult(workspace, missionId);
+      } catch {
+        result = null;
+      }
+    } else if (!show.view && typeof this.runner.missionResult === "function") {
       try {
         result = await this.runner.missionResult(workspace, missionId);
         ended = result.ok;
@@ -422,7 +423,7 @@ export class Bridge {
         ended = false; // treat like not-ended; the sweep re-delivers from `im results`
       }
     }
-    if (!ended && typeof this.runner.missionEvents === "function") {
+    if (!show.view && !ended && typeof this.runner.missionEvents === "function") {
       try {
         events = await this.runner.missionEvents(workspace, missionId);
       } catch {
@@ -435,15 +436,14 @@ export class Bridge {
         events !== null && /^#\d+\s.*mission\.ended$/m.test(String(events.text));
     }
     if (!ended) {
-      // Arrival context (why THIS station, THIS round) rides at the top of
-      // the duty brief: hop facts from the arrival note plus the ledger's
-      // round count and latest verbatim feedback/reason.
+      if (show.view) return { brief: coreBrief, ended: false };
+      // Legacy-only fallback: old cores had no structured arrival field.
       const header = arrivalHeader({
         station,
         hop,
         eventsText: events && events.ok ? events.text : null,
       });
-      return { brief: header ? `${header}\n${show.text}` : show.text, ended: false };
+      return { brief: header ? `${header}\n${coreBrief}` : coreBrief, ended: false };
     }
 
     // mission_result work notes intentionally share the stable arrival-note
@@ -453,21 +453,15 @@ export class Bridge {
     const sections = [
       "[InfiniteMission returned result]",
       "This Mission is already ended. Read the result below; do NOT submit or abandon it.",
-      show.text.trimEnd(),
+      coreBrief.trimEnd(),
     ];
     if (result && result.ok && result.text.trim()) {
       sections.push("[Durable result]", result.text.trimEnd());
-    }
-    if (events === null && typeof this.runner.missionEvents === "function") {
-      try {
-        events = await this.runner.missionEvents(workspace, missionId);
-      } catch (err) {
-        this.log("bridge", `mission events lookup failed for ${missionId}: ${err.message}`);
-        events = { ok: false, text: "" };
-      }
-    }
-    if (events && events.ok && events.text.trim()) {
-      sections.push("[Mission events]", events.text.trimEnd());
+    } else if (events && events.ok && events.text.trim()) {
+      // Compatibility only: pre-result-command cores have no structured
+      // terminal payload, so their ledger is the sole durable answer. Current
+      // cores never take this path and never inject full event history.
+      sections.push("[Legacy mission result ledger]", events.text.trimEnd());
     }
     return { brief: sections.join("\n\n"), ended: true };
   }
@@ -514,6 +508,9 @@ export class Bridge {
           missionId,
           brief,
           ended,
+          contextKey: show.view
+            ? `${show.view.at ?? "ended"}:${show.view.stationCharterSha256 ?? "none"}`
+            : station,
         });
         this.log(tag, `delivered ${missionId}@${station} → T3 thread ${threadId}`);
         if (ended) {
@@ -811,6 +808,9 @@ export class Bridge {
           missionId: item.missionId,
           brief,
           ended,
+          contextKey: show.view
+            ? `${show.view.at ?? "ended"}:${show.view.stationCharterSha256 ?? "none"}`
+            : item.station,
         });
         this.log(this.tag(item.workspace, item.memberId), `retry delivered ${item.missionId}@${item.station} → ${threadId}`);
         if (ended) {

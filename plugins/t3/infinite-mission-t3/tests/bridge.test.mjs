@@ -326,7 +326,67 @@ test("arrival: mission show re-verified, then delivered with the brief", async (
   await bridge.stop();
 });
 
-test("returned result: ended mission is delivered with durable result and events, never submit duty", async () => {
+test("structured assignment supplies current arrival without scanning mission events", async () => {
+  const missionId = "ms_1234567890abcdef";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "build") }],
+    missionShow: () => ({
+      ok: true,
+      view: {
+        missionId,
+        name: "structured",
+        objective: "ship safely",
+        originWork: "design",
+        at: "build",
+        status: "active",
+        revision: 4,
+        iteration: 2,
+        memberStations: ["build", "verify"],
+        stationCharterSha256: "abc123",
+        arrival: {
+          kind: "route",
+          eventSeq: 9,
+          from: "review",
+          outcome: "reject-impl",
+          reason: null,
+          feedback: "fix the real failure",
+          childMissionId: null,
+        },
+        parent: null,
+        children: [],
+        currentStep: "repair and submit",
+        onDuty: true,
+        outcomes: ["impl-ready"],
+        terminal: [],
+        resultRequiredOn: [],
+        feedbackRequiredOn: [],
+        routes: [{ outcome: "impl-ready", to: ["review"], terminal: false }],
+        documents: [],
+      },
+      text: "ignored json source",
+    }),
+    missionEvents: () => {
+      throw new Error("structured delivery must not query history");
+    },
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({ runner, delivery, config: makeConfig(), logger: quiet });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  const call = delivery.deliverCalls[0];
+  assert.match(call.brief, /at station: build \(iteration 2\)/);
+  assert.match(call.brief, /member stations: build, verify/);
+  assert.match(call.brief, /arrived from: review on reject-impl/);
+  assert.match(call.brief, /incoming feedback: fix the real failure/);
+  assert.match(call.brief, /current step: repair and submit/);
+  assert.doesNotMatch(call.brief, /通用实现岗|station charter body/);
+  assert.match(call.brief, /impl-ready -> review/);
+  assert.deepEqual(runner.calls.missionEvents, []);
+  await bridge.stop();
+});
+
+test("returned result: current core delivers durable result without full events or submit duty", async () => {
   const missionId = "ms_aaaabbbbccccdddd";
   const runner = new ScriptedRunner({
     roster: [{ id: "t3-codex", status: "active (1s ago)" }],
@@ -347,10 +407,10 @@ test("returned result: ended mission is delivered with durable result and events
   assert.match(call.brief, /\[InfiniteMission returned result\]/);
   assert.match(call.brief, /do NOT submit or abandon/i);
   assert.match(call.brief, /\[Durable result\][\s\S]*forty two/);
-  assert.match(call.brief, /\[Mission events\][\s\S]*mission\.ended/);
+  assert.doesNotMatch(call.brief, /\[Mission events\]/);
   assert.equal(call.ended, true);
   assert.deepEqual(runner.calls.missionResult, [[WS, missionId]]);
-  assert.deepEqual(runner.calls.missionEvents, [[WS, missionId]]);
+  assert.deepEqual(runner.calls.missionEvents, []);
   assert.equal(bridge.watching.length, 0);
   await bridge.stop();
 });
@@ -1094,4 +1154,3 @@ test("sweep re-delivers a live thread whose turn never landed", async (t) => {
   assert.equal(delivery.deliverCalls.length, 1, "round re-injected into the live thread");
   assert.equal(bridge.watching.length, 1, "re-delivery registers its own watch");
 });
-

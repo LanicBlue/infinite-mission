@@ -72,19 +72,23 @@ cargo install --path .       # alternative (installs into ~/.cargo/bin)
 - **Documents** are content-addressed: same bytes → same receipt, retries
   are free. Receipts submitted with a round prove what the round produced.
 - **Events are the history.** `created`, `round.completed`, `routed`,
-  `ended` — iteration counts are derived, never stored. Result notes only wake
-  the current origin executor; the terminal events and `im mission result` are
-  the durable result authority.
+  `child.completed`, `ended` — iteration counts are derived, never stored.
+  Result notes only wake the current executor; events and
+  `im mission result` remain the durable result authority.
 - **A template-less create is the ask form.** `im mission create --to
-  <target-work> --objective <question>` replaces the template file with an
+  <target-work> --objective <question> [--parent <mission>]` replaces the template file with an
   immutable built-in one-station contract: the objective carries the question,
   the outcome vocabulary is generated for you, and the receiver handles it
   exactly like any other mission — `im missions` → `im mission show` (which
   lists the vocabulary and revision) → `im mission submit`, the answer riding
   `--result` (a distinct bounded payload up to 16 KiB, not `reason`). The only
   structural differences from a templated mission are the generated contract
-  and the origin-work result return. At most eight active asks are allowed for
-  one origin→target pair; the origin withdraws its own asks with
+  and its result return. With `--parent`, IM binds the child to the parent's
+  current round, exposes immutable receipt-backed snapshots of that station's
+  readable documents to the child, blocks the parent round while its child is
+  active, then records and wakes the result back at the parent station. The
+  relationship is core Mission state, not consumer/session metadata. At most
+  eight active asks are allowed for one origin→target pair; the origin withdraws its own asks with
   `im mission cancel` (a durable `cancelled` disposition, distinct from
   manage-tier `mission end`).
 - **Inbox**: missions parked at user stations, with the reason the sender
@@ -118,7 +122,7 @@ im mission create <design-agent> --from design --template pipeline --key v1 \
 # When the creator is the bound entry executor, create already returns the
 # complete run view (charter, rights, vocabulary, revision); no first wake-up.
 # as the design agent (first round: park the frozen spec):
-im mission show <ms> --for <design-agent>   # optional refresh of the returned view
+im mission show <ms> --for <design-agent>   # human view; add --json for consumers
 im mission doc write <design-agent> <ms> --id spec --file -   # → receipt
 im mission submit <design-agent> <ms> --outcome spec-ready \
     --receipts document:<hash>
@@ -213,8 +217,11 @@ Templates   im template list           (.im/templates/*.yaml)
 Missions    im mission create|show|events|result|end
             im mission create <agent> --from <origin-work> --template <name> --key <key>
             im mission create <agent> --from <origin> --to <target> --key <key>
-                                 --objective <question>          # template-less ask form;
+                                 --objective <question> [--parent <ms>]
+                                                                  # template-less ask form;
                                                                   # receiver submits like any mission
+            im mission show <ms> --for <agent> [--json]
+            im work show <work> [--json]       # station charter on demand
             im mission submit <agent> <ms> --outcome O
                                  [--next-node] [--reason] [--feedback] [--result] [--receipts]
             im mission abandon <agent> <ms> [--reason]

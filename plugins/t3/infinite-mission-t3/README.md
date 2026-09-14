@@ -24,8 +24,9 @@ per workspace × member  `im mission submit` in-thread      via /api/orchestrati
 The design copies the proven DSH bridge recipe
 (`deepseek-harness packages/integrations/dsh-im-bridge`): guard-join against
 id auto-suffixing, a closed-set note parser (unknown lines are dropped, never
-guessed), arrival notes are only triggers — the mission is re-read via
-`im mission show --for` before acting — and **the bridge never submits**;
+guessed), arrival notes are only triggers — the mission is re-read via the
+core's structured `im mission show --for --json` snapshot before acting — and
+**the bridge never submits**;
 submitting is the agent's deliverable. The PS→T3 integration lesson is baked
 in negatively: no T3 fork, no vendored SDK, no network calls on the agent's
 tool path (im is a local CLI over SQLite).
@@ -38,7 +39,11 @@ tool path (im is a local CLI over SQLite).
   workspace (matched by real path), creates the thread
   `im-<memberId>-<missionId>` on first arrival (one thread per member per
   mission), and starts a user turn whose text is the duty preamble followed
-  by the verbatim `mission show` brief. The thread's model/instance (and each
+  by a rendering of IM's structured run view. The snapshot contains only the
+  mission objective, member's held stations, current station charter hash,
+  previous hop/current input, current rights and next routes; the bridge does
+  not append the full event ledger. Stable charter text is read on demand via
+  `im work show`. The thread's model/instance (and each
   turn's `modelSelection`) is the delivering member's, so a mission routed
   across members never runs on the first member's runtime. A later round of
   the same mission at the same member injects into that member's thread
@@ -61,8 +66,8 @@ tool path (im is a local CLI over SQLite).
 - **Returned Work-origin results → read-only turn** — a `mission_result`
   note shares the arrival-note envelope, but `mission show` reports the
   mission `ended`, so the bridge delivers a result turn instead of a duty
-  turn: the brief carries the durable `im mission result` payload (falling
-  back to `im mission events` on older cores) and the preamble forbids
+  turn: on current cores the structured snapshot carries the durable result;
+  older cores fall back to `im mission result`/`im mission events`. The preamble forbids
   submitting — the mission is closed, there is no round to complete. Result
   threads are never watch-settled (there is no open mission to check) and
   are recorded in the persisted ack set.
@@ -164,9 +169,18 @@ on the launcher links to it.
 - **Single consumer lock** — `im receive --wait` takes a per-member flock.
   Nothing else may wait on the same member id (the duty preamble forbids the
   agent from running `im receive`/`im join`).
-- **Revision CAS** — submits must carry the revision from the brief;
-  a follow-up round invalidates the old revision. The agent reads it from
-  `mission show`, never from memory.
+- **Core-owned round fence** — the revision shown in the brief is IM state,
+  not bridge state. IM performs attribution, rights, routing and the atomic
+  revision advance; the bridge neither interprets nor mutates those rules.
+- **Full context follows the T3 session** — the first turn of a new/replaced
+  T3 session gets the full member persona and assignment snapshot. Follow-up
+  turns in the same session may use the compact current-round view. A bridge
+  restart, station/charter change, or stopped/errored/missing T3 session forces
+  a full snapshot again; correctness never depends on bridge memory.
+- **Child results reuse the parent conversation** — IM returns a linked
+  child's terminal result as a parent Mission arrival. Because the bridge's
+  deterministic thread key is the parent member+mission, it naturally wakes
+  the original parent thread; T3 contains no parent/child Mission semantics.
 - **Archived members are respected** — if a member id exists but is archived,
   the bridge refuses to rejoin it (a human archived it). Rejoin manually or
   remove it from the config.

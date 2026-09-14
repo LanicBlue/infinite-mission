@@ -110,8 +110,8 @@ export function validateConfig(raw) {
         return;
       }
       const id = trim(entry.id);
-      if (!MEMBER_ID_RE.test(id)) {
-        add(`${where}.id`, "must match [A-Za-z0-9][A-Za-z0-9._-]{0,63} (it becomes a filename in .im/sessions/)");
+      if (!MEMBER_ID_RE.test(id) || id.includes("-ms_")) {
+        add(`${where}.id`, "must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}, without '-ms_' (session filename/thread key)");
       } else if (seen.has(id)) {
         add(`${where}.id`, `duplicate member id "${id}"`);
       } else {

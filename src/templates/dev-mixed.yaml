@@ -11,36 +11,38 @@ works:
       outcomes: [spec-ready, accept, reject-quality]
       terminal: [accept]
       feedbackRequiredOn: [reject-quality]
-    documentRights: {read: [spec, plan, impl, review, audit, evidence, residuals], write: [spec]}
+    documentRights: {read: [spec, plan, impl, impl-ui, review, audit, evidence, evidence-ui, residuals], write: [spec]}
   supervisor:
     completion:
       outcomes: [spec-reject, plan-ready, reject-impl, reject-ui, quality-passed]
       terminal: []
       feedbackRequiredOn: [spec-reject, reject-impl, reject-ui]
-    documentRights: {read: [spec, plan, impl, review, audit, evidence, residuals], write: [plan, residuals]}
+    documentRights: {read: [spec, plan, impl, impl-ui, review, audit, evidence, evidence-ui, residuals], write: [plan, residuals]}
   build:
     completion: {outcomes: [impl-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
     documentRights: {read: [plan, audit], write: [impl]}
   build-ui:
     completion: {outcomes: [ui-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
-    documentRights: {read: [plan, audit], write: [impl]}
+    documentRights: {read: [plan, audit, impl], write: [impl-ui]}
   review-audit:
     completion: {outcomes: [reject-impl, reject-ui, approved], terminal: [], feedbackRequiredOn: [reject-impl, reject-ui]}
-    documentRights: {read: [spec, impl], write: [review, audit]}
+    documentRights: {read: [spec, impl, impl-ui], write: [review, audit]}
   verify:
     completion: {outcomes: [verify-passed, verify-failed], terminal: [], feedbackRequiredOn: [verify-failed]}
-    documentRights: {read: [spec, plan, evidence], write: [evidence]}
+    documentRights: {read: [spec, plan, impl, impl-ui, review, audit], write: [evidence]}
   verify-ui:
     completion: {outcomes: [ui-verified, ui-failed], terminal: [], feedbackRequiredOn: [ui-failed]}
-    documentRights: {read: [spec, plan, evidence], write: [evidence]}
+    documentRights: {read: [spec, plan, impl, impl-ui, review, audit, evidence], write: [evidence-ui]}
 
 documents:
   - {id: spec,     kind: file, path: spec.md}
   - {id: plan,     kind: file, path: plan.md}
   - {id: impl,     kind: file, path: impl.md}
+  - {id: impl-ui,  kind: file, path: impl-ui.md}
   - {id: review,   kind: file, path: review.md}
   - {id: audit,    kind: file, path: audit.md}
   - {id: evidence, kind: file, path: evidence.md}
+  - {id: evidence-ui, kind: file, path: evidence-ui.md}
   - {id: residuals, kind: file, path: residuals.md}
 
 paths:

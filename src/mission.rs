@@ -7,7 +7,7 @@
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -22,6 +22,7 @@ use crate::store::Store;
 pub const EVENT_CREATED: &str = "mission.created";
 pub const EVENT_ROUND: &str = "mission.round.completed";
 pub const EVENT_ROUTED: &str = "mission.routed";
+pub const EVENT_CHILD_COMPLETED: &str = "mission.child.completed";
 pub const EVENT_ENDED: &str = "mission.ended";
 
 fn sha256_hex(parts: &[&str]) -> String {
@@ -311,17 +312,9 @@ impl Store {
         manager: &str,
         source: &TemplateSource,
         idempotency_key: &str,
-        name_override: Option<&str>,
-        objective_override: Option<&str>,
+        overrides: &MissionCreateOverrides,
     ) -> Result<MissionCreateOutcome> {
-        self.create_mission_internal(
-            manager,
-            None,
-            source,
-            idempotency_key,
-            name_override,
-            objective_override,
-        )
+        self.create_mission_internal(manager, None, source, idempotency_key, overrides)
     }
 
     pub fn create_mission_from_work(
@@ -330,17 +323,9 @@ impl Store {
         origin_work: &str,
         source: &TemplateSource,
         idempotency_key: &str,
-        name_override: Option<&str>,
-        objective_override: Option<&str>,
+        overrides: &MissionCreateOverrides,
     ) -> Result<MissionCreateOutcome> {
-        self.create_mission_internal(
-            actor,
-            Some(origin_work),
-            source,
-            idempotency_key,
-            name_override,
-            objective_override,
-        )
+        self.create_mission_internal(actor, Some(origin_work), source, idempotency_key, overrides)
     }
 
     fn create_mission_internal(
@@ -349,9 +334,13 @@ impl Store {
         origin_work: Option<&str>,
         source: &TemplateSource,
         idempotency_key: &str,
-        name_override: Option<&str>,
-        objective_override: Option<&str>,
+        overrides: &MissionCreateOverrides,
     ) -> Result<MissionCreateOutcome> {
+        let MissionCreateOverrides {
+            name_override,
+            objective_override,
+            parent_mission_id,
+        } = *overrides;
         if origin_work.is_none() {
             self.require_tier(manager, Tier::Publish)?;
         }
@@ -471,6 +460,92 @@ impl Store {
                 }
             }
         }
+        if parent_mission_id.is_some()
+            && contract.template.as_ref().map(|t| t.path.as_str()) != Some("builtin:ask/v1")
+        {
+            bail!("--parent is only valid for template-less ask missions");
+        }
+
+        let child_exists: bool = tx.query_row(
+            "SELECT COUNT(*) > 0 FROM missions WHERE mission_id = ?1",
+            [&mission_id],
+            |row| row.get(0),
+        )?;
+        let parent_link = if let Some(parent_id) = parent_mission_id {
+            if parent_id == mission_id {
+                bail!("an ask mission cannot be its own parent");
+            }
+            if child_exists {
+                None
+            } else {
+                let (parent_status, parent_at, parent_revision, parent_contract_json): (
+                    String,
+                    Option<String>,
+                    i64,
+                    String,
+                ) = tx
+                    .query_row(
+                        "SELECT status, at, revision, contract_json FROM missions WHERE mission_id = ?1",
+                        [parent_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()?
+                    .with_context(|| format!("parent mission '{parent_id}' does not exist"))?;
+                if parent_status != "active" {
+                    bail!("parent mission '{parent_id}' is not active");
+                }
+                if parent_at.as_deref() != origin_work {
+                    bail!(
+                        "parent mission '{parent_id}' is at station '{}', not the ask origin '{}'",
+                        parent_at.as_deref().unwrap_or("ended"),
+                        origin_work.unwrap_or("")
+                    );
+                }
+                let parent_contract = parse_contract(&parent_contract_json)?;
+                let parent_work = parent_at.as_deref().unwrap_or("");
+                let parent_discipline =
+                    parent_contract.works.get(parent_work).with_context(|| {
+                        format!("parent mission station '{parent_work}' has no contract discipline")
+                    })?;
+                let mut inherited = Vec::new();
+                for declaration in &parent_contract.documents {
+                    if !parent_discipline
+                        .document_rights
+                        .read
+                        .contains(&declaration.id)
+                    {
+                        continue;
+                    }
+                    let receipt: Option<(String, String)> = tx
+                        .query_row(
+                            "SELECT key_hash, path FROM mission_documents
+                             WHERE mission_id = ?1
+                               AND (document_id = ?2 OR document_id LIKE ?2 || '@%')
+                             ORDER BY written_at DESC, key_hash DESC LIMIT 1",
+                            params![parent_id, declaration.id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()?;
+                    if let Some((key_hash, path)) = receipt {
+                        inherited.push(InheritedDocument {
+                            id: declaration.id.clone(),
+                            kind: declaration.kind.clone(),
+                            path,
+                            source_mission_id: parent_id.to_string(),
+                            receipt: format!("document:{key_hash}"),
+                        });
+                    }
+                }
+                Some((
+                    parent_id.to_string(),
+                    parent_revision,
+                    origin_work.unwrap_or("").to_string(),
+                    serde_json::to_string(&inherited)?,
+                ))
+            }
+        } else {
+            None
+        };
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO missions (
                 mission_id, name, objective, contract_json,
@@ -501,6 +576,16 @@ impl Store {
             {
                 bail!("idempotency key conflicts with an existing mission request");
             }
+            let existing_parent: Option<String> = tx
+                .query_row(
+                    "SELECT parent_mission_id FROM mission_links WHERE child_mission_id = ?1",
+                    [&mission_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing_parent.as_deref() != parent_mission_id {
+                bail!("idempotency key conflicts with a different parent mission");
+            }
             let run_view = self.creator_run_view(&mission_id, manager)?;
             tx.commit()?;
             return Ok(MissionCreateOutcome {
@@ -508,6 +593,14 @@ impl Store {
                 existed: true,
                 run_view,
             });
+        }
+        if let Some((parent_id, parent_revision, requested_by_work, inherited_json)) = parent_link {
+            tx.execute(
+                "INSERT INTO mission_links
+                    (child_mission_id, parent_mission_id, parent_revision, requested_by_work, inherited_documents_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![mission_id, parent_id, parent_revision, requested_by_work, inherited_json],
+            )?;
         }
         append_event(
             &tx,
@@ -520,6 +613,7 @@ impl Store {
                 "objective": objective,
                 "originWork": origin_work,
                 "createdBy": manager,
+                "parentMissionId": parent_mission_id,
                 "template": {"path": source.path, "digest": contract.template.as_ref().map(|t| t.digest.clone()).unwrap_or_default()},
             }),
             created,
@@ -656,6 +750,9 @@ impl Store {
                         ended_at, created_at, created_by, origin_work
                  FROM missions
                  WHERE origin_work = ?1 AND status = 'ended'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM mission_links l WHERE l.child_mission_id = missions.mission_id
+                   )
                  ORDER BY ended_at DESC",
             )?;
             results.extend(
@@ -711,9 +808,11 @@ impl Store {
         // payloads as "the result" would pass intermediate work off as the
         // final answer.
         let completed = mission.ended_disposition.as_deref() == Some("completed");
+        let parent = self.parent_context(mission_id)?;
         Ok(json!({
             "missionId": mission_id,
             "originWork": mission.origin_work,
+            "parent": parent,
             "disposition": mission.ended_disposition,
             "outcome": ended["outcome"],
             "result": if completed { round["result"].clone() } else { serde_json::Value::Null },
@@ -810,6 +909,11 @@ impl Store {
                 bail!("reason must be 1..=2000 chars when given");
             }
         }
+        if let Some(feedback_text) = submission.feedback {
+            if feedback_text.len() > 16_384 || feedback_text.trim().is_empty() {
+                bail!("feedback must be 1..=16384 UTF-8 bytes when given");
+            }
+        }
 
         // Receipts: minted at THIS station, inside its write rights.
         let mut frozen_receipts = Vec::new();
@@ -826,10 +930,12 @@ impl Store {
             if receipt.work_key != at {
                 bail!("receipt {receipt_id} was minted at another station");
             }
+            let (receipt_base_id, _) = split_document_id(&receipt.document_id)?;
             if !discipline
                 .document_rights
                 .write
-                .contains(&receipt.document_id)
+                .iter()
+                .any(|id| id == receipt_base_id)
             {
                 bail!(
                     "receipt {receipt_id} covers document {:?} which station '{at}' may not write",
@@ -856,6 +962,21 @@ impl Store {
                 submission.result,
                 &frozen_receipts,
                 user_station,
+            );
+        }
+
+        let pending_children: i64 = self.conn.query_row(
+            "SELECT COUNT(*)
+             FROM mission_links l
+             JOIN missions child ON child.mission_id = l.child_mission_id
+             WHERE l.parent_mission_id = ?1 AND l.parent_revision = ?2
+               AND child.status = 'active'",
+            params![mission.mission_id, mission.revision],
+            |row| row.get(0),
+        )?;
+        if pending_children > 0 {
+            bail!(
+                "current round has {pending_children} unfinished child mission(s); wait for their results or abandon the parent round"
             );
         }
 
@@ -1126,24 +1247,28 @@ impl Store {
             }),
             created,
         )?;
-        if let Some(origin) = mission.origin_work.as_deref() {
-            let current_executor: Option<String> = tx
-                .query_row(
-                    "SELECT executor FROM works WHERE work_key = ?1",
-                    [origin],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .flatten();
-            if current_executor.as_deref() != Some(by_agent) {
-                insert_result_note(
-                    &tx,
-                    origin,
-                    &mission.mission_id,
-                    disposition,
-                    outcome,
-                    created,
-                )?;
+        let returned_to_parent =
+            return_child_result_tx(&tx, mission, disposition, outcome, reason, result, created)?;
+        if !returned_to_parent {
+            if let Some(origin) = mission.origin_work.as_deref() {
+                let current_executor: Option<String> = tx
+                    .query_row(
+                        "SELECT executor FROM works WHERE work_key = ?1",
+                        [origin],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                if current_executor.as_deref() != Some(by_agent) {
+                    insert_result_note(
+                        &tx,
+                        origin,
+                        &mission.mission_id,
+                        disposition,
+                        outcome,
+                        created,
+                    )?;
+                }
             }
         }
         tx.commit()?;
@@ -1269,7 +1394,17 @@ impl Store {
             }),
             created,
         )?;
-        insert_result_note(&tx, origin, mission_id, "cancelled", "cancelled", created)?;
+        if !return_child_result_tx(
+            &tx,
+            &mission,
+            "cancelled",
+            "cancelled",
+            reason,
+            None,
+            created,
+        )? {
+            insert_result_note(&tx, origin, mission_id, "cancelled", "cancelled", created)?;
+        }
         tx.commit()?;
         Ok(SubmitOutcome {
             mission_id: mission_id.to_string(),
@@ -1316,15 +1451,17 @@ impl Store {
             }),
             created,
         )?;
-        if let Some(origin) = mission.origin_work.as_deref() {
-            insert_result_note(
-                &tx,
-                origin,
-                &mission.mission_id,
-                "deleted",
-                "deleted",
-                created,
-            )?;
+        if !return_child_result_tx(&tx, &mission, "deleted", "deleted", reason, None, created)? {
+            if let Some(origin) = mission.origin_work.as_deref() {
+                insert_result_note(
+                    &tx,
+                    origin,
+                    &mission.mission_id,
+                    "deleted",
+                    "deleted",
+                    created,
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -1416,6 +1553,32 @@ pub struct TemplateSource<'a> {
     pub template: &'a contract::MissionTemplate,
     pub path: String,
     pub bytes: &'a [u8],
+}
+
+/// Presentation overrides and the optional parent link for mission creation.
+#[derive(Default)]
+pub struct MissionCreateOverrides<'a> {
+    pub name_override: Option<&'a str>,
+    pub objective_override: Option<&'a str>,
+    pub parent_mission_id: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InheritedDocument {
+    pub id: String,
+    pub kind: String,
+    pub path: String,
+    pub source_mission_id: String,
+    pub receipt: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentMissionContext {
+    pub mission_id: String,
+    pub revision: i64,
+    pub requested_by_work: String,
 }
 
 /// (mission_id, at, lock set, contract references) per active mission. The
@@ -1516,6 +1679,77 @@ fn insert_result_note(
     Ok(())
 }
 
+/// Return a child Mission's terminal state to the parent round. The parent
+/// event is durable IM state; the work note is merely its delivery wake-up.
+/// No consumer thread/session identifier is stored or interpreted here.
+fn return_child_result_tx(
+    tx: &rusqlite::Transaction<'_>,
+    child: &MissionRecord,
+    disposition: &str,
+    outcome: &str,
+    reason: Option<&str>,
+    result: Option<&str>,
+    created: i64,
+) -> Result<bool> {
+    let link: Option<(String, i64, String)> = tx
+        .query_row(
+            "SELECT parent_mission_id, parent_revision, requested_by_work
+             FROM mission_links WHERE child_mission_id = ?1",
+            [&child.mission_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((parent_id, parent_revision, requested_by_work)) = link else {
+        return Ok(false);
+    };
+    let parent: Option<(String, i64, Option<String>)> = tx
+        .query_row(
+            "SELECT status, revision, at FROM missions WHERE mission_id = ?1",
+            [&parent_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let current = parent
+        .as_ref()
+        .map(|(status, revision, _)| status == "active" && *revision == parent_revision)
+        .unwrap_or(false);
+    append_event(
+        tx,
+        &parent_id,
+        EVENT_CHILD_COMPLETED,
+        json!({
+            "childMissionId": child.mission_id,
+            "parentRevision": parent_revision,
+            "requestedByWork": requested_by_work,
+            "disposition": disposition,
+            "outcome": outcome,
+            "reason": reason,
+            "result": result,
+            "stale": !current,
+        }),
+        created,
+    )?;
+    if current {
+        if let Some(parent_station) = parent.and_then(|(_, _, at)| at) {
+            tx.execute(
+                "INSERT INTO work_notes
+                    (work_key, kind, mission_id, content, created_at, read)
+                 VALUES (?1, 'mission_child_result', ?2, ?3, ?4, 0)",
+                params![
+                    parent_station,
+                    parent_id,
+                    format!(
+                        "[{parent_id}] child {} returned: {disposition} ({outcome})",
+                        child.mission_id
+                    ),
+                    created
+                ],
+            )?;
+        }
+    }
+    Ok(true)
+}
+
 // --- Documents ---
 
 /// Split a document id into its declared base and optional variant suffix
@@ -1538,9 +1772,7 @@ fn split_document_id(document_id: &str) -> Result<(&str, Option<&str>)> {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
             {
-                bail!(
-                    "document id {document_id:?} suffix may only contain [A-Za-z0-9._-]"
-                );
+                bail!("document id {document_id:?} suffix may only contain [A-Za-z0-9._-]");
             }
             Ok((base, Some(suffix)))
         }
@@ -1608,7 +1840,12 @@ impl Store {
             .with_context(|| {
                 format!("document id {base_id:?} is not declared by the mission contract")
             })?;
-        if !discipline.document_rights.write.iter().any(|id| id == base_id) {
+        if !discipline
+            .document_rights
+            .write
+            .iter()
+            .any(|id| id == base_id)
+        {
             bail!(
                 "station '{at}' may not write document {:?} (not in its documentRights.write)",
                 base_id
@@ -1646,6 +1883,10 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![key_hash, mission_id, at, document_id, stored_path, content_sha, agent_id, now()],
         )?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO mission_document_blobs (key_hash, content) VALUES (?1, ?2)",
+            params![key_hash, content],
+        )?;
         Ok(format!("document:{key_hash}"))
     }
 
@@ -1667,40 +1908,88 @@ impl Store {
             .works
             .get(&at)
             .context("current station has no discipline in this mission's contract")?;
-        // A requested path may be a variant of a declared one
+        let work = self.get_work(&at)?;
+        self.require_doc_on_duty(agent_id, &work, "read")?;
+
+        // A requested path may be a variant of a locally declared document
         // (`impl@a1b2c3.md` reads under the `impl` declaration's rights).
-        let declared_path = if contract
+        let local_declaration = if let Some(declaration) = contract
             .documents
             .iter()
-            .any(|d| d.path == path)
+            .find(|declaration| declaration.path == path)
         {
-            path.to_string()
+            Some(declaration)
         } else if let Some((base_path, _)) = declared_path_of(path) {
             contract
                 .documents
                 .iter()
-                .find(|d| d.path == base_path)
-                .map(|_| base_path)
-                .with_context(|| format!("no document declared at path {path:?}"))?
+                .find(|declaration| declaration.path == base_path)
         } else {
-            bail!("no document declared at path {path:?}")
+            None
         };
-        let declaration = contract
-            .documents
-            .iter()
-            .find(|d| d.path == declared_path)
-            .expect("declared_path was resolved against the contract");
-        if !discipline.document_rights.read.contains(&declaration.id) {
-            bail!(
-                "station '{at}' may not read document {:?} (not in its documentRights.read)",
-                declaration.id
-            );
+        if let Some(declaration) = local_declaration {
+            if !discipline.document_rights.read.contains(&declaration.id) {
+                bail!(
+                    "station '{at}' may not read document {:?} (not in its documentRights.read)",
+                    declaration.id
+                );
+            }
+            let file_path = documents_root.join(mission_id).join(path);
+            return std::fs::read_to_string(&file_path)
+                .with_context(|| format!("document bytes not found at {}", file_path.display()));
         }
-        let work = self.get_work(&at)?;
-        self.require_doc_on_duty(agent_id, &work, "read")?;
-        let file_path = documents_root.join(mission_id).join(path);
-        std::fs::read_to_string(&file_path)
-            .with_context(|| format!("document bytes not found at {}", file_path.display()))
+
+        // Child Missions receive immutable, read-only grants captured from
+        // the parent's current round. Read by content receipt, never by a
+        // mutable parent path; adapters are not involved in this authority.
+        let inherited = self
+            .parent_and_inherited_documents(mission_id)?
+            .map(|(_, documents)| documents)
+            .unwrap_or_default();
+        let grant = inherited
+            .iter()
+            .find(|document| document.path == path)
+            .with_context(|| format!("no local or inherited document declared at path {path:?}"))?;
+        let key_hash = grant
+            .receipt
+            .strip_prefix("document:")
+            .unwrap_or(&grant.receipt);
+        if let Some(bytes) = self
+            .conn
+            .query_row(
+                "SELECT content FROM mission_document_blobs WHERE key_hash = ?1",
+                [key_hash],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+        {
+            return String::from_utf8(bytes).context("inherited document is not UTF-8");
+        }
+
+        // Backward-compatible fallback for receipts minted before the blob
+        // store existed. It remains safe only if the source file still
+        // matches the notarized hash; otherwise fail instead of reading new
+        // bytes through an old grant.
+        let receipt = self
+            .get_receipt(key_hash)?
+            .with_context(|| format!("inherited receipt {} no longer resolves", grant.receipt))?;
+        let file_path = documents_root
+            .join(&grant.source_mission_id)
+            .join(&grant.path);
+        let bytes = std::fs::read(&file_path).with_context(|| {
+            format!(
+                "inherited document bytes not found at {}",
+                file_path.display()
+            )
+        })?;
+        let actual = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if actual != receipt.content_sha256 {
+            bail!("inherited document changed after its receipt was granted");
+        }
+        String::from_utf8(bytes).context("inherited document is not UTF-8")
     }
 
     /// Document access follows the station's on-duty rule: the bound
@@ -1749,6 +2038,7 @@ impl Store {
 // --- Run view (the agent-facing projection) ---
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunView {
     pub mission_id: String,
     pub name: String,
@@ -1758,11 +2048,17 @@ pub struct RunView {
     pub status: String,
     pub revision: i64,
     pub iteration: Option<i64>,
-    /// Rendered station prompt (read-time fusion of station text + mission facts).
-    /// For a template-less ask the question itself is the mission content — the
-    /// target station's charter belongs to document-pipeline missions and would
-    /// teach outcomes this contract does not permit.
-    pub prompt: Option<String>,
+    /// Every station currently assigned to the addressed member. This is
+    /// context only; `at` plus `on_duty` remain the execution authority.
+    pub member_stations: Vec<String>,
+    pub station_charter_sha256: Option<String>,
+    pub arrival: Option<ArrivalContext>,
+    pub parent: Option<ParentMissionContext>,
+    pub children: Vec<ChildMissionContext>,
+    /// Compact current-round instruction. Standing station charters are not
+    /// embedded here: consumers receive the description plus charter hash and
+    /// fetch the full text explicitly with `im work show` when needed.
+    pub current_step: Option<String>,
     pub on_duty: bool,
     pub outcomes: Vec<String>,
     pub terminal: Vec<String>,
@@ -1775,6 +2071,7 @@ pub struct RunView {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DocumentResolvedRow {
     pub id: String,
     pub kind: String,
@@ -1782,58 +2079,89 @@ pub struct DocumentResolvedRow {
     pub may_read: bool,
     pub may_write: bool,
     pub receipt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_mission_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArrivalContext {
+    pub kind: String,
+    pub event_seq: i64,
+    pub from: Option<String>,
+    pub outcome: Option<String>,
+    pub reason: Option<String>,
+    pub feedback: Option<String>,
+    pub child_mission_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildMissionContext {
+    pub mission_id: String,
+    pub status: String,
+    pub disposition: Option<String>,
+    pub outcome: Option<String>,
+    pub result: Option<String>,
+    pub reason: Option<String>,
+    pub stale: bool,
 }
 
 impl Store {
     pub fn run_view(&self, mission_id: &str, for_agent: Option<&str>) -> Result<RunView> {
         let mission = self.get_mission(mission_id)?;
         let contract = parse_contract(&mission.contract_json)?;
-        let (station_prompt, on_duty, discipline, iteration, routes) = match &mission.at {
-            Some(at) => {
-                let work = self.get_work(at)?;
-                let discipline = contract.works.get(at);
-                let iteration = self.standing_iteration(&mission, at)?;
-                let reason = self.last_round_reason(&mission.mission_id)?;
-                let from = self
-                    .last_routed_from(&mission.mission_id)
-                    .or_else(|| mission.origin_work.clone())
-                    .unwrap_or_else(|| mission.created_by.clone());
-                let prompt = if contract.template.as_ref().map(|t| t.path.as_str())
-                    == Some("builtin:ask/v1")
-                {
-                    // Template-less ask: the question is the mission content.
-                    Some(ask_run_prompt(&mission.objective, &from))
-                } else if work.prompt.is_empty() {
-                    None
-                } else {
-                    Some(interpolate_prompt(
-                        &work.prompt,
-                        &InterpolationContext {
-                            name: &mission.name,
-                            objective: &mission.objective,
-                            from: &from,
-                            iteration,
-                            reason: reason.as_deref(),
-                        },
-                    ))
-                };
-                let on_duty = for_agent
-                    .map(|agent| {
-                        if work.executor.is_none() {
-                            // User station: any manage-tier member is on duty.
-                            self.agent_tier(agent)
-                                .map(|tier| tier == Some(Tier::Manage))
-                                .unwrap_or(false)
-                        } else {
-                            work.executor.as_deref() == Some(agent)
-                        }
-                    })
-                    .unwrap_or(false);
-                let routes = contract::routes_for(&contract, at);
-                (prompt, on_duty, discipline.cloned(), iteration, routes)
-            }
-            None => (None, false, None, None, Vec::new()),
-        };
+        let arrival = self.arrival_context(&mission)?;
+        let (current_step, on_duty, discipline, iteration, routes, charter_sha256) =
+            match &mission.at {
+                Some(at) => {
+                    let work = self.get_work(at)?;
+                    let discipline = contract.works.get(at);
+                    let iteration = self.standing_iteration(&mission, at)?;
+                    let from = arrival
+                        .as_ref()
+                        .and_then(|context| context.from.clone())
+                        .or_else(|| mission.origin_work.clone())
+                        .unwrap_or_else(|| mission.created_by.clone());
+                    let ask = contract.template.as_ref().map(|t| t.path.as_str())
+                        == Some("builtin:ask/v1");
+                    let current_step = if ask {
+                        // Template-less ask: the question is the mission content.
+                        Some(ask_run_prompt(&mission.objective, &from))
+                    } else if work.description.is_empty() {
+                        None
+                    } else {
+                        Some(work.description.clone())
+                    };
+                    let on_duty = for_agent
+                        .map(|agent| {
+                            if work.executor.is_none() {
+                                // User station: any manage-tier member is on duty.
+                                self.agent_tier(agent)
+                                    .map(|tier| tier == Some(Tier::Manage))
+                                    .unwrap_or(false)
+                            } else {
+                                work.executor.as_deref() == Some(agent)
+                            }
+                        })
+                        .unwrap_or(false);
+                    let routes = contract::routes_for(&contract, at);
+                    let charter_sha256 = if work.prompt.is_empty() || ask {
+                        None
+                    } else {
+                        Some(sha256_hex(&[&work.prompt]))
+                    };
+                    (
+                        current_step,
+                        on_duty,
+                        discipline.cloned(),
+                        iteration,
+                        routes,
+                        charter_sha256,
+                    )
+                }
+                None => (None, false, None, None, Vec::new(), None),
+            };
 
         let (outcomes, terminal, result_required_on, feedback_required_on) = discipline
             .as_ref()
@@ -1879,10 +2207,34 @@ impl Store {
                     .unwrap_or_else(|| declaration.path.clone()),
                 may_read,
                 may_write,
-                receipt: receipt
-                    .map(|(hash, _)| format!("document:{hash}")),
+                receipt: receipt.map(|(hash, _)| format!("document:{hash}")),
+                source_mission_id: None,
             });
         }
+
+        let parent = self.parent_context(&mission.mission_id)?;
+        if let Some((_, inherited)) = self.parent_and_inherited_documents(&mission.mission_id)? {
+            for inherited in inherited {
+                documents.push(DocumentResolvedRow {
+                    id: inherited.id,
+                    kind: inherited.kind,
+                    path: inherited.path,
+                    may_read: true,
+                    may_write: false,
+                    receipt: Some(inherited.receipt),
+                    source_mission_id: Some(inherited.source_mission_id),
+                });
+            }
+        }
+        let member_stations = match for_agent {
+            Some(agent) => self
+                .works_for_executor(agent)?
+                .into_iter()
+                .map(|work| work.work_key)
+                .collect(),
+            None => Vec::new(),
+        };
+        let children = self.child_contexts(&mission)?;
 
         Ok(RunView {
             mission_id: mission.mission_id,
@@ -1893,7 +2245,12 @@ impl Store {
             status: mission.status,
             revision: mission.revision,
             iteration,
-            prompt: station_prompt,
+            member_stations,
+            station_charter_sha256: charter_sha256,
+            arrival,
+            parent,
+            children,
+            current_step,
             on_duty,
             outcomes,
             terminal,
@@ -1904,26 +2261,141 @@ impl Store {
         })
     }
 
-    fn last_round_reason(&self, mission_id: &str) -> Result<Option<String>> {
-        let events = self.mission_events(mission_id)?;
-        for event in events.iter().rev() {
-            if event.kind == EVENT_ROUND {
-                let payload: serde_json::Value = serde_json::from_str(&event.payload)?;
-                return Ok(payload["reason"].as_str().map(String::from));
-            }
-        }
-        Ok(None)
+    fn parent_and_inherited_documents(
+        &self,
+        child_mission_id: &str,
+    ) -> Result<Option<(ParentMissionContext, Vec<InheritedDocument>)>> {
+        let row: Option<(String, i64, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT parent_mission_id, parent_revision, requested_by_work, inherited_documents_json
+                 FROM mission_links WHERE child_mission_id = ?1",
+                [child_mission_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        row.map(|(mission_id, revision, requested_by_work, json)| {
+            Ok((
+                ParentMissionContext {
+                    mission_id,
+                    revision,
+                    requested_by_work,
+                },
+                serde_json::from_str(&json)?,
+            ))
+        })
+        .transpose()
     }
 
-    fn last_routed_from(&self, mission_id: &str) -> Option<String> {
-        let events = self.mission_events(mission_id).ok()?;
-        for event in events.iter().rev() {
-            if event.kind == EVENT_ROUTED {
-                let payload: serde_json::Value = serde_json::from_str(&event.payload).ok()?;
-                return payload["from"].as_str().map(String::from);
+    fn parent_context(&self, child_mission_id: &str) -> Result<Option<ParentMissionContext>> {
+        Ok(self
+            .parent_and_inherited_documents(child_mission_id)?
+            .map(|(parent, _)| parent))
+    }
+
+    fn arrival_context(&self, mission: &MissionRecord) -> Result<Option<ArrivalContext>> {
+        let events = self.mission_events(&mission.mission_id)?;
+        if let Some(event) = events.iter().rev().find(|event| {
+            if event.kind != EVENT_CHILD_COMPLETED {
+                return false;
             }
+            serde_json::from_str::<serde_json::Value>(&event.payload)
+                .ok()
+                .and_then(|payload| payload["parentRevision"].as_i64())
+                == Some(mission.revision)
+        }) {
+            let payload: serde_json::Value = serde_json::from_str(&event.payload)?;
+            return Ok(Some(ArrivalContext {
+                kind: "child-result".to_string(),
+                event_seq: event.seq,
+                from: payload["requestedByWork"].as_str().map(String::from),
+                outcome: payload["outcome"].as_str().map(String::from),
+                reason: payload["reason"].as_str().map(String::from),
+                feedback: None,
+                child_mission_id: payload["childMissionId"].as_str().map(String::from),
+            }));
         }
-        None
+        if let Some((index, event)) = events.iter().enumerate().rev().find(|(_, event)| {
+            if event.kind != EVENT_ROUTED {
+                return false;
+            }
+            serde_json::from_str::<serde_json::Value>(&event.payload)
+                .ok()
+                .and_then(|payload| payload["revision"].as_i64())
+                == Some(mission.revision)
+        }) {
+            let payload: serde_json::Value = serde_json::from_str(&event.payload)?;
+            let round = events[..index]
+                .iter()
+                .rev()
+                .find(|candidate| candidate.kind == EVENT_ROUND);
+            let round_payload = round
+                .map(|candidate| serde_json::from_str::<serde_json::Value>(&candidate.payload))
+                .transpose()?
+                .unwrap_or_default();
+            return Ok(Some(ArrivalContext {
+                kind: "route".to_string(),
+                event_seq: event.seq,
+                from: payload["from"].as_str().map(String::from),
+                outcome: payload["when"].as_str().map(String::from),
+                reason: round_payload["reason"].as_str().map(String::from),
+                feedback: round_payload["feedback"].as_str().map(String::from),
+                child_mission_id: None,
+            }));
+        }
+        let created = events.iter().find(|event| event.kind == EVENT_CREATED);
+        Ok(created.map(|event| ArrivalContext {
+            kind: "created".to_string(),
+            event_seq: event.seq,
+            from: mission
+                .origin_work
+                .clone()
+                .or_else(|| Some(mission.created_by.clone())),
+            outcome: None,
+            reason: None,
+            feedback: None,
+            child_mission_id: None,
+        }))
+    }
+
+    fn child_contexts(&self, parent: &MissionRecord) -> Result<Vec<ChildMissionContext>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.mission_id, m.status, m.ended_disposition
+             FROM mission_links l
+             JOIN missions m ON m.mission_id = l.child_mission_id
+             WHERE l.parent_mission_id = ?1 AND l.parent_revision = ?2
+             ORDER BY m.created_at, m.mission_id",
+        )?;
+        let rows: Vec<(String, String, Option<String>)> = stmt
+            .query_map(params![parent.mission_id, parent.revision], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+        let mut children = Vec::new();
+        for (mission_id, status, disposition) in rows {
+            let terminal = if status == "ended" {
+                Some(self.mission_result(&mission_id)?)
+            } else {
+                None
+            };
+            children.push(ChildMissionContext {
+                mission_id,
+                status,
+                disposition,
+                outcome: terminal
+                    .as_ref()
+                    .and_then(|result| result["outcome"].as_str().map(String::from)),
+                result: terminal
+                    .as_ref()
+                    .and_then(|result| result["result"].as_str().map(String::from)),
+                reason: terminal
+                    .as_ref()
+                    .and_then(|result| result["reason"].as_str().map(String::from)),
+                stale: false,
+            });
+        }
+        Ok(children)
     }
 }
 

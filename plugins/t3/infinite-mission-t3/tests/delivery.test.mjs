@@ -539,7 +539,7 @@ test("arrivalHeader falls back to reason, degrades to empty without facts", () =
   assert.match(broken, /from 'x' on outcome 'y'/);
 });
 
-test("slimBrief drops the stable objective and charter, keeps the round-deciding parts", () => {
+test("slimBrief drops the stable objective and current-step summary, keeps round inputs", () => {
   const brief = [
     "=== ARRIVAL CONTEXT ===",
     "Arrival: from 'review-audit' on outcome 'reject-impl' — 2 times routed to this station",
@@ -553,9 +553,7 @@ test("slimBrief drops the stable objective and charter, keeps the round-deciding
     "  at station: build (iteration 2)",
     "  revision: 9",
     "  on duty: YES — you hold this station",
-    "  prompt: 通用实现岗(写入)。执行合同=plan 文档。",
-    "- 章程第二行",
-    "允许的 outcomes 以到达 mission 的 show 为准。",
+    "  current step: 通用实现",
     "  outcomes: impl-ready, plan-reject, abandon",
     "  routes:",
     "    impl-ready -> review-audit",
@@ -564,9 +562,9 @@ test("slimBrief drops the stable objective and charter, keeps the round-deciding
   ].join("\n");
   const slim = slimBrief(brief);
   assert.ok(!slim.includes("全局任务描述"), "objective body must go");
-  assert.ok(!slim.includes("章程第二行"), "charter body must go");
+  assert.ok(!slim.includes("通用实现"), "current-step summary must go");
   assert.match(slim, /objective: \(mission objective — first brief/);
-  assert.match(slim, /prompt: \(station charter — unchanged/);
+  assert.match(slim, /current step: \(unchanged; see the first brief\)/);
   assert.match(slim, /ARRIVAL CONTEXT/);
   assert.match(slim, /fix the null deref/);
   assert.match(slim, /at station: build \(iteration 2\)/);
@@ -583,24 +581,81 @@ test("follow-up rounds deliver the slim form; first rounds keep the full brief",
   const { dir, cleanup } = tempWorkspace();
   const t3 = new FakeT3();
   const delivery = new Delivery(t3);
-  const CHARTER = "  prompt: 通用实现岗(写入)。源码纪律。\n- 每轮 commit";
-  const brief1 = `[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${CHARTER}\n  outcomes: impl-ready, abandon`;
-  const brief2 = `=== ARRIVAL CONTEXT ===\nArrival: from 'review-audit' on outcome 'reject-impl'\n=== END ARRIVAL CONTEXT ===\n\n[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${CHARTER}\n  outcomes: impl-ready, abandon`;
+  const STEP = "  current step: 通用实现";
+  const brief1 = `[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${STEP}\n  outcomes: impl-ready, abandon`;
+  const brief2 = `=== ARRIVAL CONTEXT ===\nArrival: from 'review-audit' on outcome 'reject-impl'\n=== END ARRIVAL CONTEXT ===\n\n[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${STEP}\n  outcomes: impl-ready, abandon`;
   try {
     await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId: "ms_aaaabbbbccccdddd", brief: brief1 });
     await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId: "ms_aaaabbbbccccdddd", brief: brief2 });
     const texts = t3.dispatched
       .filter((command) => command.type === "thread.turn.start")
       .map((command) => command.message.text);
-    assert.match(texts[0], /通用实现岗/);
+    assert.match(texts[0], /通用实现/);
     assert.match(texts[0], /全局目标/);
-    assert.doesNotMatch(texts[1], /通用实现岗\(写入\)。源码纪律/);
+    assert.doesNotMatch(texts[1], /current step: 通用实现/);
     assert.doesNotMatch(texts[1], /全局目标\n/);
     assert.match(texts[1], /ARRIVAL CONTEXT/);
     assert.match(texts[1], /outcomes: impl-ready, abandon/);
-    assert.match(texts[1], /Duty discipline and the mission's full context live in this thread's first brief/);
+    assert.match(texts[1], /Stable mission context lives in this thread's first brief/);
     // The tail reminder still rides the follow-up turn.
     assert.match(texts[1], /<im-system-reminder>/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("bridge restart, station change, and failed T3 session force a full snapshot", async () => {
+  const { dir, cleanup } = tempWorkspace();
+  const t3 = new FakeT3();
+  const missionId = "ms_aaaabbbbccccdddd";
+  const full = (station, step) =>
+    `[mission ${missionId}] dev-mixed — active\n  objective: full objective\n  at station: ${station} (iteration 1)\n  current step: ${step}\n  outcomes: done, abandon`;
+  try {
+    const firstProcess = new Delivery(t3);
+    await firstProcess.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "build",
+      missionId,
+      brief: full("build", "build charter"),
+      contextKey: "build:one",
+    });
+    await firstProcess.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "verify",
+      missionId,
+      brief: full("verify", "verify charter"),
+      contextKey: "verify:two",
+    });
+    const secondProcess = new Delivery(t3);
+    await secondProcess.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "verify",
+      missionId,
+      brief: full("verify", "restart charter"),
+      contextKey: "verify:two",
+    });
+    const thread = t3.threads.get(threadIdFor(MEMBER.id, missionId));
+    thread.latestTurn = { state: "error" };
+    thread.session = { status: "error" };
+    await secondProcess.deliver({
+      workspacePath: dir,
+      member: MEMBER,
+      station: "verify",
+      missionId,
+      brief: full("verify", "replacement charter"),
+      contextKey: "verify:two",
+    });
+    const texts = t3.dispatched
+      .filter((command) => command.type === "thread.turn.start")
+      .map((command) => command.message.text);
+    assert.match(texts[0], /build charter/);
+    assert.match(texts[1], /verify charter/);
+    assert.match(texts[2], /restart charter/);
+    assert.match(texts[3], /replacement charter/);
+    for (const text of texts) assert.match(text, /full objective/);
   } finally {
     cleanup();
   }

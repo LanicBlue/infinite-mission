@@ -28,6 +28,8 @@ fn schema_creates_all_domain_tables() {
         "missions",
         "mission_events",
         "mission_documents",
+        "mission_document_blobs",
+        "mission_links",
         "work_notes",
     ] {
         assert!(
@@ -43,6 +45,47 @@ fn schema_creates_all_domain_tables() {
 }
 
 #[test]
+fn legacy_event_table_accepts_child_completion_after_migration() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let db_path = tmp.path().join("im.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE mission_events (
+                mission_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                type TEXT NOT NULL CHECK (type IN ('mission.created', 'mission.round.completed', 'mission.routed', 'mission.ended')),
+                payload TEXT NOT NULL CHECK (json_valid(payload)),
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (mission_id, seq)
+             );
+             INSERT INTO mission_events VALUES ('ms_parent', 1, 'mission.created', '{}', 0);",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&db_path).unwrap();
+    assert_eq!(
+        store
+            .conn
+            .execute(
+                "INSERT INTO mission_events VALUES ('ms_parent', 2, 'mission.child.completed', '{}', 1)",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    let retained: i64 = store
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM mission_events WHERE mission_id = 'ms_parent'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 2);
+}
+
+#[test]
 fn register_agent_unique_never_overwrites() {
     let (_tmp, store) = open();
     let (first, token_a) = store.register_agent_unique("alice", None).unwrap();
@@ -54,6 +97,20 @@ fn register_agent_unique_never_overwrites() {
 
     let archived = store.list_agents(true).unwrap();
     assert!(archived.iter().any(|a| a.id == "alice-2"));
+}
+
+#[test]
+fn member_ids_share_the_bridge_safe_grammar() {
+    let (_tmp, store) = open();
+    for invalid in ["", "has space", "../evil", "t3-ms_ambiguous", "x/y"] {
+        assert!(
+            store.register_agent_unique(invalid, None).is_err(),
+            "{invalid:?} must be rejected"
+        );
+    }
+    assert!(store
+        .register_agent_unique("t3-codex_2.alpha", None)
+        .is_ok());
 }
 
 #[test]

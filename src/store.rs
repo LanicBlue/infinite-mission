@@ -72,7 +72,7 @@ fn schema() -> String {
     CREATE TABLE IF NOT EXISTS mission_events (
         mission_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
-        type TEXT NOT NULL CHECK (type IN ('mission.created', 'mission.round.completed', 'mission.routed', 'mission.ended')),
+        type TEXT NOT NULL CHECK (type IN ('mission.created', 'mission.round.completed', 'mission.routed', 'mission.child.completed', 'mission.ended')),
         payload TEXT NOT NULL CHECK (json_valid(payload)),
         created_at INTEGER NOT NULL,
         PRIMARY KEY (mission_id, seq)
@@ -88,6 +88,26 @@ fn schema() -> String {
         written_by TEXT NOT NULL,
         written_at INTEGER NOT NULL
     );
+
+    -- Content-addressed bytes make inherited document grants immutable even
+    -- when a later parent round rewrites the same human-facing path.
+    CREATE TABLE IF NOT EXISTS mission_document_blobs (
+        key_hash TEXT PRIMARY KEY,
+        content BLOB NOT NULL
+    );
+
+    -- Optional parentage for ask Missions. Consumer conversation/session ids
+    -- deliberately do not belong here: IM records the parent round and the
+    -- exact read-only document grants; adapters decide where to display it.
+    CREATE TABLE IF NOT EXISTS mission_links (
+        child_mission_id TEXT PRIMARY KEY,
+        parent_mission_id TEXT NOT NULL,
+        parent_revision INTEGER NOT NULL,
+        requested_by_work TEXT NOT NULL,
+        inherited_documents_json TEXT NOT NULL CHECK (json_valid(inherited_documents_json))
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_links_parent
+        ON mission_links (parent_mission_id, parent_revision);
 
     CREATE TABLE IF NOT EXISTS work_notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +142,24 @@ fn normalize_display_name(display_name: Option<&str>) -> Result<Option<String>> 
         bail!("display name must not contain control characters (newlines, tabs, …)");
     }
     Ok(Some(trimmed.to_string()))
+}
+
+fn validate_agent_id(id: &str) -> Result<()> {
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .next()
+            .map(|ch| ch.is_ascii_alphanumeric())
+            .unwrap_or(false)
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        && !id.contains("-ms_");
+    if !valid {
+        bail!("member id must match [A-Za-z0-9][A-Za-z0-9._-]{{0,63}} and must not contain '-ms_'");
+    }
+    Ok(())
 }
 
 pub struct Store {
@@ -252,6 +290,29 @@ impl Store {
                  ALTER TABLE missions_v2 RENAME TO missions;",
             )?;
         }
+        // Child completion is a parent-Mission event. Legacy event tables
+        // need their closed vocabulary widened once; rows are copied intact.
+        let events_sql: String = tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mission_events'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !events_sql.contains("'mission.child.completed'") {
+            tx.execute_batch(
+                "CREATE TABLE mission_events_v2 (
+                    mission_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    type TEXT NOT NULL CHECK (type IN ('mission.created', 'mission.round.completed', 'mission.routed', 'mission.child.completed', 'mission.ended')),
+                    payload TEXT NOT NULL CHECK (json_valid(payload)),
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (mission_id, seq)
+                 );
+                 INSERT INTO mission_events_v2 (mission_id, seq, type, payload, created_at)
+                 SELECT mission_id, seq, type, payload, created_at FROM mission_events;
+                 DROP TABLE mission_events;
+                 ALTER TABLE mission_events_v2 RENAME TO mission_events;",
+            )?;
+        }
         tx.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_missions_mailbox
              ON missions (status, at);
@@ -313,6 +374,7 @@ impl Store {
         requested_id: &str,
         display_name: Option<&str>,
     ) -> Result<(String, String)> {
+        validate_agent_id(requested_id)?;
         if requested_id == crate::records::CONSOLE_ACTOR {
             bail!(
                 "'{}' is reserved for the console — pick another member id",

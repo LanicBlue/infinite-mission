@@ -23,6 +23,7 @@ test("member fields are enforced", () => {
   const base = { instance: "codex", model: "m" };
   assert.equal(validateConfig({ members: [{ ...base, id: "has space" }] }).ok, false);
   assert.equal(validateConfig({ members: [{ ...base, id: "../evil" }] }).ok, false);
+  assert.equal(validateConfig({ members: [{ ...base, id: "t3-ms_ambiguous" }] }).ok, false);
   assert.equal(validateConfig({ members: [{ ...base, id: "ok", runtimeMode: "yolo" }] }).ok, false);
   assert.equal(validateConfig({ members: [{ ...base, id: "ok", options: [1] }] }).ok, false);
   const dup = validateConfig({

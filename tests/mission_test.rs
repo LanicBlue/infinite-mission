@@ -435,7 +435,14 @@ fn document_variant_ids_write_read_and_resolve() {
 
     // Read via the variant path honors the base declaration's read rights.
     im(&ws)
-        .args(["mission", "doc", "read", "inspector", &ms, "docs/impl@a1b2c3.md"])
+        .args([
+            "mission",
+            "doc",
+            "read",
+            "inspector",
+            &ms,
+            "docs/impl@a1b2c3.md",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("round 3 work"));
@@ -447,7 +454,10 @@ fn document_variant_ids_write_read_and_resolve() {
         .output()
         .unwrap();
     let show = String::from_utf8(show.stdout).unwrap();
-    assert!(show.contains("impl@a1b2c3.md"), "variant path shown: {show}");
+    assert!(
+        show.contains("impl@a1b2c3.md"),
+        "variant path shown: {show}"
+    );
 
     // An illegal suffix (path separators / traversal) is rejected.
     im(&ws)
@@ -493,14 +503,7 @@ fn submit_adjudication_matrix() {
 
     // Attribution: an agent who is not on duty is rejected.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "inspector",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "inspector", &ms, "--outcome", "done"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -509,14 +512,7 @@ fn submit_adjudication_matrix() {
 
     // Vocabulary: outcome outside the station language is rejected with permitted list.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "pass",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "pass"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -525,28 +521,14 @@ fn submit_adjudication_matrix() {
 
     // Auto-follow: exactly one edge → no --next-node needed.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Routed"));
 
     // feedbackRequiredOn: fail without feedback is rejected.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "inspector",
-            &ms,
-            "--outcome",
-            "fail",
-        ])
+        .args(["mission", "submit", "inspector", &ms, "--outcome", "fail"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires non-empty feedback"));
@@ -625,26 +607,12 @@ fn submit_adjudication_matrix() {
 
     // Terminal outcome ends the mission.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "inspector",
-            &ms,
-            "--outcome",
-            "pass",
-        ])
+        .args(["mission", "submit", "inspector", &ms, "--outcome", "pass"])
         .assert()
         .success()
         .stdout(predicate::str::contains("ended"));
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("Mission has already ended"));
@@ -767,14 +735,7 @@ fn documents_are_content_addressed_and_right_scoped() {
     // Mailbox moves on → the former executor loses the read. Review holds
     // read:impl, but worker is not review's executor anymore.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .success();
     im(&ws)
@@ -790,14 +751,7 @@ fn documents_are_content_addressed_and_right_scoped() {
         .stdout(predicate::str::contains("hello"));
     // After the mission ends, reads close for everyone.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "inspector",
-            &ms,
-            "--outcome",
-            "pass",
-        ])
+        .args(["mission", "submit", "inspector", &ms, "--outcome", "pass"])
         .assert()
         .success();
     im(&ws)
@@ -821,28 +775,14 @@ fn rebind_is_a_pointer_move_not_a_migration() {
 
     // Old identity can no longer submit; new one can, same mission, same revision.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "Mission belongs to another executor",
         ));
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker-2",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker-2", &ms, "--outcome", "done"])
         .assert()
         .success();
 
@@ -922,14 +862,7 @@ paths:
 
     // Hop onto the user station without a reason → rejected.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires a non-empty --reason"));
@@ -978,14 +911,7 @@ paths:
 
     // A non-manager may NOT resolve a user station.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "ok",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "ok"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("resolved by a manage-tier member"));
@@ -993,14 +919,7 @@ paths:
     // The manager resolves it; the terminal outcome ends the mission, and
     // the round records the manager plane.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "boss",
-            &ms,
-            "--outcome",
-            "ok",
-        ])
+        .args(["mission", "submit", "boss", &ms, "--outcome", "ok"])
         .assert()
         .success()
         .stdout(predicate::str::contains("ended"));
@@ -1021,14 +940,7 @@ fn events_are_the_history_and_iteration_derives() {
     let (fixture, ms) = setup();
     let ws = fixture.workspace;
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "worker",
-            &ms,
-            "--outcome",
-            "done",
-        ])
+        .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
         .assert()
         .success();
     im(&ws)
@@ -1116,6 +1028,44 @@ fn pipeline_template_compiles_and_holds_the_designed_routing() {
         .contains(&"spec".to_string()));
 }
 
+#[test]
+fn dev_ui_and_mixed_templates_keep_station_artifacts_disjoint() {
+    for (name, yaml) in [
+        ("dev-ui", im::init::DEV_UI_TEMPLATE),
+        ("dev-mixed", im::init::DEV_MIXED_TEMPLATE),
+    ] {
+        let template = im::contract::parse_template(yaml).unwrap();
+        let contract = im::contract::compile(&template, name, yaml.as_bytes()).unwrap();
+        assert!(contract
+            .documents
+            .iter()
+            .any(|document| document.id == "impl-ui"));
+        assert!(contract
+            .documents
+            .iter()
+            .any(|document| document.id == "evidence-ui"));
+        assert_eq!(
+            contract.works["build-ui"].document_rights.write,
+            vec!["impl-ui".to_string()]
+        );
+        assert_eq!(
+            contract.works["verify-ui"].document_rights.write,
+            vec!["evidence-ui".to_string()]
+        );
+    }
+    let mixed = im::contract::parse_template(im::init::DEV_MIXED_TEMPLATE).unwrap();
+    let mixed = im::contract::compile(&mixed, "dev-mixed", im::init::DEV_MIXED_TEMPLATE.as_bytes())
+        .unwrap();
+    assert_eq!(
+        mixed.works["build"].document_rights.write,
+        vec!["impl".to_string()]
+    );
+    assert_eq!(
+        mixed.works["verify"].document_rights.write,
+        vec!["evidence".to_string()]
+    );
+}
+
 /// boss (manager, also resolves the owner user station), arch at design,
 /// strategist at plan, coder at build, auditor at review.
 fn setup_pipeline() -> (Fixture, String) {
@@ -1139,7 +1089,10 @@ fn setup_pipeline() -> (Fixture, String) {
     }
     im(&workspace)
         .args([
-            "work", "set-prompt", "boss", "design",
+            "work",
+            "set-prompt",
+            "boss",
+            "design",
             "Gate the delivery. Approved reason: {mission.reason}",
         ])
         .assert()
@@ -1295,14 +1248,7 @@ fn pipeline_full_chain_with_rework_ends_at_the_design_gate() {
 
     // review requires feedback on rework — the findings channel.
     im(&ws)
-        .args([
-            "mission",
-            "submit",
-            "auditor",
-            &ms,
-            "--outcome",
-            "rework",
-        ])
+        .args(["mission", "submit", "auditor", &ms, "--outcome", "rework"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("requires non-empty feedback"));
@@ -1660,14 +1606,7 @@ fn concurrent_same_revision_submits_admit_exactly_one() {
                 barrier.wait();
                 std::process::Command::new(env!("CARGO_BIN_EXE_im"))
                     .current_dir(&*ws)
-                    .args([
-                        "mission",
-                        "submit",
-                        "worker",
-                        &ms,
-                        "--outcome",
-                        "done",
-                    ])
+                    .args(["mission", "submit", "worker", &ms, "--outcome", "done"])
                     .status()
                     .unwrap()
                     .success()
@@ -1717,8 +1656,14 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
             .clone(),
     )
     .unwrap();
-    assert!(list.contains("impl — "), "station created under its own key: {list}");
-    assert!(list.contains("impl@<HEAD"), "charter carries the source-receipt discipline: {list}");
+    assert!(
+        list.contains("impl — "),
+        "station created under its own key: {list}"
+    );
+    assert!(
+        list.contains("impl@<HEAD"),
+        "charter carries the source-receipt discipline: {list}"
+    );
 
     // The charters are mission-template-agnostic: none of the current dev
     // pipeline's outcome vocabulary is hard-coded into a station charter.
@@ -1741,10 +1686,23 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
             .unwrap_or_else(|| panic!("preset {key} missing"))
             .prompt;
         for vocab in [
-            "spec-ready", "plan-ready", "impl-ready", "ui-ready", "verify-passed",
-            "verify-failed", "ui-verified", "ui-failed", "quality-passed",
-            "reject-impl", "reject-ui", "spec-reject", "plan-reject", "approved",
-            "accept", "reject-quality", "abandon",
+            "spec-ready",
+            "plan-ready",
+            "impl-ready",
+            "ui-ready",
+            "verify-passed",
+            "verify-failed",
+            "ui-verified",
+            "ui-failed",
+            "quality-passed",
+            "reject-impl",
+            "reject-ui",
+            "spec-reject",
+            "plan-reject",
+            "approved",
+            "accept",
+            "reject-quality",
+            "abandon",
         ] {
             assert!(
                 !prompt.contains(vocab),
@@ -1775,10 +1733,16 @@ fn preset_files_are_the_runtime_source_of_truth() {
         .success();
     let db = rusqlite::Connection::open(ws.join(".im").join("im.db")).unwrap();
     let prompt: String = db
-        .query_row("SELECT prompt FROM works WHERE work_key = 'owl'", [], |r| r.get(0))
+        .query_row("SELECT prompt FROM works WHERE work_key = 'owl'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let summary: String = db
-        .query_row("SELECT description FROM works WHERE work_key = 'owl'", [], |r| r.get(0))
+        .query_row(
+            "SELECT description FROM works WHERE work_key = 'owl'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     drop(db);
     assert_eq!(prompt, "Ship quietly under the moon.");
@@ -1794,7 +1758,14 @@ fn preset_files_are_the_runtime_source_of_truth() {
         .success();
     let edited: String = rusqlite::Connection::open(ws.join(".im").join("im.db"))
         .unwrap()
-        .query_row("SELECT prompt FROM works WHERE work_key = 'night-build'", [], |r| r.get(0))
+        .query_row(
+            "SELECT prompt FROM works WHERE work_key = 'night-build'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert!(edited.contains("夜航实现岗"), "edited file must be what installs: {edited}");
+    assert!(
+        edited.contains("夜航实现岗"),
+        "edited file must be what installs: {edited}"
+    );
 }
