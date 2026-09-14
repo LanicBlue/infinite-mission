@@ -99,9 +99,10 @@ im inbox
 im mission submit boss <ms> --revision N --outcome ok --reason "同意"
 ```
 
-工位 prompt 可插值 `{mission.name}`、`{mission.objective}`、
-`{mission.from}`、`{mission.iteration}`、`{mission.reason}`（未知槽位保留
-字面）。没有角色剧本：外部注册的 agent 只从 mission 简报获得指令。
+工位章程是静态文本：mission 简报携带工位的一句话简介与完整章程的哈希，
+执行者按需用 `im work show <工位>` 取章程全文。任务事实（目标、到站来路、
+反馈、轮次、路由、文档）由简报结构化携带，章程不含插值槽位。没有角色
+剧本：外部注册的 agent 只从 mission 简报获得指令。
 
 创建时自动识别创建者是否为起点工位绑定的执行者：若是，则直接返回首轮
 完整任务视图，不再生成冗余的首轮到站唤醒，无须模式或新参数。核心返回

@@ -763,22 +763,33 @@ impl Store {
         Ok(results)
     }
 
-    /// The outbox ledger of a work: every mission it originated. Rows come
-    /// back active-first (oldest first, matching the executor view); the
-    /// caller renders ended rows newest-first. The work must exist, so a
-    /// typo cannot masquerade as an empty ledger.
-    pub fn missions_from_origin(&self, work_key: &str) -> Result<Vec<MissionRecord>> {
+    /// The outbox ledger of a work: every mission it originated, each with
+    /// the parent mission when the row is a linked child ask (its result
+    /// returned to the parent's round, not to this outbox). Rows come back
+    /// active-first (oldest first, matching the executor view); the caller
+    /// renders ended rows newest-first. The work must exist, so a typo
+    /// cannot masquerade as an empty ledger.
+    pub fn missions_from_origin(
+        &self,
+        work_key: &str,
+    ) -> Result<Vec<(MissionRecord, Option<String>)>> {
         self.get_work(work_key)?;
         let mut stmt = self.conn.prepare(
-            "SELECT mission_id, name, objective, contract_json, at, status,
-                    revision, ended_disposition, ended_by_work, ended_by_iteration,
-                    ended_at, created_at, created_by, origin_work
-             FROM missions
-             WHERE origin_work = ?1
-             ORDER BY (status != 'active'), created_at",
+            "SELECT m.mission_id, m.name, m.objective, m.contract_json, m.at, m.status,
+                    m.revision, m.ended_disposition, m.ended_by_work, m.ended_by_iteration,
+                    m.ended_at, m.created_at, m.created_by, m.origin_work,
+                    l.parent_mission_id
+             FROM missions m
+             LEFT JOIN mission_links l ON l.child_mission_id = m.mission_id
+             WHERE m.origin_work = ?1
+             ORDER BY (m.status != 'active'), m.created_at",
         )?;
         let rows = stmt
-            .query_map(params![work_key], map_mission_row)?
+            .query_map(params![work_key], |row| {
+                let record = map_mission_row(row)?;
+                let parent: Option<String> = row.get(14)?;
+                Ok((record, parent))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -976,7 +987,10 @@ impl Store {
         )?;
         if pending_children > 0 {
             bail!(
-                "current round has {pending_children} unfinished child mission(s); wait for their results or abandon the parent round"
+                "current round has {pending_children} unfinished child mission(s) — track them \
+                 with `im missions --from {}`; stuck children are handled from the console \
+                 or by a manage member",
+                mission.origin_work.as_deref().unwrap_or_default()
             );
         }
 
@@ -2399,14 +2413,6 @@ impl Store {
     }
 }
 
-pub struct InterpolationContext<'a> {
-    pub name: &'a str,
-    pub objective: &'a str,
-    pub from: &'a str,
-    pub iteration: Option<i64>,
-    pub reason: Option<&'a str>,
-}
-
 /// The run prompt of a template-less ask. The question is the mission
 /// content, so no station charter is interpolated: the pipeline charters
 /// teach document flows (goal.md, receipts, done/blocked outcomes) that this
@@ -2418,21 +2424,6 @@ pub fn ask_run_prompt(objective: &str, from: &str) -> String {
 read or grep the actual code and files, and verify before answering. If the \
 question cannot be answered as asked, decline with the reason instead of guessing."
     )
-}
-
-/// Unknown slots stay literal; `from` is the last routing station, or the
-/// origin Work for a never-routed Work-origin mission. Legacy missions fall
-/// back to the creating Agent. `iteration` renders as 1 when unset.
-pub fn interpolate_prompt(prompt: &str, context: &InterpolationContext) -> String {
-    prompt
-        .replace("{mission.name}", context.name)
-        .replace("{mission.objective}", context.objective)
-        .replace("{mission.from}", context.from)
-        .replace(
-            "{mission.iteration}",
-            &context.iteration.unwrap_or(1).to_string(),
-        )
-        .replace("{mission.reason}", context.reason.unwrap_or(""))
 }
 
 #[cfg(test)]

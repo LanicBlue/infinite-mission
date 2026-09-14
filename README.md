@@ -138,10 +138,13 @@ im inbox
 im mission submit boss <ms> --outcome ok --reason "go ahead"
 ```
 
-Station prompts interpolate `{mission.name}`, `{mission.objective}`,
-`{mission.from}`, `{mission.iteration}` and `{mission.reason}` (unknown slots
-stay literal). There are no persona playbooks: externally registered agents
-get their instructions from the mission brief alone.
+Station charters are standing text: the mission brief carries the station's
+one-line description plus a hash of the full charter, and executors read the
+charter itself on demand with `im work show <station>`. Mission facts —
+objective, arrival (who routed it here and why), feedback, iteration,
+routes, documents — travel structurally in the brief; charters hold no
+slots. There are no persona playbooks: externally registered agents get
+their instructions from the mission brief alone.
 
 Creation automatically hands the first round back to its creator when that
 member is the entry station's bound executor. No mode or extra flag is needed,

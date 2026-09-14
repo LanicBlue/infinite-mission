@@ -547,8 +547,8 @@ function workCreateModal() {
 		<label class="field"><span>简介（一句话，工位板与列表展示）</span><input data-f="description" placeholder="对照 goal 验证实现"></label>
 		<label class="field"><span>模版 —— 预填交付流水线岗位章程（prompt + 简介），选后可再改</span><select data-f="preset"><option value="">（无模版）</option>${presets.map(p => `<option value="${esc(p.key)}">${esc(p.key)}（${esc(p.description)}）</option>`).join("")}</select></label>
 		<label class="field"><span>值守者（不绑 = 用户工位，人类信箱）</span><select data-f="executor"><option value="-">（用户工位）</option>${agents.map(a => `<option value="${esc(a.id)}">${esc(a.label || a.id)}</option>`).join("")}</select></label>
-		<label class="field"><span>常驻 prompt —— 工位的作业内容，随每个停驻的任务一起渲染</span><textarea data-f="prompt" placeholder="实现 {mission.objective}；来自 {mission.from}，第 {mission.iteration} 轮。"></textarea></label>
-		<p class="hint">可插值槽位：<code>{mission.name}</code> <code>{mission.objective}</code> <code>{mission.from}</code> <code>{mission.iteration}</code> <code>{mission.reason}</code> —— 未知槽位保留字面</p>
+		<label class="field"><span>常驻章程 —— 工位的固定作业规程；执行者在任务简报里按章程哈希用 im work show 按需取全文</span><textarea data-f="prompt" placeholder="按 plan 文档实现；每轮 git commit 后写 impl@<HEAD短hash> 文档…"></textarea></label>
+		<p class="hint">章程是静态文本（无插值槽位）；任务事实（目标、来路、反馈、轮次）由 mission 简报结构化携带</p>
 		<p class="form-status" id="modal-status" role="alert"></p>
 		<div class="modal-foot"><button type="button" class="btn" data-act="modal-close">取消</button><button type="submit" class="btn primary" data-act="work-create">创建</button></div>
 		</form>`);

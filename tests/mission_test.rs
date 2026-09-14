@@ -1078,9 +1078,9 @@ fn setup_pipeline() -> (Fixture, String) {
     seed_tier(&workspace, "boss", "manage");
     // init seeds no stations anymore — the pipeline contract's four stations
     // (and its template, a library asset) are set up here explicitly. The
-    // pipeline presets are retired; design's charter is set by hand because
-    // the final-gate assertion reads the {mission.reason} slot back, and the
-    // built-in charters are deliberately slot-free.
+    // pipeline presets are retired; design's charter is set by hand so the
+    // final-gate round has a recognizable standing text (charters are
+    // slot-free by design — the brief carries mission facts structurally).
     for work in ["design", "plan", "build", "review"] {
         im(&workspace)
             .args(["work", "create", "boss", work])
@@ -1088,13 +1088,7 @@ fn setup_pipeline() -> (Fixture, String) {
             .success();
     }
     im(&workspace)
-        .args([
-            "work",
-            "set-prompt",
-            "boss",
-            "design",
-            "Gate the delivery. Approved reason: {mission.reason}",
-        ])
+        .args(["work", "set-prompt", "boss", "design", "Gate the delivery."])
         .assert()
         .success();
     std::fs::write(

@@ -1297,7 +1297,7 @@ fn cmd_missions_from(work: &str) -> Result<()> {
     let missions = store.missions_from_origin(work)?;
     let (active, ended): (Vec<_>, Vec<_>) = missions
         .iter()
-        .partition(|mission| mission.status == "active");
+        .partition(|(mission, _)| mission.status == "active");
     println!(
         "Outbox of work {work} — {} in flight, {} ended",
         active.len(),
@@ -1306,21 +1306,34 @@ fn cmd_missions_from(work: &str) -> Result<()> {
     if active.is_empty() && ended.is_empty() {
         return Ok(());
     }
-    for mission in &active {
+    for (mission, parent) in &active {
+        let child = parent
+            .as_deref()
+            .map(|parent| format!(" (child of {parent})"))
+            .unwrap_or_default();
         println!(
-            "[mission {}] → {} (revision {})",
+            "[mission {}] → {} (revision {}){}",
             mission.mission_id,
             mission.at.as_deref().unwrap_or("?"),
-            mission.revision
+            mission.revision,
+            child
         );
         println!("  {}", mission.name);
         println!("    {}", mission.objective);
     }
-    for mission in ended.iter().rev() {
+    for (mission, parent) in ended.iter().rev() {
+        // A linked child's result returned to the parent mission's round,
+        // not to this outbox — say so instead of leaving the reader hunting
+        // for a result note that was never minted.
+        let returned = parent
+            .as_deref()
+            .map(|parent| format!(" — result returned to parent {parent}"))
+            .unwrap_or_default();
         println!(
-            "[mission {}] ended: {}",
+            "[mission {}] ended: {}{}",
             mission.mission_id,
-            mission.ended_disposition.as_deref().unwrap_or("?")
+            mission.ended_disposition.as_deref().unwrap_or("?"),
+            returned
         );
         println!("  {}", mission.name);
     }

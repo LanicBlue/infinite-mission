@@ -640,6 +640,15 @@ paths: []
         .success()
         .stdout(predicate::str::contains("child-result"))
         .stdout(predicate::str::contains("review passed"));
+
+    // The origin ledger shows the linked child, marked with where its
+    // result went — no silent hole in the outbox view.
+    im(ws)
+        .args(["missions", "--from", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("result returned to parent"))
+        .stdout(predicate::str::contains(&parent));
     im(ws)
         .args(["results", "alice"])
         .assert()

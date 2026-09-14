@@ -66,7 +66,7 @@ fn setup(executor: Option<&str>) -> (TempDir, Store) {
             "draft",
             "design",
             executor,
-            "Freeze {mission.name}: {mission.objective}",
+            "Freeze the spec before implementation.",
         )
         .unwrap();
     store
