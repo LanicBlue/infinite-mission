@@ -38,13 +38,24 @@ fn cli(ws: &Path) -> Command {
 }
 
 fn test_home() -> std::path::PathBuf {
-    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let home = std::env::temp_dir().join(format!("im-test-home-{}", std::process::id()));
-        std::fs::create_dir_all(&home).ok();
-        home
+    // 测试 HOME：把注册表写进一次性目录，绝不污染真实 ~/.im/workspaces.json。
+    // 每个测试线程一个 home（libtest 每测一线程），TempDir 守卫随线程退出自动
+    // 删除——不再在 $TMPDIR 按轮残留 im-test-home-*。
+    use std::cell::RefCell;
+    thread_local! {
+        static HOME: RefCell<Option<tempfile::TempDir>> = const { RefCell::new(None) };
+    }
+    HOME.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(|| {
+                tempfile::Builder::new()
+                    .prefix("im-test-home-")
+                    .tempdir_in(std::env::temp_dir())
+                    .expect("create test home")
+            })
+            .path()
+            .to_path_buf()
     })
-    .clone()
 }
 
 fn setup(executor: Option<&str>) -> (TempDir, Store) {
