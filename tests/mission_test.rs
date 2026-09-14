@@ -1114,8 +1114,10 @@ fn pipeline_template_compiles_and_holds_the_designed_routing() {
         .document_rights
         .read
         .contains(&"spec".to_string()));
-    // Every preset charter keeps the interpolation slots.
-    for preset in im::pipeline::PRESETS {
+    // Every pipeline preset charter keeps the interpolation slots (the
+    // dev-line charters are deliberately slot-free: vocabulary comes from
+    // each mission's own show, not the charter).
+    for preset in im::pipeline::PRESETS.iter().filter(|p| !p.key.starts_with("dev-")) {
         assert!(
             preset.prompt.contains("{mission.objective}"),
             "{}",
@@ -1693,4 +1695,61 @@ fn concurrent_same_revision_submits_admit_exactly_one() {
         "single apply must route once: {show}"
     );
     assert!(show.contains("revision: 2"), "{show}");
+}
+
+#[test]
+fn dev_line_presets_are_mission_agnostic_station_charters() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path();
+    im(ws).arg("init").assert().success();
+    im(ws).args(["join", "boss"]).assert().success();
+    seed_tier(ws, "boss", "manage");
+
+    // A dev-line preset installs as a station charter under any station key.
+    im(ws)
+        .args(["work", "create", "boss", "impl", "--preset", "dev-build"])
+        .assert()
+        .success();
+    let list = String::from_utf8(
+        im(ws)
+            .args(["work", "list"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+    assert!(list.contains("impl — "), "station created under its own key: {list}");
+    assert!(list.contains("impl@<HEAD"), "charter carries the source-receipt discipline: {list}");
+
+    // The charters are mission-template-agnostic: none of the current dev
+    // pipeline's outcome vocabulary is hard-coded into a station charter.
+    for key in [
+        "dev-design",
+        "dev-supervisor",
+        "dev-build",
+        "dev-build-ui",
+        "dev-review-impl",
+        "dev-review-impact",
+        "dev-sec-review",
+        "dev-review-audit",
+        "dev-verify",
+        "dev-verify-ui",
+    ] {
+        let prompt = im::pipeline::preset(key)
+            .unwrap_or_else(|| panic!("preset {key} missing"))
+            .prompt;
+        for vocab in [
+            "spec-ready", "plan-ready", "impl-ready", "ui-ready", "verify-passed",
+            "verify-failed", "ui-verified", "ui-failed", "quality-passed",
+            "reject-impl", "reject-ui", "spec-reject", "plan-reject", "approved",
+            "accept", "reject-quality", "abandon",
+        ] {
+            assert!(
+                !prompt.contains(vocab),
+                "preset {key} hard-codes outcome vocabulary {vocab} — charters must stay mission-agnostic"
+            );
+        }
+    }
 }

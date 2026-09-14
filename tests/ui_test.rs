@@ -297,8 +297,19 @@ fn state_json_lists_work_presets_for_the_create_modal() {
 
     let presets = state["presets"].as_array().unwrap();
     let keys: Vec<&str> = presets.iter().map(|p| p["key"].as_str().unwrap()).collect();
-    assert_eq!(keys, vec!["design", "plan", "build", "review"]);
+    assert_eq!(
+        keys,
+        vec![
+            "design", "plan", "build", "review",
+            "dev-design", "dev-supervisor", "dev-build", "dev-build-ui",
+            "dev-review-impl", "dev-review-impact", "dev-sec-review",
+            "dev-review-audit", "dev-verify", "dev-verify-ui",
+        ]
+    );
     for preset in presets {
+        if preset["key"].as_str().unwrap().starts_with("dev-") {
+            continue; // dev-line charters are slot-free by design
+        }
         assert!(
             preset["prompt"]
                 .as_str()
