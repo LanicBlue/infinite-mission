@@ -114,7 +114,7 @@ export function briefFromRunView(view) {
   if (Array.isArray(view.documents) && view.documents.length > 0) {
     lines.push("  documents:");
     for (const document of view.documents) {
-      const receipt = document.receipt ? ` receipt=${document.receipt}` : "";
+      const receipt = document.receipt ? ` receipt=${receiptDisplay(document.receipt)}` : "";
       const inherited = document.sourceMissionId
         ? ` inherited-from=${document.sourceMissionId}`
         : "";
@@ -124,6 +124,18 @@ export function briefFromRunView(view) {
     }
   }
   return lines.join("\n");
+}
+
+/** Render a document receipt for the delivered brief. The fingerprint is
+ * provenance display for the working agent: submit only accepts receipts
+ * minted by this station's own doc writes (their full value is the doc-write
+ * stdout), and the stored full value is re-readable via `im mission show`.
+ * A 12-char prefix keeps cross-round "did it change" comparable. */
+export function receiptDisplay(receipt) {
+  const colon = receipt.indexOf(":");
+  const prefix = colon >= 0 ? receipt.slice(0, colon + 1) : "";
+  const hash = receipt.slice(prefix.length);
+  return hash.length > 12 ? `${prefix}${hash.slice(0, 12)}…` : receipt;
 }
 
 /**
@@ -258,12 +270,17 @@ export function arrivalHeader({ station, hop, eventsText }) {
 /**
  * Duty discipline travels as the message preamble (not a system prompt) —
  * the same contract the DSH bridge proved: the agent itself submits; the
- * bridge never submits on its behalf.
+ * bridge never submits on its behalf. The head is orientation-only:
+ * identity, the round-closing duty in one line, and a single pre-bound
+ * re-read pointer. Everything actionable — the submit/abandon commands,
+ * the permitted-outcomes rule, the child-Mission yield exception, the
+ * join/receive ban — lives in the tail reminder that rides every turn on
+ * recency; saying it here too as well was banner noise.
  */
 export function dutyPreamble(member, workspace, missionId) {
   // Accepts the member object (preferred — carries the display name) or a
-  // bare id (tests, legacy callers). missionId is pre-bound so every command
-  // is copy-pasteable — placeholders invite placeholder submissions.
+  // bare id (tests, legacy callers). missionId is pre-bound so the pointer
+  // stays copy-pasteable — placeholders invite placeholder submissions.
   const memberId = typeof member === "string" ? member : member.id;
   const displayName = typeof member === "string" ? "" : (member.displayName?.trim() ?? "");
   const identity = displayName
@@ -271,25 +288,11 @@ export function dutyPreamble(member, workspace, missionId) {
     : `"${memberId}"`;
   return [
     `You are the InfiniteMission member ${identity} in workspace ${workspace}.`,
-    `A mission brief follows below the line. Read it, do the work it asks for in this`,
-    `workspace, then close your round by submitting. The only exception is an open`,
-    `parent round with linked child Missions: keep it open, yield execution, and resume`,
-    `when IM returns the child result to this Mission. Otherwise, no submit is a failed round:`,
-    ``,
-    `  1. Re-read the mission at any time:`,
-    `       im mission show ${missionId} --for ${memberId}`,
-    `  2. Mission documents (only if the brief lists them):`,
-    `       im mission doc read ${memberId} ${missionId} <path>`,
-    `       im mission doc write ${memberId} ${missionId} --id <docId> --file <path-or->`,
-    `  3. Submitting IS the deliverable (full flag reference; the reminder at the`,
-    `     end of the brief carries the minimal form):`,
-    `       im mission submit ${memberId} ${missionId} --outcome <permitted> \\`,
-    `         [--next-node <station>] [--reason <text>] [--feedback <text>] [--receipts <a,b>] [--result <text>]`,
-    `     Take the permitted outcomes from the brief; outcomes marked`,
-    `     "(needs --result)" / "(needs --feedback)" require that flag non-empty.`,
-    ``,
-    `Never run "im join" or "im receive" — the bridge owns the member identity and`,
-    `the listening loop. Run im commands from the workspace root (your current project).`,
+    `A mission brief follows below the line. Do the work it asks for in this`,
+    `workspace, then close your round; the reminder after the brief is the`,
+    `action menu and owns the rules for replying.`,
+    `Re-read the mission any time: im mission show ${missionId} --for ${memberId}`,
+    `Documents and the full flag reference: im help`,
     ``,
     `----- mission brief -----`,
   ].join("\n");

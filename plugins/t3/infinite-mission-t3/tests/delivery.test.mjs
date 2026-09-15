@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { arrivalHeader, Delivery, slimBrief, slimPreamble, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf } from "../lib/delivery.mjs";
+import { arrivalHeader, Delivery, slimBrief, slimPreamble, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf, briefFromRunView } from "../lib/delivery.mjs";
 
 const BRIEF = [
   "[mission ms_aaaabbbbccccdddd] Smoke mission — active",
@@ -114,17 +114,36 @@ test("modelSelectionOf passes options through", () => {
   });
 });
 
-test("dutyPreamble names the member, pre-binds the mission, forbids join/receive", () => {
+test("dutyPreamble is orientation-only: identity, one pointer, no action-menu duplication", () => {
   const text = dutyPreamble("t3-codex", "/w", "ms_aaaabbbbccccdddd");
-  assert.match(text, /im mission submit t3-codex ms_aaaabbbbccccdddd --outcome/);
-  assert.doesNotMatch(text, /--revision/);
+  assert.match(text, /You are the InfiniteMission member "t3-codex" in workspace \/w/);
   assert.match(text, /im mission show ms_aaaabbbbccccdddd --for t3-codex/);
-  assert.match(text, /im mission doc read t3-codex ms_aaaabbbbccccdddd/);
   // Placeholders invite placeholder submissions: no <missionId> may survive.
   assert.doesNotMatch(text, /<missionId>/);
-  assert.match(text, /\(needs --result\)/);
-  assert.match(text, /\(needs --feedback\)/);
-  assert.match(text, /Never run "im join" or "im receive"/);
+  assert.match(text, /im help/);
+  // The tail reminder owns the action menu; restating it here was banner noise.
+  assert.doesNotMatch(text, /im mission submit/);
+  assert.doesNotMatch(text, /Never run "im join" or "im receive"/);
+  assert.doesNotMatch(text, /\(needs --/);
+  assert.doesNotMatch(text, /--revision/);
+});
+
+test("briefFromRunView shortens document receipts to a comparable prefix", () => {
+  const brief = briefFromRunView({
+    missionId: "ms_aaaabbbbccccdddd",
+    name: "Smoke",
+    status: "active",
+    revision: 1,
+    documents: [
+      { id: "spec", kind: "file", path: "spec.md", receipt: `document:${"a".repeat(64)}`, mayRead: true, mayWrite: false },
+      { id: "plan", kind: "file", path: "plan.md", mayRead: true, mayWrite: true },
+    ],
+  });
+  assert.match(brief, /receipt=document:aaaaaaaaaaaa…/);
+  // The stored 64-char fingerprint must not ride the delivered brief.
+  assert.doesNotMatch(brief, /a{13}/);
+  // No-receipt documents render without the receipt field.
+  assert.match(brief, /plan \(file\) plan\.md \[read:y write:y\]/);
 });
 
 test("resultPreamble is read-only: no submit duty, explicit closed-mission warning", () => {
@@ -163,9 +182,10 @@ test("ended delivery carries the result preamble; a normal one keeps the duty pr
       .filter((command) => command.type === "thread.turn.start")
       .map((command) => command.message.text);
     assert.match(turns[0], /----- mission result -----/);
-    assert.doesNotMatch(turns[0], /Submitting IS the deliverable/);
+    assert.doesNotMatch(turns[0], /----- mission brief -----/);
     assert.match(turns[1], /----- mission brief -----/);
-    assert.match(turns[1], /Submitting IS the deliverable/);
+    // Full-snapshot turn opens with the duty head; follow-ups would not.
+    assert.match(turns[1], /You are the InfiniteMission member "t3-codex"/);
   } finally {
     cleanup();
   }
