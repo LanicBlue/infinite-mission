@@ -88,6 +88,9 @@ test("isMissionThreadId: exact, suffixed, and boundary mismatches", () => {
 test("titleFromBrief extracts the mission name with the member prefix", () => {
   assert.equal(titleFromBrief(BRIEF, "t3-codex", "build", "ms_x"), "im/t3-codex@build: Smoke mission");
   assert.equal(titleFromBrief("garbage\nmore", "t3-codex", "review", "ms_abc123def"), "im/t3-codex@review: ms_abc123def");
+  // Markdown heading (current renderer) resolves the same way.
+  const md = "# Smoke mission — active\n`ms_aaaabbbbccccdddd` · revision 1";
+  assert.equal(titleFromBrief(md, "t3-codex", "build", "ms_aaaabbbbccccdddd"), "im/t3-codex@build: Smoke mission");
 });
 
 test("titleFromBrief finds the mission header below a result marker", () => {
@@ -116,7 +119,7 @@ test("modelSelectionOf passes options through", () => {
 
 test("dutyPreamble is orientation-only: identity, one pointer, no action-menu duplication", () => {
   const text = dutyPreamble("t3-codex", "/w", "ms_aaaabbbbccccdddd");
-  assert.match(text, /You are the InfiniteMission member "t3-codex" in workspace \/w/);
+  assert.match(text, /You are the InfiniteMission member \*\*t3-codex\*\* in workspace `\/w`\./);
   assert.match(text, /im mission show ms_aaaabbbbccccdddd --for t3-codex/);
   // Placeholders invite placeholder submissions: no <missionId> may survive.
   assert.doesNotMatch(text, /<missionId>/);
@@ -126,24 +129,43 @@ test("dutyPreamble is orientation-only: identity, one pointer, no action-menu du
   assert.doesNotMatch(text, /Never run "im join" or "im receive"/);
   assert.doesNotMatch(text, /\(needs --/);
   assert.doesNotMatch(text, /--revision/);
+  // Markdown fence, not the legacy dashed one.
+  assert.doesNotMatch(text, /----- mission brief -----/);
 });
 
-test("briefFromRunView shortens document receipts to a comparable prefix", () => {
+test("briefFromRunView renders markdown: merged outcome routes, prefixed fingerprints, rights", () => {
   const brief = briefFromRunView({
     missionId: "ms_aaaabbbbccccdddd",
     name: "Smoke",
     status: "active",
-    revision: 1,
+    revision: 3,
+    at: "build",
+    onDuty: true,
+    iteration: 2,
+    stationCharterSha256: "f".repeat(64),
+    outcomes: ["done", "rework"],
+    feedbackRequiredOn: ["rework"],
+    routes: [
+      { outcome: "done", to: ["review-audit"] },
+      { outcome: "abandon", to: [], terminal: true },
+    ],
     documents: [
       { id: "spec", kind: "file", path: "spec.md", receipt: `document:${"a".repeat(64)}`, mayRead: true, mayWrite: false },
       { id: "plan", kind: "file", path: "plan.md", mayRead: true, mayWrite: true },
     ],
   });
-  assert.match(brief, /receipt=document:aaaaaaaaaaaa…/);
+  assert.match(brief, /^# Smoke — active$/m);
+  assert.match(brief, /\*\*At station: build\*\*（iteration 2） · \*\*on duty — you hold this station\*\*/);
+  assert.match(brief, /\*\*Station charter\*\* `sha256:ffffffffffff…`/);
+  // Outcomes and their routes are one list, not two.
+  assert.match(brief, /- `done` → review-audit/);
+  assert.match(brief, /- `rework` — needs `--feedback`/);
+  assert.match(brief, /- `abandon` — terminal/);
+  assert.match(brief, /- `spec` · spec\.md · `document:aaaaaaaaaaaa…` · read-only/);
   // The stored 64-char fingerprint must not ride the delivered brief.
   assert.doesNotMatch(brief, /a{13}/);
   // No-receipt documents render without the receipt field.
-  assert.match(brief, /plan \(file\) plan\.md \[read:y write:y\]/);
+  assert.match(brief, /- `plan` · plan\.md · read-write/);
 });
 
 test("resultPreamble is read-only: no submit duty, explicit closed-mission warning", () => {
@@ -182,10 +204,9 @@ test("ended delivery carries the result preamble; a normal one keeps the duty pr
       .filter((command) => command.type === "thread.turn.start")
       .map((command) => command.message.text);
     assert.match(turns[0], /----- mission result -----/);
-    assert.doesNotMatch(turns[0], /----- mission brief -----/);
-    assert.match(turns[1], /----- mission brief -----/);
-    // Full-snapshot turn opens with the duty head; follow-ups would not.
-    assert.match(turns[1], /You are the InfiniteMission member "t3-codex"/);
+    assert.doesNotMatch(turns[0], /\*\*t3-codex\*\*/);
+    // Full-snapshot turn opens with the markdown duty head; follow-ups would not.
+    assert.match(turns[1], /\*\*t3-codex\*\*/);
   } finally {
     cleanup();
   }
@@ -220,7 +241,7 @@ test("every delivered turn ends with the tail reminder: recency anchor after the
     assert.match(duty, /<im-system-reminder>\n/);
     assert.match(duty, /im mission submit "t3-codex" "ms_aaaabbbbccccdddd" --outcome/);
     assert.match(duty, /im mission abandon "t3-codex" "ms_aaaabbbbccccdddd"`/);
-    assert.match(duty, /Take the permitted outcomes from the/);
+    assert.match(duty, /permitted outcomes from the brief above/);
     // The tail must not smuggle in a revision flag — revisions are gone from
     // the submit surface entirely.
     assert.doesNotMatch(duty, /--revision/);
@@ -258,7 +279,7 @@ test("first delivery creates the project and thread, then starts the turn", asyn
     const turn = t3.dispatched[2];
     assert.equal(turn.threadId, threadId);
     assert.equal(turn.message.role, "user");
-    assert.match(turn.message.text, /^You are the InfiniteMission member "t3-codex"/);
+    assert.match(turn.message.text, /^You are the InfiniteMission member \*\*t3-codex\*\*/);
     assert.match(turn.message.text, new RegExp(BRIEF.split("\n", 1)[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.ok(turn.message.text.indexOf("duty") === -1 || true);
     assert.deepEqual(turn.message.attachments, []);
@@ -567,34 +588,41 @@ test("slimBrief drops the stable objective and current-step summary, keeps round
     "  fix the null deref",
     "=== END ARRIVAL CONTEXT ===",
     "",
-    "[mission ms_aaaabbbbccccdddd] dev-mixed — active",
-    "  objective: 全局任务描述（首投已有）",
-    "  origin work: design",
-    "  at station: build (iteration 2)",
-    "  revision: 9",
-    "  on duty: YES — you hold this station",
-    "  current step: 通用实现",
-    "  outcomes: impl-ready, plan-reject, abandon",
-    "  routes:",
-    "    impl-ready -> review-audit",
-    "  documents:",
-    "    impl (file) impl.md [read:n write:y]",
+    "# dev-mixed — active",
+    "`ms_aaaabbbbccccdddd` · revision 9 · origin work: design",
+    "**At station: build**（iteration 2）· **on duty — you hold this station** · arrived from review-audit on `reject-impl` (#12)",
+    "**Incoming feedback** — fix the null deref",
+    "**Objective** — 全局任务描述（首投已有）",
+    "**Current step** — 通用实现",
+    "**Outcomes → routes**",
+    "- `impl-ready` → review-audit",
+    "- `abandon` — terminal",
+    "**Documents**",
+    "- `impl` · impl.md · write-only",
   ].join("\n");
   const slim = slimBrief(brief);
   assert.ok(!slim.includes("全局任务描述"), "objective body must go");
   assert.ok(!slim.includes("通用实现"), "current-step summary must go");
-  assert.match(slim, /objective: \(mission objective — first brief/);
-  assert.match(slim, /current step: \(unchanged; see the first brief\)/);
+  assert.match(slim, /\*\*Objective\*\* — \(mission objective — first brief/);
+  assert.match(slim, /\*\*Current step\*\* — \(unchanged; see the first brief\)/);
   assert.match(slim, /ARRIVAL CONTEXT/);
   assert.match(slim, /fix the null deref/);
-  assert.match(slim, /at station: build \(iteration 2\)/);
-  assert.match(slim, /outcomes: impl-ready, plan-reject, abandon/);
-  assert.match(slim, /impl \(file\) impl\.md/);
+  assert.match(slim, /\*\*At station: build\*\*（iteration 2）/);
+  assert.match(slim, /- `impl-ready` → review-audit/);
+  assert.match(slim, /- `impl` · impl\.md · write-only/);
 });
 
-test("slimBrief fails open when the anchors are missing", () => {
+test("slimBrief fails open when anchors are missing; legacy anchors still slim", () => {
   const odd = "some future CLI shape\n  no known fields";
   assert.equal(slimBrief(odd), odd);
+  const legacy = [
+    "[mission ms_aaaabbbbccccdddd] x — active",
+    "  objective: 全局目标",
+    "  current step: s1",
+  ].join("\n");
+  const slim = slimBrief(legacy);
+  assert.match(slim, /objective: \(mission objective — first brief/);
+  assert.match(slim, /current step: \(unchanged; see the first brief\)/);
 });
 
 test("follow-up rounds deliver the slim form; first rounds keep the full brief", async () => {

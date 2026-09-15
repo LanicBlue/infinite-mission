@@ -375,13 +375,13 @@ test("structured assignment supplies current arrival without scanning mission ev
   await bridge.reconcile();
   assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
   const call = delivery.deliverCalls[0];
-  assert.match(call.brief, /at station: build \(iteration 2\)/);
+  assert.match(call.brief, /\*\*At station: build\*\*（iteration 2）/);
   assert.match(call.brief, /member stations: build, verify/);
-  assert.match(call.brief, /arrived from: review on reject-impl/);
-  assert.match(call.brief, /incoming feedback: fix the real failure/);
-  assert.match(call.brief, /current step: repair and submit/);
+  assert.match(call.brief, /arrived from review on `reject-impl` \(#9\)/);
+  assert.match(call.brief, /\*\*Incoming feedback\*\* — fix the real failure/);
+  assert.match(call.brief, /\*\*Current step\*\* — repair and submit/);
   assert.doesNotMatch(call.brief, /通用实现岗|station charter body/);
-  assert.match(call.brief, /impl-ready -> review/);
+  assert.match(call.brief, /- `impl-ready` → review/);
   assert.deepEqual(runner.calls.missionEvents, []);
   await bridge.stop();
 });

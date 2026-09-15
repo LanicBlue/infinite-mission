@@ -21,19 +21,20 @@ export function isMissionThreadId(threadId, memberId, missionId) {
   return threadId === base || threadId.startsWith(`${base}-`);
 }
 
-/** `[mission ms_x] NAME — status` → a T3 display title (missionId as fallback).
- * The header may sit a few lines down (result briefs open with a marker), so
- * the first lines are scanned but the match stays line-anchored. Shows the
- * member's display name when set — the id in the title is meaningless noise. */
+/** `[mission ms_x] NAME — status` (legacy) or `# NAME — status` (markdown)
+ * → a T3 display title (missionId as fallback). The header may sit a few
+ * lines down (result briefs open with a marker), so the first lines are
+ * scanned but the match stays line-anchored. Shows the member's display
+ * name when set — the id in the title is meaningless noise. */
 export function titleFromBrief(brief, member, station, missionId) {
   const memberId = typeof member === "string" ? member : member.id;
   const who = typeof member === "string" ? member : (member.displayName?.trim() || member.id);
   const lines = String(brief).split("\n");
-  const header = lines
+  const found = lines
     .slice(0, 5)
-    .map((line) => line.match(/^\[mission ms_[0-9a-f]{6,64}\] (.*)$/))
+    .map((line) => line.match(/^# (.*)$/) ?? line.match(/^\[mission ms_[0-9a-f]{6,64}\] (.*)$/))
     .find(Boolean);
-  const name = header ? header[1].split(" — ")[0].trim() : "";
+  const name = found ? found[1].split(" — ")[0].trim() : "";
   return `im/${who}@${station}: ${name || missionId}`;
 }
 
@@ -45,97 +46,129 @@ export function modelSelectionOf(member) {
 
 /** Render IM core's structured assignment snapshot for an agent consumer.
  * This is presentation only: all mission semantics and adjudication remain
- * in the snapshot/core. */
+ * in the snapshot/core. Markdown: the delivered turn is read by LLM agents,
+ * where semantic lines (bold field labels, backticked ids/commands, one
+ * bullet per outcome/document) beat terminal indented fields and 78-col
+ * wrapping — and outcomes with their routes are one list, not two. */
 export function briefFromRunView(view) {
-  const lines = [`[mission ${view.missionId}] ${view.name} — ${view.status}`];
-  if (view.objective) lines.push(`  objective: ${view.objective}`);
-  if (view.originWork) lines.push(`  origin work: ${view.originWork}`);
+  const lines = [`# ${view.name} — ${view.status}`];
+  const meta = [`\`${view.missionId}\``, `revision ${view.revision}`];
+  if (view.originWork) meta.push(`origin work: ${view.originWork}`);
+  if (Array.isArray(view.memberStations) && view.memberStations.length > 0) {
+    meta.push(`member stations: ${view.memberStations.join(", ")}`);
+  }
   if (view.parent) {
-    lines.push(
-      `  parent mission: ${view.parent.missionId} (round revision ${view.parent.revision}, requested by ${view.parent.requestedByWork})`,
+    meta.push(
+      `parent \`${view.parent.missionId}\` (round revision ${view.parent.revision}, requested by ${view.parent.requestedByWork})`,
     );
   }
-  if (view.at) lines.push(`  at station: ${view.at} (iteration ${view.iteration ?? 1})`);
-  else lines.push("  ended: mission is no longer in the mail stream");
-  lines.push(`  revision: ${view.revision}`);
-  if (Array.isArray(view.memberStations) && view.memberStations.length > 0) {
-    lines.push(`  member stations: ${view.memberStations.join(", ")}`);
-  }
-  lines.push(`  on duty: ${view.onDuty ? "YES — you hold this station" : "no"}`);
-  if (view.arrival) {
-    const arrival = view.arrival;
-    if (arrival.kind === "route") {
-      lines.push(
-        `  arrived from: ${arrival.from ?? "?"} on ${arrival.outcome ?? "?"} (event #${arrival.eventSeq})`,
+  lines.push(meta.join(" · "));
+
+  const arrival = view.arrival ?? null;
+  if (view.at) {
+    const station = [
+      `**At station: ${view.at}**（iteration ${view.iteration ?? 1}）`,
+      view.onDuty ? "**on duty — you hold this station**" : "not on duty",
+    ];
+    if (arrival?.kind === "route") {
+      station.push(
+        `arrived from ${arrival.from ?? "?"} on \`${arrival.outcome ?? "?"}\` (#${arrival.eventSeq})`,
       );
-    } else if (arrival.kind === "child-result") {
-      lines.push(
-        `  child result: ${arrival.childMissionId ?? "?"} returned ${arrival.outcome ?? "?"} (event #${arrival.eventSeq})`,
-      );
-    } else {
-      lines.push(`  arrived from: ${arrival.from ?? "?"} (event #${arrival.eventSeq})`);
     }
-    if (arrival.feedback) lines.push(`  incoming feedback: ${arrival.feedback}`);
-    else if (arrival.reason) lines.push(`  incoming reason: ${arrival.reason}`);
+    lines.push(station.join(" · "));
+    if (arrival && arrival.kind !== "route") {
+      if (arrival.kind === "child-result") {
+        lines.push(
+          `**Child result** — \`${arrival.childMissionId ?? "?"}\` returned \`${arrival.outcome ?? "?"}\` (#${arrival.eventSeq})`,
+        );
+      } else {
+        lines.push(`**Arrival** — from ${arrival.from ?? "?"} (#${arrival.eventSeq})`);
+      }
+    }
+  } else {
+    lines.push("**Ended** — mission is no longer in the mail stream");
   }
-  if (view.currentStep) lines.push(`  current step: ${view.currentStep}`);
+  if (arrival?.feedback) lines.push(`**Incoming feedback** — ${arrival.feedback}`);
+  else if (arrival?.reason) lines.push(`**Incoming reason** — ${arrival.reason}`);
+  if (view.objective) lines.push(`**Objective** — ${view.objective}`);
+  if (view.currentStep) lines.push(`**Current step** — ${view.currentStep}`);
   if (view.stationCharterSha256 && view.at) {
     lines.push(
-      `  station charter: sha256:${view.stationCharterSha256} (read: im work show ${view.at})`,
+      `**Station charter** \`sha256:${shortHash(view.stationCharterSha256)}\` — read: \`im work show ${view.at}\``,
     );
   }
-  const outcomes = Array.isArray(view.outcomes)
-    ? view.outcomes.map((outcome) => {
-        let label = outcome;
-        if (view.resultRequiredOn?.includes(outcome)) label += " (needs --result)";
-        if (view.feedbackRequiredOn?.includes(outcome)) label += " (needs --feedback)";
-        return label;
-      })
-    : [];
-  if (outcomes.length > 0) lines.push(`  outcomes: ${[...outcomes, "abandon"].join(", ")}`);
-  if (Array.isArray(view.routes) && view.routes.length > 0) {
-    lines.push("  routes:");
-    for (const route of view.routes) {
-      lines.push(
-        `    ${route.outcome} -> ${route.to?.length ? route.to.join(" | ") : "(none)"}${route.terminal ? " [terminal]" : ""}`,
-      );
+
+  const outcomes = Array.isArray(view.outcomes) ? [...view.outcomes] : [];
+  if (!outcomes.includes("abandon")) outcomes.push("abandon");
+  const routeByOutcome = new Map(
+    (Array.isArray(view.routes) ? view.routes : []).map((route) => [route.outcome, route]),
+  );
+  const required = (outcome) => {
+    const flags = [];
+    if (view.resultRequiredOn?.includes(outcome)) flags.push("`--result`");
+    if (view.feedbackRequiredOn?.includes(outcome)) flags.push("`--feedback`");
+    return flags.length > 0 ? ` — needs ${flags.join(" & ")}` : "";
+  };
+  const routed = [...outcomes, ...[...routeByOutcome.keys()].filter((o) => !outcomes.includes(o))];
+  if (routed.length > 0) {
+    lines.push("**Outcomes → routes**");
+    for (const outcome of routed) {
+      const route = routeByOutcome.get(outcome);
+      if (route?.to?.length) lines.push(`- \`${outcome}\` → ${route.to.join(" | ")}${required(outcome)}`);
+      else if (route?.terminal) lines.push(`- \`${outcome}\` — terminal${required(outcome)}`);
+      else if (route) lines.push(`- \`${outcome}\` → (none)${required(outcome)}`);
+      else lines.push(`- \`${outcome}\`${required(outcome)}`);
     }
   }
+
   if (Array.isArray(view.children) && view.children.length > 0) {
-    lines.push("  child missions:");
+    lines.push("**Child missions**");
     for (const child of view.children) {
+      const detail = child.result ? `result: ${child.result}` : child.reason ? `reason: ${child.reason}` : "";
       lines.push(
-        `    ${child.missionId} — ${child.status}${child.outcome ? ` outcome=${child.outcome}` : ""}`,
+        `- \`${child.missionId}\` — ${child.status}${child.outcome ? ` outcome=\`${child.outcome}\`` : ""}${detail ? ` · ${detail}` : ""}`,
       );
-      if (child.result) lines.push(`      result: ${child.result}`);
-      else if (child.reason) lines.push(`      reason: ${child.reason}`);
     }
   }
+
   if (Array.isArray(view.documents) && view.documents.length > 0) {
-    lines.push("  documents:");
+    lines.push("**Documents**");
     for (const document of view.documents) {
-      const receipt = document.receipt ? ` receipt=${receiptDisplay(document.receipt)}` : "";
-      const inherited = document.sourceMissionId
-        ? ` inherited-from=${document.sourceMissionId}`
-        : "";
-      lines.push(
-        `    ${document.id} (${document.kind}) ${document.path}${receipt}${inherited} [read:${document.mayRead ? "y" : "n"} write:${document.mayWrite ? "y" : "n"}]`,
+      const parts = [
+        `\`${document.id}\``,
+        document.kind && document.kind !== "file" ? `${document.path} (${document.kind})` : document.path,
+      ];
+      if (document.receipt) parts.push(`\`${receiptDisplay(document.receipt)}\``);
+      parts.push(
+        document.mayRead && document.mayWrite
+          ? "read-write"
+          : document.mayRead
+            ? "read-only"
+            : document.mayWrite
+              ? "write-only"
+              : "no access",
       );
+      if (document.sourceMissionId) parts.push(`inherited from \`${document.sourceMissionId}\``);
+      lines.push(`- ${parts.join(" · ")}`);
     }
   }
   return lines.join("\n");
 }
 
-/** Render a document receipt for the delivered brief. The fingerprint is
- * provenance display for the working agent: submit only accepts receipts
- * minted by this station's own doc writes (their full value is the doc-write
- * stdout), and the stored full value is re-readable via `im mission show`.
- * A 12-char prefix keeps cross-round "did it change" comparable. */
+/** Fingerprints shown in the delivered brief carry only a comparable prefix:
+ * the working agent never feeds them back (submit takes this station's own
+ * doc-write receipts, whose full value is that command's stdout; the charter
+ * hash resolves via `im work show`), and the stored full value is always
+ * re-readable through the im CLI. */
+export function shortHash(hash) {
+  return hash.length > 12 ? `${hash.slice(0, 12)}…` : hash;
+}
+
+/** Render a document receipt for the delivered brief (see shortHash). */
 export function receiptDisplay(receipt) {
   const colon = receipt.indexOf(":");
-  const prefix = colon >= 0 ? receipt.slice(0, colon + 1) : "";
-  const hash = receipt.slice(prefix.length);
-  return hash.length > 12 ? `${prefix}${hash.slice(0, 12)}…` : receipt;
+  if (colon < 0) return shortHash(receipt);
+  return `${receipt.slice(0, colon + 1)}${shortHash(receipt.slice(colon + 1))}`;
 }
 
 /**
@@ -188,23 +221,38 @@ function eventBlocks(eventsText) {
 export function slimPreamble(member, workspace, missionId) {
   const memberId = typeof member === "string" ? member : member.id;
   return [
-    `You are the InfiniteMission member "${memberId}" in workspace ${workspace}, on mission ${missionId}.`,
-    `Stable mission context lives in this thread's first brief; the brief below is the current round. Read the station charter with im work show when its hash is listed.`,
+    `You are the InfiniteMission member \`${memberId}\` in workspace \`${workspace}\`, on mission \`${missionId}\`.`,
+    `Stable mission context lives in this thread's first brief; the brief below is the current round. Read the station charter with \`im work show\` when its hash is listed.`,
   ].join("\n");
 }
 
 /**
  * Slim a duty brief for a follow-up round on an existing thread: drop the
- * stable `objective:` and `current step:` sections (they are in the first brief
- * and re-readable via `im mission show`) and leave a one-line pointer. The
+ * stable Objective and Current step lines (they are in the first brief and
+ * re-readable via `im mission show`) and leave a one-line pointer. The
  * round-deciding parts — arrival context, station/iteration, outcome
- * vocabulary, routes, documents — stay verbatim. Parsing is line-anchored
- * on the CLI's stable `  field:` shape; if the expected anchors are not
+ * vocabulary, routes, documents — stay verbatim. Anchors cover the current
+ * markdown renderer and the legacy indented-field shapes; if neither is
  * found the original brief is returned untouched (repetition is safe, a
  * mangled brief is not).
  */
 export function slimBrief(brief) {
   const lines = String(brief).split("\n");
+  const replaceLine = (marker, pointer) => {
+    const index = lines.findIndex((line) => line.startsWith(marker));
+    if (index < 0) return false;
+    lines[index] = pointer;
+    return true;
+  };
+  const mdObjective = replaceLine(
+    "**Objective** — ",
+    "**Objective** — (mission objective — first brief / `im mission show`)",
+  );
+  const mdStep = replaceLine(
+    "**Current step** — ",
+    "**Current step** — (unchanged; see the first brief)",
+  );
+  if (mdObjective || mdStep) return lines.join("\n");
   const drop = (startMarker) => {
     const start = lines.findIndex((line) => line.startsWith(startMarker));
     if (start < 0) return null;
@@ -283,18 +331,13 @@ export function dutyPreamble(member, workspace, missionId) {
   // stays copy-pasteable — placeholders invite placeholder submissions.
   const memberId = typeof member === "string" ? member : member.id;
   const displayName = typeof member === "string" ? "" : (member.displayName?.trim() ?? "");
-  const identity = displayName
-    ? `"${memberId}" (display name "${displayName}")`
-    : `"${memberId}"`;
+  const identity = displayName ? `**${memberId}**（${displayName}）` : `**${memberId}**`;
   return [
-    `You are the InfiniteMission member ${identity} in workspace ${workspace}.`,
-    `A mission brief follows below the line. Do the work it asks for in this`,
-    `workspace, then close your round; the reminder after the brief is the`,
-    `action menu and owns the rules for replying.`,
-    `Re-read the mission any time: im mission show ${missionId} --for ${memberId}`,
-    `Documents and the full flag reference: im help`,
+    `You are the InfiniteMission member ${identity} in workspace \`${workspace}\`. A mission brief follows — do the work it asks for in this workspace, then close your round; the reminder after the brief owns the rules for replying.`,
     ``,
-    `----- mission brief -----`,
+    `Re-read: \`im mission show ${missionId} --for ${memberId}\` · Documents & full flags: \`im help\``,
+    ``,
+    `---`,
   ].join("\n");
 }
 
@@ -316,14 +359,9 @@ export function dutyTailReminder(member, missionId) {
   const memberId = typeof member === "string" ? member : member.id;
   return [
     ``,
-    `----- end of brief -----`,
+    `---`,
     `<im-system-reminder>`,
-    `Reply by either: (a) \`im mission submit "${memberId}" "${missionId}" --outcome <permitted>\``,
-    `when the work is done, or (b) \`im mission abandon "${memberId}" "${missionId}"\``,
-    `when you cannot proceed. If this round has active linked child Missions, yield without`,
-    `submitting; IM will return their results to this same Mission. Take the permitted outcomes from the`,
-    `brief above. Do the work yourself — nested CLI subagent tools bypass this duty`,
-    `and their output will not reach the mission. Never run "im join" or "im receive".`,
+    `Close the round: \`im mission submit "${memberId}" "${missionId}" --outcome <permitted>\` — permitted outcomes from the brief above. If you cannot proceed: \`im mission abandon "${memberId}" "${missionId}"\`. Active linked child Missions: yield without submitting; IM returns their results to this Mission. Do the work yourself — nested CLI subagent output will not reach the mission. Never run \`im join\` / \`im receive\`.`,
     `</im-system-reminder>`,
   ].join("\n");
 }
