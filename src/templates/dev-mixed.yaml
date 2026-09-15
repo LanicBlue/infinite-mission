@@ -26,13 +26,13 @@ works:
     documentRights: {read: [plan, audit, impl], write: [impl-ui]}
   review-audit:
     completion: {outcomes: [reject-impl, reject-ui, approved], terminal: [], feedbackRequiredOn: [reject-impl, reject-ui]}
-    documentRights: {read: [spec, impl, impl-ui], write: [review, audit]}
+    documentRights: {read: [spec, plan, impl, impl-ui], write: [review, audit]}
   verify:
     completion: {outcomes: [verify-passed, verify-failed], terminal: [], feedbackRequiredOn: [verify-failed]}
-    documentRights: {read: [spec, plan, impl, impl-ui, review, audit], write: [evidence]}
+    documentRights: {read: [plan, impl, impl-ui, review, audit], write: [evidence]}
   verify-ui:
     completion: {outcomes: [ui-verified, ui-failed], terminal: [], feedbackRequiredOn: [ui-failed]}
-    documentRights: {read: [spec, plan, impl, impl-ui, review, audit, evidence], write: [evidence-ui]}
+    documentRights: {read: [plan, impl, impl-ui, review, audit, evidence], write: [evidence-ui]}
 
 documents:
   - {id: spec,     kind: file, path: spec.md}
