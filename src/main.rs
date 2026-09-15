@@ -1547,12 +1547,13 @@ Member tiers (execute ⊂ publish ⊂ manage; manage is console-only)
   im grant|revoke <operator> <target>       Publish-tier grants by manage-tier members
   im member delete <operator> <target>      Remove a non-manage member (manage-tier only)
   im work create <op> <work-key> [--description <t>] [--executor <agent>]
-                  [--prompt <text>] [--preset design|plan|build|review]
+                  [--prompt <text>] [--preset <name>]
                                              The prompt IS the work content — it travels
                                              with every mission stopping at the station.
-                                             A preset fills the standing charter of the
-                                             delivery pipeline (grill→spec, spec→goal,
-                                             implement, verify) plus its one-line summary.
+                                             A preset installs the standing charter from
+                                             .im/presets/<name>.md (`im init` seeds the
+                                             dev workflow set: design/supervisor/build/
+                                             … /verify-ui) plus its one-line summary.
   im work list / set-executor <op> <work> <agent-or-> / set-prompt <op> <work> <text...>
              / set-prompt <op> <work> --preset <name> / set-description <op> <work> <text...>
              / delete <op> <work>
@@ -1563,9 +1564,13 @@ Member tiers (execute ⊂ publish ⊂ manage; manage is console-only)
 Missions (Work-to-Work mail; Agent identity authorizes the operation)
   im mission create <op> --from <origin-work> (--template <name> | --to <target-work>)
        --key <unique-key> [--name <name>] [--objective <text>]
-                                             `im init` writes example.yaml and pipeline.yaml
-                                             (design→plan→build→review→final gate) and seeds
-                                             those four stations. The template-less --to form
+                                             `im init` writes example.yaml and the dev
+                                             delivery templates (dev-general/ui/mixed)
+                                             into .im/templates/ and seeds the dev
+                                             station charters into .im/presets/ —
+                                             stations themselves are created by you
+                                             (`im work create … --preset <name>`).
+                                             The template-less --to form
                                              is a built-in one-station contract: the objective
                                              carries the question, the outcomes are generated
                                              for you, and the result returns to the origin
@@ -1601,20 +1606,21 @@ Maintenance
 QUICK START
   1. im init && im join boss && im ui                       (set boss → manage tier
      on the console Members page — manage is console-only); init seeds the
-     pipeline stations (design/plan/build/review) and pipeline.yaml —
-     bind executors first:
-     im work set-executor boss design <agent> (…plan/build/review the same way);
+     dev charters (.im/presets: design/supervisor/build/…) and templates
+     (example + dev-general/ui/mixed) — create and bind stations:
+     im work create boss design --preset design --executor <agent>
+     (…supervisor/build/verify the same way);
      the design executor also needs publish tier to create the missions
      (im grant boss <design-agent>, or the console tier dropdown)
   2. Grill→spec happens in the design agent's own session conversation with
      the human — no mission round-trips. Then the design agent starts delivery:
-     im mission create <design-agent> --from design --template pipeline --key v1 --objective "ship X"
+     im mission create <design-agent> --from design --template dev-general --key v1 --objective "ship X"
      → im mission doc write <design-agent> <ms> --id spec --file -
      → im mission submit <design-agent> <ms> --outcome spec-ready
   3. Agents loop: im missions <me> → im mission show <ms> --for <me>
      → im mission doc write <me> <ms> --id <doc> --file -
      → im mission submit <me> <ms> --outcome <o> [--feedback <t>]
-  4. review approved → design holds the final gate (accept ends the mission,
-     reject sends implementation fixes back to build).
+  4. verify → supervisor evidence review → design holds the final gate
+     (accept ends the mission, quality rejections route fixes back in).
   5. im inbox shows anything parked at user stations (other templates).
 "#;

@@ -1702,6 +1702,8 @@ fn dev_line_presets_are_mission_agnostic_station_charters() {
             "quality-passed",
             "reject-impl",
             "reject-ui",
+            "reject-evidence",
+            "reject-evidence-ui",
             "spec-reject",
             "plan-reject",
             "approved",

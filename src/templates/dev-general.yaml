@@ -3,6 +3,7 @@
 # 保障 plan 与 spec 相符;实施/验证/审查的判据一律以 plan 为准(build/verify 无 spec
 # 读权,review-audit 留 spec 作意图参考);build 只回 supervisor(spec-gap 是主管的判断);
 # verify=主 mission 必跑站(不经 ask),UI 验证在 ui/mixed 模板里串行跟在 verify 后;
+# evidence 漏报由主管退回验证站补(reject-evidence·ui/mixed 另有 -ui 变体),不绕道实现岗;
 # 测试完整性/退役=review-impl 职责。唯一 ask 并行点:审查环三方向只读审查(--from review-audit)。
 schemaVersion: 4
 name: dev-general
@@ -19,9 +20,9 @@ works:
     documentRights: {read: [spec, plan, impl, review, audit, evidence, residuals], write: [spec]}
   supervisor:
     completion:
-      outcomes: [spec-reject, plan-ready, reject-impl, quality-passed]
+      outcomes: [spec-reject, plan-ready, reject-impl, reject-evidence, quality-passed]
       terminal: []
-      feedbackRequiredOn: [spec-reject, reject-impl]
+      feedbackRequiredOn: [spec-reject, reject-impl, reject-evidence]
     documentRights: {read: [spec, plan, impl, review, audit, evidence, residuals], write: [plan, residuals]}
   build:
     completion: {outcomes: [impl-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
@@ -31,7 +32,7 @@ works:
     documentRights: {read: [spec, plan, impl], write: [review, audit]}
   verify:
     completion: {outcomes: [verify-passed, verify-failed], terminal: [], feedbackRequiredOn: [verify-failed]}
-    documentRights: {read: [plan, evidence], write: [evidence]}
+    documentRights: {read: [plan, impl, review, audit], write: [evidence]}
 
 documents:
   - {id: spec,     kind: file, path: spec.md}
@@ -48,6 +49,7 @@ paths:
   - {from: supervisor,   when: spec-reject,     to: design,      iterationPolicy: increment}
   - {from: supervisor,   when: plan-ready,      to: build}
   - {from: supervisor,   when: reject-impl,     to: build,       iterationPolicy: increment}
+  - {from: supervisor,   when: reject-evidence, to: verify,      iterationPolicy: increment}
   - {from: supervisor,   when: quality-passed,  to: design,      iterationPolicy: increment}
   - {from: build,        when: impl-ready,      to: review-audit, iterationPolicy: increment}
   - {from: build,        when: plan-reject,   to: supervisor,  iterationPolicy: increment}

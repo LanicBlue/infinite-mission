@@ -1,4 +1,5 @@
-# UI 功能交付线(v4):实现段 build-ui;验证段 verify→verify-ui 串行;其余同 dev-general。
+# UI 功能交付线(v4):实现段 build-ui;验证段 verify→verify-ui 串行;其余同 dev-general
+# (evidence 漏报退回对应验证站:reject-evidence→verify、reject-evidence-ui→verify-ui)。
 schemaVersion: 4
 name: dev-ui
 objective: "UI 功能交付:设计冻结 spec → 主管方案审查+plan → UI 实现 → 审查环 → 必跑验证(verify→verify-ui)→ 主管证据复核 → 设计终验"
@@ -14,9 +15,9 @@ works:
     documentRights: {read: [spec, plan, impl-ui, review, audit, evidence, evidence-ui, residuals], write: [spec]}
   supervisor:
     completion:
-      outcomes: [spec-reject, plan-ready, reject-impl, quality-passed]
+      outcomes: [spec-reject, plan-ready, reject-impl, reject-evidence, reject-evidence-ui, quality-passed]
       terminal: []
-      feedbackRequiredOn: [spec-reject, reject-impl]
+      feedbackRequiredOn: [spec-reject, reject-impl, reject-evidence, reject-evidence-ui]
     documentRights: {read: [spec, plan, impl-ui, review, audit, evidence, evidence-ui, residuals], write: [plan, residuals]}
   build-ui:
     completion: {outcomes: [ui-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
@@ -47,6 +48,8 @@ paths:
   - {from: supervisor,   when: spec-reject,     to: design,      iterationPolicy: increment}
   - {from: supervisor,   when: plan-ready,      to: build-ui}
   - {from: supervisor,   when: reject-impl,     to: build-ui,    iterationPolicy: increment}
+  - {from: supervisor,   when: reject-evidence, to: verify,      iterationPolicy: increment}
+  - {from: supervisor,   when: reject-evidence-ui, to: verify-ui, iterationPolicy: increment}
   - {from: supervisor,   when: quality-passed,  to: design,      iterationPolicy: increment}
   - {from: build-ui,     when: ui-ready,        to: review-audit, iterationPolicy: increment}
   - {from: build-ui,     when: plan-reject,   to: supervisor,  iterationPolicy: increment}

@@ -1,4 +1,5 @@
-# 混合任务交付线(v4):写入串行(build→build-ui 接力);验证串行(verify→verify-ui);其余同 dev-general。
+# 混合任务交付线(v4):写入串行(build→build-ui 接力);验证串行(verify→verify-ui);其余同 dev-general
+# (evidence 漏报退回对应验证站:reject-evidence→verify、reject-evidence-ui→verify-ui)。
 schemaVersion: 4
 name: dev-mixed
 objective: "混合任务交付:设计冻结 spec → 主管方案审查+plan → 通用实现→(串行接力)UI 实现 → 审查环 → 必跑验证(verify→verify-ui)→ 主管证据复核 → 设计终验"
@@ -14,9 +15,9 @@ works:
     documentRights: {read: [spec, plan, impl, impl-ui, review, audit, evidence, evidence-ui, residuals], write: [spec]}
   supervisor:
     completion:
-      outcomes: [spec-reject, plan-ready, reject-impl, reject-ui, quality-passed]
+      outcomes: [spec-reject, plan-ready, reject-impl, reject-ui, reject-evidence, reject-evidence-ui, quality-passed]
       terminal: []
-      feedbackRequiredOn: [spec-reject, reject-impl, reject-ui]
+      feedbackRequiredOn: [spec-reject, reject-impl, reject-ui, reject-evidence, reject-evidence-ui]
     documentRights: {read: [spec, plan, impl, impl-ui, review, audit, evidence, evidence-ui, residuals], write: [plan, residuals]}
   build:
     completion: {outcomes: [impl-ready, plan-reject], terminal: [], feedbackRequiredOn: [plan-reject]}
@@ -52,6 +53,8 @@ paths:
   - {from: supervisor,   when: plan-ready,      to: build}
   - {from: supervisor,   when: reject-impl,     to: build,       iterationPolicy: increment}
   - {from: supervisor,   when: reject-ui,       to: build-ui,    iterationPolicy: increment}
+  - {from: supervisor,   when: reject-evidence, to: verify,      iterationPolicy: increment}
+  - {from: supervisor,   when: reject-evidence-ui, to: verify-ui, iterationPolicy: increment}
   - {from: supervisor,   when: quality-passed,  to: design,      iterationPolicy: increment}
   - {from: build,        when: impl-ready,      to: build-ui}
   - {from: build,        when: plan-reject,   to: supervisor,  iterationPolicy: increment}
