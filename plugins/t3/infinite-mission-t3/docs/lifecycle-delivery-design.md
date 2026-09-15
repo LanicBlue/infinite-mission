@@ -1,6 +1,6 @@
 # Lifecycle Delivery Design — IM 恒投两块，T3 按会话生命周期拼装
 
-状态：**设计定稿待实现**（2026-09-15 v2，裁决来自用户；实现前不再改桥侧投递逻辑）。
+状态：**已实现并上线（2026-09-15）**。t3code-expanded `6d0d3eeec`（contracts `OrchestrationMessageContext.freshContext` + reactor `ensureSessionForThread` 返回 fresh 标志并在 fresh 轮拼前 + persona 改由 freshContext 携带）；桥 `3ed4d78`（`roundBriefFromView`/`freshContextFromView` 拆分、`lifecycleDelivery` 开关、fullSnapshot/slim 机制退役）。部署：T3 17:44 重建重启，桥 17:44 开关开启重启。实测：resumed 轮 text 2483 字符，fresh 全消息 3309（freshContext 824 = persona 326 + 稳定块 498）。设计裁决与机制细节见下文，作为 as-built 保留。
 
 ## 1. 背景与证据
 
