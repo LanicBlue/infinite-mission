@@ -304,11 +304,13 @@ export function dutyPreamble(member, workspace, missionId) {
  * a static head preamble is filtered out as banner noise after a few
  * occurrences, but an XML `<...-system-reminder>` envelope placed at the
  * tail — right before the agent's reply turn — rides recency weighting, and
- * a two-option action menu beats abstract identity restatement. The member
- * and mission ids are pre-bound (the bridge knows both); revision and
- * outcomes stay "from the brief above" because extracting them would mean
- * parsing human-readable show output — the machine-contract line we do not
- * cross again.
+ * a two-option action menu beats abstract identity restatement. Identity
+ * stays in the same message's preamble (duty or slim — both open with it),
+ * so the tail spends its recency budget purely on the menu. The member and
+ * mission ids are pre-bound (the bridge knows both); revision and outcomes
+ * stay "from the brief above" because extracting them would mean parsing
+ * human-readable show output — the machine-contract line we do not cross
+ * again.
  */
 export function dutyTailReminder(member, missionId) {
   const memberId = typeof member === "string" ? member : member.id;
@@ -316,7 +318,6 @@ export function dutyTailReminder(member, missionId) {
     ``,
     `----- end of brief -----`,
     `<im-system-reminder>`,
-    `You are InfiniteMission member "${memberId}", on duty for mission ${missionId}.`,
     `Reply by either: (a) \`im mission submit "${memberId}" "${missionId}" --outcome <permitted>\``,
     `when the work is done, or (b) \`im mission abandon "${memberId}" "${missionId}"\``,
     `when you cannot proceed. If this round has active linked child Missions, yield without`,
