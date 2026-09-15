@@ -386,6 +386,74 @@ test("structured assignment supplies current arrival without scanning mission ev
   await bridge.stop();
 });
 
+test("lifecycle delivery flag: round brief + freshContext when on, full brief when off", async () => {
+  const missionId = "ms_aaaabbbbccccdddd";
+  const structuredShow = () => ({
+    ok: true,
+    view: {
+      missionId,
+      name: "structured",
+      objective: "ship safely",
+      originWork: "design",
+      at: "build",
+      status: "active",
+      revision: 4,
+      iteration: 1,
+      currentStep: "repair and submit",
+      onDuty: true,
+      outcomes: ["impl-ready"],
+      resultRequiredOn: [],
+      feedbackRequiredOn: [],
+      routes: [{ outcome: "impl-ready", to: ["review"], terminal: false }],
+      documents: [],
+    },
+    text: "ignored json source",
+  });
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "build") }],
+    missionShow: structuredShow,
+  });
+  const delivery = new FakeDelivery();
+  const bridge = new Bridge({
+    runner,
+    delivery,
+    config: makeConfig({ lifecycleDelivery: true }),
+    logger: quiet,
+  });
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  const call = delivery.deliverCalls[0];
+  // Round text: every-round facts only; no objective, no mission meta.
+  assert.match(call.brief, /\*\*Current step\*\* — repair and submit/);
+  assert.doesNotMatch(call.brief, /ship safely/);
+  assert.doesNotMatch(call.brief, /origin work/);
+  // Stable block: mission meta (no revision) + objective.
+  assert.equal(call.freshContext, "`ms_aaaabbbbccccdddd` · origin work: design\n**Objective** — ship safely");
+  await bridge.stop();
+
+  // Flag off (default): the everything-once full brief rides the text.
+  const deliveryOff = new FakeDelivery();
+  const runnerOff = new ScriptedRunner({
+    roster: [{ id: "t3-codex", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: ARRIVAL(missionId, "build") }],
+    missionShow: structuredShow,
+  });
+  const bridgeOff = new Bridge({
+    runner: runnerOff,
+    delivery: deliveryOff,
+    config: makeConfig(),
+    logger: quiet,
+  });
+  await bridgeOff.reconcile();
+  assert.ok(await waitFor(() => deliveryOff.deliverCalls.length === 1));
+  const callOff = deliveryOff.deliverCalls[0];
+  assert.match(callOff.brief, /ship safely/);
+  assert.match(callOff.brief, /origin work: design/);
+  assert.equal(callOff.freshContext, null);
+  await bridgeOff.stop();
+});
+
 test("returned result: current core delivers durable result without full events or submit duty", async () => {
   const missionId = "ms_aaaabbbbccccdddd";
   const runner = new ScriptedRunner({

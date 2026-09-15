@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { arrivalHeader, Delivery, slimBrief, slimPreamble, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf, briefFromRunView } from "../lib/delivery.mjs";
+import { arrivalHeader, Delivery, threadIdFor, isMissionThreadId, titleFromBrief, dutyPreamble, resultPreamble, modelSelectionOf, briefFromRunView, roundBriefFromView, freshContextFromView } from "../lib/delivery.mjs";
 
 const BRIEF = [
   "[mission ms_aaaabbbbccccdddd] Smoke mission — active",
@@ -117,9 +117,11 @@ test("modelSelectionOf passes options through", () => {
   });
 });
 
-test("dutyPreamble is orientation-only: identity, one pointer, no action-menu duplication", () => {
-  const text = dutyPreamble("t3-codex", "/w", "ms_aaaabbbbccccdddd");
-  assert.match(text, /You are the InfiniteMission member \*\*t3-codex\*\* in workspace `\/w`\./);
+test("dutyPreamble is orientation-only: identity, one pointer, no workspace", () => {
+  const text = dutyPreamble("t3-codex", "ms_aaaabbbbccccdddd");
+  assert.match(text, /You are the InfiniteMission member \*\*t3-codex\*\*\./);
+  // The T3 session already runs in the workspace; its cwd carries that fact.
+  assert.doesNotMatch(text, /workspace/);
   assert.match(text, /im mission show ms_aaaabbbbccccdddd --for t3-codex/);
   // Placeholders invite placeholder submissions: no <missionId> may survive.
   assert.doesNotMatch(text, /<missionId>/);
@@ -131,6 +133,46 @@ test("dutyPreamble is orientation-only: identity, one pointer, no action-menu du
   assert.doesNotMatch(text, /--revision/);
   // Markdown fence, not the legacy dashed one.
   assert.doesNotMatch(text, /----- mission brief -----/);
+});
+
+test("roundBriefFromView/freshContextFromView split the snapshot at the stable seam", () => {
+  const view = {
+    missionId: "ms_aaaabbbbccccdddd",
+    name: "Smoke",
+    status: "active",
+    revision: 3,
+    originWork: "design",
+    objective: "ship safely",
+    at: "build",
+    onDuty: true,
+    iteration: 2,
+    currentStep: "repair and submit",
+    outcomes: ["done"],
+    routes: [{ outcome: "done", to: ["review-audit"] }],
+    documents: [
+      { id: "spec", kind: "file", path: "spec.md", receipt: `document:${"a".repeat(64)}`, mayRead: true, mayWrite: false },
+    ],
+  };
+  const round = roundBriefFromView(view);
+  // Every-round facts ride the round text — revision included (station line).
+  assert.match(round, /^# Smoke — active$/m);
+  assert.match(round, /\*\*At station: build\*\*（iteration 2） · revision 3 · \*\*on duty — you hold this station\*\*/);
+  assert.match(round, /\*\*Current step\*\* — repair and submit/);
+  assert.match(round, /- `done` → review-audit/);
+  assert.match(round, /- `spec` · spec\.md · `document:aaaaaaaaaaaa…` · read-only/);
+  // Stable identity facts never ride the round text.
+  assert.ok(!round.includes("**Objective**"), "objective must not ride the round text");
+  assert.ok(!round.includes("origin work"), "mission meta must not ride the round text");
+  // The stable block carries exactly the seam: meta without revision + objective.
+  const fresh = freshContextFromView(view);
+  assert.match(fresh, /`ms_aaaabbbbccccdddd` · origin work: design/);
+  assert.ok(!fresh.includes("revision"), "revision is per-round; it must not ride the stable block");
+  assert.match(fresh, /\*\*Objective\*\* — ship safely/);
+  // The full form still renders everything once (lifecycle-off fallback).
+  const full = briefFromRunView(view);
+  assert.match(full, /`ms_aaaabbbbccccdddd` · origin work: design/);
+  assert.match(full, /\*\*Objective\*\* — ship safely/);
+  assert.match(full, /revision 3/);
 });
 
 test("briefFromRunView renders markdown: merged outcome routes, prefixed fingerprints, rights", () => {
@@ -155,7 +197,7 @@ test("briefFromRunView renders markdown: merged outcome routes, prefixed fingerp
     ],
   });
   assert.match(brief, /^# Smoke — active$/m);
-  assert.match(brief, /\*\*At station: build\*\*（iteration 2） · \*\*on duty — you hold this station\*\*/);
+  assert.match(brief, /\*\*At station: build\*\*（iteration 2） · revision 3 · \*\*on duty — you hold this station\*\*/);
   assert.match(brief, /\*\*Station charter\*\* `sha256:ffffffffffff…`/);
   // Outcomes and their routes are one list, not two.
   assert.match(brief, /- `done` → review-audit/);
@@ -169,7 +211,7 @@ test("briefFromRunView renders markdown: merged outcome routes, prefixed fingerp
 });
 
 test("resultPreamble is read-only: no submit duty, explicit closed-mission warning", () => {
-  const text = resultPreamble("t3-codex", "/w");
+  const text = resultPreamble("t3-codex");
   // The warning sentence mentions the command; what must be absent is the
   // duty-preamble's imperative submit instruction and its command syntax.
   assert.doesNotMatch(text, /Submitting IS the deliverable/);
@@ -580,130 +622,63 @@ test("arrivalHeader falls back to reason, degrades to empty without facts", () =
   assert.match(broken, /from 'x' on outcome 'y'/);
 });
 
-test("slimBrief drops the stable objective and current-step summary, keeps round inputs", () => {
-  const brief = [
-    "=== ARRIVAL CONTEXT ===",
-    "Arrival: from 'review-audit' on outcome 'reject-impl' — 2 times routed to this station",
-    "Latest round input for you (feedback, verbatim):",
-    "  fix the null deref",
-    "=== END ARRIVAL CONTEXT ===",
-    "",
-    "# dev-mixed — active",
-    "`ms_aaaabbbbccccdddd` · revision 9 · origin work: design",
-    "**At station: build**（iteration 2）· **on duty — you hold this station** · arrived from review-audit on `reject-impl` (#12)",
-    "**Incoming feedback** — fix the null deref",
-    "**Objective** — 全局任务描述（首投已有）",
-    "**Current step** — 通用实现",
-    "**Outcomes → routes**",
-    "- `impl-ready` → review-audit",
-    "- `abandon` — terminal",
-    "**Documents**",
-    "- `impl` · impl.md · write-only",
-  ].join("\n");
-  const slim = slimBrief(brief);
-  assert.ok(!slim.includes("全局任务描述"), "objective body must go");
-  assert.ok(!slim.includes("通用实现"), "current-step summary must go");
-  assert.match(slim, /\*\*Objective\*\* — \(mission objective — first brief/);
-  assert.match(slim, /\*\*Current step\*\* — \(unchanged; see the first brief\)/);
-  assert.match(slim, /ARRIVAL CONTEXT/);
-  assert.match(slim, /fix the null deref/);
-  assert.match(slim, /\*\*At station: build\*\*（iteration 2）/);
-  assert.match(slim, /- `impl-ready` → review-audit/);
-  assert.match(slim, /- `impl` · impl\.md · write-only/);
-});
-
-test("slimBrief fails open when anchors are missing; legacy anchors still slim", () => {
-  const odd = "some future CLI shape\n  no known fields";
-  assert.equal(slimBrief(odd), odd);
-  const legacy = [
-    "[mission ms_aaaabbbbccccdddd] x — active",
-    "  objective: 全局目标",
-    "  current step: s1",
-  ].join("\n");
-  const slim = slimBrief(legacy);
-  assert.match(slim, /objective: \(mission objective — first brief/);
-  assert.match(slim, /current step: \(unchanged; see the first brief\)/);
-});
-
-test("follow-up rounds deliver the slim form; first rounds keep the full brief", async () => {
+test("lifecycle delivery: freshContext rides message.context; absent means no context field", async () => {
   const { dir, cleanup } = tempWorkspace();
   const t3 = new FakeT3();
   const delivery = new Delivery(t3);
-  const STEP = "  current step: 通用实现";
-  const brief1 = `[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${STEP}\n  outcomes: impl-ready, abandon`;
-  const brief2 = `=== ARRIVAL CONTEXT ===\nArrival: from 'review-audit' on outcome 'reject-impl'\n=== END ARRIVAL CONTEXT ===\n\n[mission ms_aaaabbbbccccdddd] dev-mixed — active\n  objective: 全局目标\n${STEP}\n  outcomes: impl-ready, abandon`;
+  const missionId = "ms_aaaabbbbccccdddd";
   try {
-    await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId: "ms_aaaabbbbccccdddd", brief: brief1 });
-    await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId: "ms_aaaabbbbccccdddd", brief: brief2 });
-    const texts = t3.dispatched
-      .filter((command) => command.type === "thread.turn.start")
-      .map((command) => command.message.text);
-    assert.match(texts[0], /通用实现/);
-    assert.match(texts[0], /全局目标/);
-    assert.doesNotMatch(texts[1], /current step: 通用实现/);
-    assert.doesNotMatch(texts[1], /全局目标\n/);
-    assert.match(texts[1], /ARRIVAL CONTEXT/);
-    assert.match(texts[1], /outcomes: impl-ready, abandon/);
-    assert.match(texts[1], /Stable mission context lives in this thread's first brief/);
-    // The tail reminder still rides the follow-up turn.
-    assert.match(texts[1], /<im-system-reminder>/);
+    await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId, brief: "ROUND BRIEF 1", freshContext: "STABLE BLOCK" });
+    await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId, brief: "ROUND BRIEF 2" });
+    const turns = t3.dispatched.filter((command) => command.type === "thread.turn.start");
+    // The stable block travels as context, never inside the text — T3's
+    // reactor decides whether the turn's provider thread is history-less.
+    assert.equal(turns[0].message.context?.freshContext, "STABLE BLOCK");
+    assert.equal(turns[0].message.context?.version, 1);
+    assert.deepEqual(turns[0].message.context?.records, []);
+    assert.ok(!turns[0].message.text.includes("STABLE BLOCK"));
+    assert.match(turns[0].message.text, /ROUND BRIEF 1/);
+    // No stable block supplied → no context field at all (lifecycle off).
+    assert.equal(turns[1].message.context, undefined);
+    // Composition is constant across rounds: head + brief + tail.
+    for (const turn of turns) {
+      assert.match(turn.message.text, /You are the InfiniteMission member \*\*t3-codex\*\*\./);
+      assert.match(turn.message.text, /<im-system-reminder>/);
+      assert.ok(turn.message.text.trimEnd().endsWith("</im-system-reminder>"));
+    }
   } finally {
     cleanup();
   }
 });
 
-test("bridge restart, station change, and failed T3 session force a full snapshot", async () => {
+test("duty turns keep one composition across rounds, restarts, and session state", async () => {
   const { dir, cleanup } = tempWorkspace();
   const t3 = new FakeT3();
   const missionId = "ms_aaaabbbbccccdddd";
-  const full = (station, step) =>
-    `[mission ${missionId}] dev-mixed — active\n  objective: full objective\n  at station: ${station} (iteration 1)\n  current step: ${step}\n  outcomes: done, abandon`;
+  const brief = (station, step) =>
+    `# dev-mixed — active\n\n**At station: ${station}**（iteration 1） · revision 4 · **on duty — you hold this station**\n**Current step** — ${step}`;
   try {
     const firstProcess = new Delivery(t3);
-    await firstProcess.deliver({
-      workspacePath: dir,
-      member: MEMBER,
-      station: "build",
-      missionId,
-      brief: full("build", "build charter"),
-      contextKey: "build:one",
-    });
-    await firstProcess.deliver({
-      workspacePath: dir,
-      member: MEMBER,
-      station: "verify",
-      missionId,
-      brief: full("verify", "verify charter"),
-      contextKey: "verify:two",
-    });
+    await firstProcess.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId, brief: brief("build", "build charter") });
+    await firstProcess.deliver({ workspacePath: dir, member: MEMBER, station: "verify", missionId, brief: brief("verify", "verify charter") });
+    // A bridge restart used to force a full snapshot; with lifecycle delivery
+    // the composition is stateless — T3 owns the fresh/resumed decision.
     const secondProcess = new Delivery(t3);
-    await secondProcess.deliver({
-      workspacePath: dir,
-      member: MEMBER,
-      station: "verify",
-      missionId,
-      brief: full("verify", "restart charter"),
-      contextKey: "verify:two",
-    });
     const thread = t3.threads.get(threadIdFor(MEMBER.id, missionId));
     thread.latestTurn = { state: "error" };
     thread.session = { status: "error" };
-    await secondProcess.deliver({
-      workspacePath: dir,
-      member: MEMBER,
-      station: "verify",
-      missionId,
-      brief: full("verify", "replacement charter"),
-      contextKey: "verify:two",
-    });
+    await secondProcess.deliver({ workspacePath: dir, member: MEMBER, station: "verify", missionId, brief: brief("verify", "restart charter") });
     const texts = t3.dispatched
       .filter((command) => command.type === "thread.turn.start")
       .map((command) => command.message.text);
+    assert.equal(texts.length, 3);
     assert.match(texts[0], /build charter/);
     assert.match(texts[1], /verify charter/);
     assert.match(texts[2], /restart charter/);
-    assert.match(texts[3], /replacement charter/);
-    for (const text of texts) assert.match(text, /full objective/);
+    for (const text of texts) {
+      assert.match(text, /You are the InfiniteMission member \*\*t3-codex\*\*\./);
+      assert.ok(text.trimEnd().endsWith("</im-system-reminder>"));
+    }
   } finally {
     cleanup();
   }

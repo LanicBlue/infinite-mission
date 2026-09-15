@@ -55,6 +55,15 @@ export function validateConfig(raw) {
     add("turnErrorReopenMax", "must be an integer >= 1");
   }
 
+  // Lifecycle delivery (design: docs/lifecycle-delivery-design.md): send the
+  // per-round brief as text plus the stable block as message freshContext —
+  // T3 prepends it only on provider threads without history. Off = the
+  // everything-once full brief rides every round (pre-lifecycle behavior).
+  const lifecycleDelivery = raw.lifecycleDelivery ?? false;
+  if (typeof lifecycleDelivery !== "boolean") {
+    add("lifecycleDelivery", "must be a boolean");
+  }
+
   const t3raw = raw.t3 ?? {};
   if (t3raw === null || typeof t3raw !== "object" || Array.isArray(t3raw)) {
     add("t3", "must be an object");
@@ -145,7 +154,7 @@ export function validateConfig(raw) {
 
   return {
     ok: true,
-    config: { imBin, receiveTimeoutSec, rescanSec, maxDeliverAttempts, turnErrorReopen, turnErrorReopenMax, t3, workspaces, members },
+    config: { imBin, receiveTimeoutSec, rescanSec, maxDeliverAttempts, turnErrorReopen, turnErrorReopenMax, lifecycleDelivery, t3, workspaces, members },
   };
 }
 

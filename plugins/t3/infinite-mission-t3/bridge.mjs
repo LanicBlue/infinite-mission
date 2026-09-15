@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { readConfigFile, readT3ImMembers, defaultConfigPath } from "./lib/config.mjs";
 import { ProcessImRunner } from "./lib/im-cli.mjs";
 import { HttpT3Client } from "./lib/t3-client.mjs";
-import { Delivery, arrivalHeader, briefFromRunView } from "./lib/delivery.mjs";
+import { Delivery, arrivalHeader, briefFromRunView, roundBriefFromView, freshContextFromView } from "./lib/delivery.mjs";
 import { parseReceiveOutput } from "./lib/notes.mjs";
 import { sleep } from "./lib/spawn.mjs";
 
@@ -405,6 +405,10 @@ export class Bridge {
     // Current cores own the complete assignment semantics and expose one
     // structured snapshot. The bridge only renders/delivers it. Older cores
     // keep the result/events probes strictly as a compatibility fallback.
+    // Lifecycle delivery (config flag): duty rounds carry the per-round brief
+    // as text and the stable block as message freshContext, which T3 prepends
+    // only on history-less provider threads (docs/lifecycle-delivery-design.md).
+    // Ended/result deliveries stay everything-once full.
     const coreBrief = show.view ? briefFromRunView(show.view) : show.text;
     let ended = show.view?.status === "ended";
     let result = null;
@@ -436,14 +440,23 @@ export class Bridge {
         events !== null && /^#\d+\s.*mission\.ended$/m.test(String(events.text));
     }
     if (!ended) {
-      if (show.view) return { brief: coreBrief, ended: false };
+      if (show.view) {
+        if (this.config.lifecycleDelivery === true) {
+          return {
+            brief: roundBriefFromView(show.view),
+            freshContext: freshContextFromView(show.view),
+            ended: false,
+          };
+        }
+        return { brief: coreBrief, freshContext: null, ended: false };
+      }
       // Legacy-only fallback: old cores had no structured arrival field.
       const header = arrivalHeader({
         station,
         hop,
         eventsText: events && events.ok ? events.text : null,
       });
-      return { brief: header ? `${header}\n${coreBrief}` : coreBrief, ended: false };
+      return { brief: header ? `${header}\n${coreBrief}` : coreBrief, freshContext: null, ended: false };
     }
 
     // mission_result work notes intentionally share the stable arrival-note
@@ -499,7 +512,7 @@ export class Bridge {
         this.log(tag, `stale arrival dropped: ${missionId}@${station} (mission show failed)`);
         return;
       }
-      const { brief, ended } = await this.#deliveryBrief(workspace, missionId, show, station, hop);
+      const { brief, freshContext, ended } = await this.#deliveryBrief(workspace, missionId, show, station, hop);
       try {
         const threadId = await this.delivery.deliver({
           workspacePath: workspace,
@@ -507,10 +520,8 @@ export class Bridge {
           station,
           missionId,
           brief,
+          freshContext,
           ended,
-          contextKey: show.view
-            ? `${show.view.at ?? "ended"}:${show.view.stationCharterSha256 ?? "none"}`
-            : station,
         });
         this.log(tag, `delivered ${missionId}@${station} → T3 thread ${threadId}`);
         if (ended) {
@@ -800,17 +811,15 @@ export class Bridge {
           this.log(this.tag(item.workspace, item.memberId), `retry dropped: ${item.missionId} no longer shows`);
           continue;
         }
-        const { brief, ended } = await this.#deliveryBrief(item.workspace, item.missionId, show, item.station);
+        const { brief, freshContext, ended } = await this.#deliveryBrief(item.workspace, item.missionId, show, item.station);
         const threadId = await this.delivery.deliver({
           workspacePath: item.workspace,
           member,
           station: item.station,
           missionId: item.missionId,
           brief,
+          freshContext,
           ended,
-          contextKey: show.view
-            ? `${show.view.at ?? "ended"}:${show.view.stationCharterSha256 ?? "none"}`
-            : item.station,
         });
         this.log(this.tag(item.workspace, item.memberId), `retry delivered ${item.missionId}@${item.station} → ${threadId}`);
         if (ended) {

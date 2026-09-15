@@ -49,25 +49,20 @@ export function modelSelectionOf(member) {
  * in the snapshot/core. Markdown: the delivered turn is read by LLM agents,
  * where semantic lines (bold field labels, backticked ids/commands, one
  * bullet per outcome/document) beat terminal indented fields and 78-col
- * wrapping — and outcomes with their routes are one list, not two. */
-export function briefFromRunView(view) {
-  const lines = [`# ${view.name} — ${view.status}`];
-  const meta = [`\`${view.missionId}\``, `revision ${view.revision}`];
-  if (view.originWork) meta.push(`origin work: ${view.originWork}`);
-  if (Array.isArray(view.memberStations) && view.memberStations.length > 0) {
-    meta.push(`member stations: ${view.memberStations.join(", ")}`);
-  }
-  if (view.parent) {
-    meta.push(
-      `parent \`${view.parent.missionId}\` (round revision ${view.parent.revision}, requested by ${view.parent.requestedByWork})`,
-    );
-  }
-  lines.push(meta.join(" · "));
-
+ * wrapping — and outcomes with their routes are one list, not two.
+ *
+ * Split per the lifecycle delivery design: `roundBriefFromView` is the
+ * per-round block (every-round facts), `freshContextFromView` carries the
+ * stable identity facts (mission meta minus revision, objective) that ride
+ * only turns starting a history-less provider thread, and
+ * `briefFromRunView` keeps rendering the everything-once full form. */
+function missionBodyLines(view, { objective }) {
+  const lines = [];
   const arrival = view.arrival ?? null;
   if (view.at) {
     const station = [
       `**At station: ${view.at}**（iteration ${view.iteration ?? 1}）`,
+      `revision ${view.revision}`,
       view.onDuty ? "**on duty — you hold this station**" : "not on duty",
     ];
     if (arrival?.kind === "route") {
@@ -90,7 +85,7 @@ export function briefFromRunView(view) {
   }
   if (arrival?.feedback) lines.push(`**Incoming feedback** — ${arrival.feedback}`);
   else if (arrival?.reason) lines.push(`**Incoming reason** — ${arrival.reason}`);
-  if (view.objective) lines.push(`**Objective** — ${view.objective}`);
+  if (objective && view.objective) lines.push(`**Objective** — ${view.objective}`);
   if (view.currentStep) lines.push(`**Current step** — ${view.currentStep}`);
   if (view.stationCharterSha256 && view.at) {
     lines.push(
@@ -152,6 +147,44 @@ export function briefFromRunView(view) {
       lines.push(`- ${parts.join(" · ")}`);
     }
   }
+  return lines;
+}
+
+function metaLine(view) {
+  const meta = [`\`${view.missionId}\``];
+  if (view.originWork) meta.push(`origin work: ${view.originWork}`);
+  if (Array.isArray(view.memberStations) && view.memberStations.length > 0) {
+    meta.push(`member stations: ${view.memberStations.join(", ")}`);
+  }
+  if (view.parent) {
+    meta.push(
+      `parent \`${view.parent.missionId}\` (round revision ${view.parent.revision}, requested by ${view.parent.requestedByWork})`,
+    );
+  }
+  return meta.join(" · ");
+}
+
+/** The everything-once brief: what a history-less provider thread receives
+ * (as text) when lifecycle delivery is disabled, and the reference shape the
+ * round + freshContext split decomposes. Revision rides the station line. */
+export function briefFromRunView(view) {
+  return [`# ${view.name} — ${view.status}`, metaLine(view), ...missionBodyLines(view, { objective: true })].join("\n");
+}
+
+/** The per-round block: every-round facts only. Stable identity facts
+ * (mission meta, objective) travel in freshContextFromView instead. */
+export function roundBriefFromView(view) {
+  return [`# ${view.name} — ${view.status}`, ...missionBodyLines(view, { objective: false })].join("\n");
+}
+
+/** Stable context prepended (by T3's reactor) only when the turn starts a
+ * provider thread with no conversation history. Empty string when the view
+ * has neither meta facts beyond the mission id nor an objective. */
+export function freshContextFromView(view) {
+  const lines = [];
+  const meta = metaLine(view);
+  if (meta !== `\`${view.missionId}\``) lines.push(meta);
+  if (view.objective) lines.push(`**Objective** — ${view.objective}`);
   return lines.join("\n");
 }
 
@@ -212,69 +245,6 @@ function eventBlocks(eventsText) {
  * an empty header is better than a guessed one.
  */
 
-/**
- * The follow-up preamble: the thread already carries member identity and the
- * stable mission context from the first brief, and the tail reminder below
- * restates the submit/abandon menu every round — so a repeat of the full
- * preamble is banner noise. Two lines: identity + where the protocol lives.
- */
-export function slimPreamble(member, workspace, missionId) {
-  const memberId = typeof member === "string" ? member : member.id;
-  return [
-    `You are the InfiniteMission member \`${memberId}\` in workspace \`${workspace}\`, on mission \`${missionId}\`.`,
-    `Stable mission context lives in this thread's first brief; the brief below is the current round. Read the station charter with \`im work show\` when its hash is listed.`,
-  ].join("\n");
-}
-
-/**
- * Slim a duty brief for a follow-up round on an existing thread: drop the
- * stable Objective and Current step lines (they are in the first brief and
- * re-readable via `im mission show`) and leave a one-line pointer. The
- * round-deciding parts — arrival context, station/iteration, outcome
- * vocabulary, routes, documents — stay verbatim. Anchors cover the current
- * markdown renderer and the legacy indented-field shapes; if neither is
- * found the original brief is returned untouched (repetition is safe, a
- * mangled brief is not).
- */
-export function slimBrief(brief) {
-  const lines = String(brief).split("\n");
-  const replaceLine = (marker, pointer) => {
-    const index = lines.findIndex((line) => line.startsWith(marker));
-    if (index < 0) return false;
-    lines[index] = pointer;
-    return true;
-  };
-  const mdObjective = replaceLine(
-    "**Objective** — ",
-    "**Objective** — (mission objective — first brief / `im mission show`)",
-  );
-  const mdStep = replaceLine(
-    "**Current step** — ",
-    "**Current step** — (unchanged; see the first brief)",
-  );
-  if (mdObjective || mdStep) return lines.join("\n");
-  const drop = (startMarker) => {
-    const start = lines.findIndex((line) => line.startsWith(startMarker));
-    if (start < 0) return null;
-    let end = start + 1;
-    while (end < lines.length && !/^  \S/.test(lines[end])) end += 1;
-    return [start, end];
-  };
-  const stepRange = drop("  current step: ");
-  const objectiveRange = drop("  objective: ");
-  if (stepRange === null || objectiveRange === null) return String(brief);
-  const objectivePointer = "  objective: (mission objective — first brief / `im mission show`)";
-  const stepPointer = "  current step: (unchanged; see the first brief)";
-  // Replace from the later range first so earlier indices stay valid.
-  for (const [start, end, pointer] of [
-    [objectiveRange[0], objectiveRange[1], objectivePointer],
-    [stepRange[0], stepRange[1], stepPointer],
-  ].sort((a, b) => b[0] - a[0])) {
-    lines.splice(start, end - start, pointer);
-  }
-  return lines.join("\n");
-}
-
 export function arrivalHeader({ station, hop, eventsText }) {
   const lines = [];
   const blocks = eventsText ? eventBlocks(eventsText) : [];
@@ -325,15 +295,16 @@ export function arrivalHeader({ station, hop, eventsText }) {
  * join/receive ban — lives in the tail reminder that rides every turn on
  * recency; saying it here too as well was banner noise.
  */
-export function dutyPreamble(member, workspace, missionId) {
+export function dutyPreamble(member, missionId) {
   // Accepts the member object (preferred — carries the display name) or a
   // bare id (tests, legacy callers). missionId is pre-bound so the pointer
-  // stays copy-pasteable — placeholders invite placeholder submissions.
+  // stays copy-pasteable — placeholders invite placeholder submissions. No
+  // workspace: the T3 session already runs there (its cwd carries it).
   const memberId = typeof member === "string" ? member : member.id;
   const displayName = typeof member === "string" ? "" : (member.displayName?.trim() ?? "");
   const identity = displayName ? `**${memberId}**（${displayName}）` : `**${memberId}**`;
   return [
-    `You are the InfiniteMission member ${identity} in workspace \`${workspace}\`. A mission brief follows — do the work it asks for in this workspace, then close your round; the reminder after the brief owns the rules for replying.`,
+    `You are the InfiniteMission member ${identity}. A mission brief follows — do the work it asks for, then close your round; the reminder after the brief owns the rules for replying.`,
     ``,
     `Re-read: \`im mission show ${missionId} --for ${memberId}\` · Documents & full flags: \`im help\``,
     ``,
@@ -389,9 +360,9 @@ export function resultTailReminder(memberId, missionId) {
  * the durable result. Deliberately contains no submit instruction; the brief
  * below the line carries the durable result JSON.
  */
-export function resultPreamble(memberId, workspace) {
+export function resultPreamble(memberId) {
   return [
-    `You are the InfiniteMission member "${memberId}" in workspace ${workspace}.`,
+    `You are the InfiniteMission member \`${memberId}\`.`,
     `A mission you originated has ENDED and its result is addressed to you below the line.`,
     `This is a read-only delivery: do NOT run im mission submit, im mission abandon, or`,
     `im mission cancel for this mission — it is closed and every such command will fail.`,
@@ -399,7 +370,7 @@ export function resultPreamble(memberId, workspace) {
     `user in your own words.`,
     ``,
     `Never run "im join" or "im receive" — the bridge owns the member identity and`,
-    `the listening loop. Run im commands from the workspace root (your current project).`,
+    `the listening loop.`,
     ``,
     `----- mission result -----`,
   ].join("\n");
@@ -408,10 +379,6 @@ export function resultPreamble(memberId, workspace) {
 export class Delivery {
   constructor(t3) {
     this.t3 = t3;
-    // Consumer-local delivery memory. Absence (including a bridge restart)
-    // deliberately forces one full IM snapshot; it never becomes mission
-    // authority and is safe to lose.
-    this.contextByThread = new Map();
   }
 
   #sameRoot(a, b) {
@@ -523,7 +490,10 @@ export class Delivery {
    * One mission arrival → one T3 thread turn (creating the thread and its
    * project on first arrival). Returns the thread id used. `ended` marks a
    * returned Work-origin result: the brief is read-only, so the turn carries
-   * the result preamble instead of the submit-duty one.
+   * the result preamble instead of the submit-duty one. `freshContext` (the
+   * lifecycle-delivery stable block) rides message.context: T3's provider
+   * command reactor prepends it only when the turn starts a provider thread
+   * with no conversation history — the bridge never guesses session state.
    */
   async deliver({
     workspacePath,
@@ -531,8 +501,8 @@ export class Delivery {
     station,
     missionId,
     brief,
+    freshContext = null,
     ended = false,
-    contextKey = station,
   }) {
     // One shell fetch serves both the project lookup and the prefix search
     // in #resolveTarget (the fallback path for deleted deterministic ids).
@@ -550,16 +520,7 @@ export class Delivery {
       });
     }
 
-    const previousContext = this.contextByThread.get(target.threadId);
-    const sessionStatus = target.thread?.session?.status ?? null;
-    const fullSnapshot =
-      target.mode === "create" ||
-      target.thread?.latestTurn === null ||
-      previousContext === undefined ||
-      previousContext !== contextKey ||
-      sessionStatus === "error" ||
-      sessionStatus === "stopped";
-
+    const memberId = typeof member === "string" ? member : member.id;
     await this.t3.dispatch({
       type: "thread.turn.start",
       commandId: randomUUID(),
@@ -568,15 +529,11 @@ export class Delivery {
         messageId: randomUUID(),
         role: "user",
         text: ended
-          ? `${resultPreamble(member.id, workspacePath)}\n${brief}${resultTailReminder(member.id, missionId)}`
-          : fullSnapshot
-            ? `${dutyPreamble(member, workspacePath, missionId)}\n${brief}${dutyTailReminder(member.id, missionId)}`
-            // Follow-up round on an existing thread: the stable preamble,
-            // objective, and charter already live in this thread's first
-            // brief — restating them every round is banner noise. The tail
-            // reminder still rides every turn (recency), and the slim
-            // pointers keep the re-read path explicit.
-            : `${slimPreamble(member.id, workspacePath, missionId)}\n${slimBrief(brief)}${dutyTailReminder(member.id, missionId)}`,
+          ? `${resultPreamble(memberId)}\n${brief}${resultTailReminder(memberId, missionId)}`
+          : `${dutyPreamble(member, missionId)}\n${brief}${dutyTailReminder(memberId, missionId)}`,
+        ...(freshContext && !ended
+          ? { context: { version: 1, records: [], freshContext } }
+          : {}),
         attachments: [],
       },
       // Each turn restates the member's selection, so the runtime identity
@@ -586,7 +543,6 @@ export class Delivery {
       interactionMode: "default",
       createdAt: new Date().toISOString(),
     });
-    if (!ended) this.contextByThread.set(target.threadId, contextKey);
     return target.threadId;
   }
 
