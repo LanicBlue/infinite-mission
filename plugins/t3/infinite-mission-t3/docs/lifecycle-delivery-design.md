@@ -1,6 +1,6 @@
 # Lifecycle Delivery Design — IM 恒投两块，T3 按会话生命周期拼装
 
-状态：**已实现并上线（2026-09-15）**。t3code-expanded `6d0d3eeec`（contracts `OrchestrationMessageContext.freshContext` + reactor `ensureSessionForThread` 返回 fresh 标志并在 fresh 轮拼前 + persona 改由 freshContext 携带）；桥 `3ed4d78`（`roundBriefFromView`/`freshContextFromView` 拆分、`lifecycleDelivery` 开关、fullSnapshot/slim 机制退役）。部署：T3 17:44 重建重启，桥 17:44 开关开启重启。实测：resumed 轮 text 2483 字符，fresh 全消息 3309（freshContext 824 = persona 326 + 稳定块 498）。设计裁决与机制细节见下文，作为 as-built 保留。
+状态：**已实现并上线（2026-09-15）**。t3code-expanded `6d0d3eeec`（contracts `OrchestrationMessageContext.freshContext` + reactor `ensureSessionForThread` 返回 fresh 标志并在 fresh 轮拼前 + persona 改由 freshContext 携带）；桥 `3ed4d78`（`roundBriefFromView`/`freshContextFromView` 拆分、`lifecycleDelivery` 开关、fullSnapshot/slim 机制退役）。部署：T3 17:44 重建重启，桥 17:44 开关开启重启。实测：resumed 轮 text 2483 字符，fresh 全消息 3309（freshContext 824 = persona 326 + 稳定块 498）。**09-16 修正（t3code 后续提交）**：settled 会话轮间重拉被误判 fresh（无 cursor 即 fresh 的假设与 provider 按 thread 持久化 transcript 的事实不符），谓词改为「线程从未有 session / 换 model 弃历史才算 fresh」，见第 4 节。设计裁决与机制细节见下文，作为 as-built 保留。
 
 ## 1. 背景与证据
 
@@ -60,13 +60,14 @@ Re-read: `im mission show ms_f7df121cfe17b9b0e94a5e87f6746ba0 --for t3-superviso
 
 ## 4. T3 判定谓词（fresh ⇔ 拼 freshContext + 注入 persona）
 
-fresh 当且仅当本回合的 provider 会话**既非存量活会话复用、也非携带可用 resumeCursor 的重启**：
+fresh 当且仅当本回合的 provider 会话**开启一段全新对话**——即线程从未跑过会话，或显式弃历史的换 model 重启：
 
 - 活会话复用（同 provider/instance，含历史）→ resumed；
 - 重启但带同 provider 的 resumeCursor（历史随 resume 回来）→ resumed；
-- 真·新开（无 cursor）→ fresh；
-- **provider/instance 切换 → fresh**（跨 provider 的 cursor 无意义，历史不迁移）；
-- 同 provider 内换 model 的重启（现行走保留 cursor 的路径）→ resumed。
+- **settled/stopped 会话的轮间重拉 → resumed**（09-16 修正：providers 按 thread 持久化 transcript——codex rollout、zcode session——无 cursor 重启照样续历史；原「无 cursor 即 fresh」会在每轮重拉时全量重注入，实测 ms_3550251b 第 2 轮 2441 字节 persona+稳定块重发）；
+- 活会话的无 cursor 重启（配置变更类）→ resumed（transcript 按线程续）；
+- 真·新开（线程从未有 session）→ fresh；
+- **换 model 重启（显式弃 cursor/历史）→ fresh**；跨 provider/instance 切换由 continuationKey 相容性把关（不相容直接拒绝，见 860 分支护栏）。
 
 判定位置与 `ensureSessionForThread` 同源（那里才有真相）。**时序差自愈**：投递时判 resumed、实际 resume RPC 失败 → turn error → 桥 reopen → 删线程重投 = 新线程 → fresh 全量。不存在「真空上下文收到裁剪块」的持久状态。
 
