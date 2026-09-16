@@ -1,6 +1,6 @@
 # Lifecycle Delivery Design — IM 恒投两块，T3 按会话生命周期拼装
 
-状态：**已实现并上线（2026-09-15）**。t3code-expanded `6d0d3eeec`（contracts `OrchestrationMessageContext.freshContext` + reactor `ensureSessionForThread` 返回 fresh 标志并在 fresh 轮拼前 + persona 改由 freshContext 携带）；桥 `3ed4d78`（`roundBriefFromView`/`freshContextFromView` 拆分、`lifecycleDelivery` 开关、fullSnapshot/slim 机制退役）。部署：T3 17:44 重建重启，桥 17:44 开关开启重启。实测：resumed 轮 text 2483 字符，fresh 全消息 3309（freshContext 824 = persona 326 + 稳定块 498）。**09-16 修正（t3code 后续提交）**：settled 会话轮间重拉被误判 fresh（无 cursor 即 fresh 的假设与 provider 按 thread 持久化 transcript 的事实不符），谓词改为「线程从未有 session / 换 model 弃历史才算 fresh」，见第 4 节。设计裁决与机制细节见下文，作为 as-built 保留。
+状态：**已实现并上线（2026-09-15）**。t3code-expanded `6d0d3eeec`（contracts `OrchestrationMessageContext.freshContext` + reactor `ensureSessionForThread` 返回 fresh 标志并在 fresh 轮拼前 + persona 改由 freshContext 携带）；桥 `3ed4d78`（`roundBriefFromView`/`freshContextFromView` 拆分、`lifecycleDelivery` 开关、fullSnapshot/slim 机制退役）。部署：T3 17:44 重建重启，桥 17:44 开关开启重启。实测：resumed 轮 text 2483 字符，fresh 全消息 3309（freshContext 824 = persona 326 + 稳定块 498）。**09-16 修正一（谓词）**：settled 会话轮间重拉被误判 fresh（无 cursor 即 fresh 的假设与 provider 按 thread 持久化 transcript 的事实不符），谓词改为「线程从未有 session / 换 model 弃历史才算 fresh」。**09-16 修正二（用户裁决：不拆、一次成型）**：fresh/round 不再两形态分流——组合点从 provider 发送层上移到 **dispatch 缝**（`imBridgePersona` 模块）：桥线程首轮（T3 自有事实=线程无既往 turn，不问 provider）把 persona+freshContext 直接 fold 进 message.text 成单条完整输入，context 字段消费即剥；后续轮 round 文本原样透传。stored message=UI 显示=provider 输入三者同字节，reactor 的 prepend 与 fresh 标志全部移除，UI 无需任何改动即同步。设计裁决与机制细节见下文（第 4 节按修正二口径改写），作为 as-built 保留。
 
 ## 1. 背景与证据
 
@@ -58,18 +58,17 @@ Re-read: `im mission show ms_f7df121cfe17b9b0e94a5e87f6746ba0 --for t3-superviso
 ---
 ```
 
-## 4. T3 判定谓词（fresh ⇔ 拼 freshContext + 注入 persona）
+## 4. T3 判定谓词（09-16 修正二：dispatch 缝一次成型）
 
-fresh 当且仅当本回合的 provider 会话**开启一段全新对话**——即线程从未跑过会话，或显式弃历史的换 model 重启：
+**fold 触发条件**（T3 自有事实，不问 provider）：桥线程本回合是**线程的首个 turn**（shell 快照查不到该线程或 `latestTurn === null`；快照读不出时偏向按首轮处理——首轮冗余好过静默丢稳定块）。
 
-- 活会话复用（同 provider/instance，含历史）→ resumed；
-- 重启但带同 provider 的 resumeCursor（历史随 resume 回来）→ resumed；
-- **settled/stopped 会话的轮间重拉 → resumed**（09-16 修正：providers 按 thread 持久化 transcript——codex rollout、zcode session——无 cursor 重启照样续历史；原「无 cursor 即 fresh」会在每轮重拉时全量重注入，实测 ms_3550251b 第 2 轮 2441 字节 persona+稳定块重发）；
-- 活会话的无 cursor 重启（配置变更类）→ resumed（transcript 按线程续）；
-- 真·新开（线程从未有 session）→ fresh；
-- **换 model 重启（显式弃 cursor/历史）→ fresh**；跨 provider/instance 切换由 continuationKey 相容性把关（不相容直接拒绝，见 860 分支护栏）。
+- 首轮 → `message.text = persona（若有）+ "\n\n" + freshContext（若有）+ "\n\n" + 原 text`，context 的 freshContext **消费即剥**（后续任何路径不会再拼）；
+- 后续轮（线程已有 turn）→ round 文本原样透传，freshContext 同样剥除；
+- 换 model 重启等 provider 侧变化**不影响判定**——线程有历史就是续轮（用户裁决：不要求判断 provider 事实）。
 
-判定位置与 `ensureSessionForThread` 同源（那里才有真相）。**时序差自愈**：投递时判 resumed、实际 resume RPC 失败 → turn error → 桥 reopen → 删线程重投 = 新线程 → fresh 全量。不存在「真空上下文收到裁剪块」的持久状态。
+组合点=**dispatch 缝**（ws/http 的 `dispatchWithImBridgePersona` 包裹层，命令持久化之前），纯函数、重试不叠加、settings 读失败 fail-closed 供桥重试。**stored message = T3 UI 显示 = provider 输入，三者同字节**；reactor 的 prepend 逻辑与 fresh 标志已全部移除（单一成型点）。桥侧投递形状不变：恒发 text（round 形态）+ context.freshContext（稳定块）。
+
+时序差自愈：若首轮投递后 turn 出错 → 桥 reopen → 删线程重投 = 新线程 = 又是首轮 → 全量。不存在「真空上下文收到裁剪块」的持久状态；也不存在「UI 看到的与模型收到的不同」的裂缝。
 
 persona 门变更：`firstTurnForBridgeThread` 现行判据（session 空或 stopped/error ⇒ fresh）替换为与上述谓词同源的单一人入口；persona 与 freshContext 用**同一个**判定，不各判各的。
 

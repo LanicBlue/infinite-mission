@@ -491,9 +491,10 @@ export class Delivery {
    * project on first arrival). Returns the thread id used. `ended` marks a
    * returned Work-origin result: the brief is read-only, so the turn carries
    * the result preamble instead of the submit-duty one. `freshContext` (the
-   * lifecycle-delivery stable block) rides message.context: T3's provider
-   * command reactor prepends it only when the turn starts a provider thread
-   * with no conversation history — the bridge never guesses session state.
+   * lifecycle-delivery stable block) rides message.context; T3's dispatch
+   * seam folds it (plus the member persona) into the message text when the
+   * thread has no prior turns — one complete input, stored and displayed as
+   * sent. The bridge never guesses conversation state.
    */
   async deliver({
     workspacePath,
