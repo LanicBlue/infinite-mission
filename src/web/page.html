@@ -97,6 +97,13 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .card h3 { margin: 0 0 2px; font-size: 15px; }
 .card .objective { color: var(--ink-muted); margin: 4px 0 10px; font-size: 13px; }
 .card-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mission-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mission-head h3 { margin: 0; flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.mission-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; }
+.mission-meta .chip { font-size: 11.5px; padding: 0 8px; border-color: transparent; background: color-mix(in srgb, var(--ink-faint) 7%, transparent); color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.mission-card .objective { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 10px 0 2px; }
+.mission-card.open .objective { display: block; overflow: visible; }
+.mission-card.ended { opacity: .7; }
 .actions-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 
 .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; border-radius: 99px; padding: 1px 9px; border: 1px solid var(--border); color: var(--ink-muted); background: var(--bg); }
@@ -635,19 +642,26 @@ function missionsPane() {
 	return header + list.map(m => {
 		const open = expanded.has(m.mission_id);
 		const evs = open ? eventsOf(m.mission_id) : [];
-		return `<article class="card" style="${m.status!=="active" ? "opacity:.68" : ""}">
-			<div class="card-row">
-				<h3 style="margin:0">${esc(m.name || m.mission_id.slice(0,14))}</h3>
+		const timers = m.status === "active"
+			? `<span class="chip">运行 <span data-dur="${m.created_at}">${dur(m.created_at)}</span></span>${m.round_started_at ? `<span class="chip">本轮 <span data-dur="${m.round_started_at}">${dur(m.round_started_at)}</span></span>` : ""}`
+			: `<span class="chip">历时 ${dur(m.created_at, m.ended_at)}</span>`;
+		return `<article class="card mission-card${m.status!=="active" ? " ended" : ""}${open ? " open" : ""}">
+			<div class="mission-head">
+				<h3>${esc(m.name || m.mission_id.slice(0,14))}</h3>
 				${m.status === "active"
-					? `<span class="chip accent">在 ${esc(m.at)}</span><span class="chip">revision ${m.revision}</span><span class="chip">运行 <span data-dur="${m.created_at}">${dur(m.created_at)}</span></span>${m.round_started_at ? `<span class="chip">本轮 <span data-dur="${m.round_started_at}">${dur(m.round_started_at)}</span></span>` : ""}`
-					: `<span class="chip ok">已终结 · ${esc(m.ended_disposition || "?")}</span><span class="chip">历时 ${dur(m.created_at, m.ended_at)}</span>`}
-				${m.origin_work ? `<span class="chip user">来自 ${esc(m.origin_work)}</span>` : `<span class="chip">旧任务 · Agent 发布</span>`}
-				<span class="chip mono">${esc(m.mission_id.slice(0,15))}…</span>
+					? `<span class="chip accent">在 ${esc(m.at)}</span>`
+					: `<span class="chip ok">已终结 · ${esc(m.ended_disposition || "?")}</span>`}
 				<span class="spacer"></span>
 				${m.status === "active" ? `<button class="btn small danger" data-act="end" data-mission="${esc(m.mission_id)}">强制结束</button>` : ""}
 				<button class="btn small" data-act="toggle" data-mission="${esc(m.mission_id)}">${open ? "收起轨迹" : "投递轨迹"}</button>
 			</div>
-			${m.objective ? `<p class="objective">${esc(m.objective)}</p>` : ""}
+			<div class="mission-meta">
+				<span class="chip">revision ${m.revision}</span>
+				${timers}
+				${m.origin_work ? `<span class="chip">来自 ${esc(m.origin_work)}</span>` : `<span class="chip">旧任务 · Agent 发布</span>`}
+				<span class="chip mono">${esc(m.mission_id.slice(0,15))}…</span>
+			</div>
+			${m.objective ? `<p class="objective" title="${esc(m.objective)}">${esc(m.objective)}</p>` : ""}
 			${open ? `<ol class="timeline">${evs.map(e => `<li class="${e.type.replace("mission.","")}"><span class="t mono">#${e.seq} ${new Date(e.created_at*1000).toLocaleTimeString("zh-CN",{hour12:false})}</span>${esc(eventSummary(e))}</li>`).join("") || `<li>（无事件）</li>`}</ol>` : ""}
 		</article>`;
 	}).join("");
