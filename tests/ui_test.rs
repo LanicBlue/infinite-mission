@@ -171,10 +171,24 @@ fn state_json_exposes_the_console_data_contract() {
     assert_eq!(missions[0]["at"].as_str().unwrap(), "approve");
     assert!(missions[0]["revision"].as_i64().unwrap() >= 2);
     assert_eq!(missions[0]["origin_work"].as_str().unwrap(), "approve");
+    // Running clocks: the current-round anchor (latest routed event) feeds
+    // the "本轮" timer; ended_at stays null while the mission is active.
+    assert!(missions[0]["created_at"].as_i64().unwrap() > 0);
+    assert!(
+        missions[0]["round_started_at"].as_i64().unwrap() > 0,
+        "active mission must carry its round anchor: {}",
+        missions[0]
+    );
+    assert!(missions[0]["ended_at"].is_null());
     let inbox = state["inbox"].as_array().unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0]["mission_id"].as_str().unwrap(), mission_id);
     assert_eq!(inbox[0]["origin_work"].as_str().unwrap(), "approve");
+    assert!(
+        inbox[0]["created_at"].as_i64().unwrap() > 0,
+        "inbox row carries the mission clock: {}",
+        inbox[0]
+    );
     assert!(
         inbox[0]["reason"].as_str().unwrap().contains("sign-off"),
         "inbox row lost the reason: {}",

@@ -131,16 +131,32 @@ pub fn state_json(
         })
         .collect();
 
+    // Current-round anchor (latest routed event per mission) — feeds the
+    // console's per-round running clock. One grouped query, not N+1.
+    let round_started: std::collections::HashMap<String, i64> = {
+        let mut stmt = store.conn.prepare(
+            "SELECT mission_id, MAX(created_at) FROM mission_events
+                 WHERE type = 'mission.routed' GROUP BY mission_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().collect()
+    };
+
     let missions: Vec<Value> = store
         .conn
         .prepare(
             "SELECT mission_id, name, objective, at, status, revision,
-                    ended_disposition, created_at, created_by, origin_work
+                    ended_disposition, created_at, created_by, origin_work, ended_at
              FROM missions ORDER BY created_at DESC",
         )?
         .query_map([], |row| {
+            let mission_id: String = row.get(0)?;
             Ok(json!({
-                "mission_id": row.get::<_, String>(0)?,
+                "mission_id": mission_id,
                 "name": row.get::<_, String>(1)?,
                 "objective": row.get::<_, String>(2)?,
                 "at": row.get::<_, Option<String>>(3)?,
@@ -150,6 +166,8 @@ pub fn state_json(
                 "created_at": row.get::<_, i64>(7)?,
                 "created_by": row.get::<_, String>(8)?,
                 "origin_work": row.get::<_, Option<String>>(9)?,
+                "ended_at": row.get::<_, Option<i64>>(10)?,
+                "round_started_at": round_started.get(&mission_id).copied(),
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -377,6 +395,7 @@ pub fn state_json(
             "origin_work": mission.origin_work,
             "name": mission.name,
             "objective": mission.objective,
+            "created_at": mission.created_at,
             "reason": reason,
             "arrived_at": arrived_at,
             "revision": mission.revision,
