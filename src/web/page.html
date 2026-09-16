@@ -368,7 +368,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal()
 
 /* ---------------- state derivation ---------------- */
 const liveWorks = () => state.works || [];
-const eventsOf = mid => (state.events || []).filter(e => e.mission_id === mid).sort((a,b) => a.seq - b.seq);
+	const eventsOf = mid => (state.events || []).filter(e => e.mission_id === mid).sort((a,b) => b.seq - a.seq);
 
 function eventSummary(ev) {
 	let p = {}; try { p = JSON.parse(ev.payload); } catch {}
@@ -437,7 +437,7 @@ function inboxPane() {
 		const rounds = i.rounds || [];
 		const open = trailsOpen.has(i.mission_id);
 		const trail = !rounds.length ? `<div class="reason"><span class="k">过程轨迹</span>（首轮即达，无历史轮次）</div>`
-			: `<div class="reason trail-box"><button class="trail-toggle" data-act="trail-toggle" data-mission="${esc(i.mission_id)}" aria-expanded="${open}"><span class="chev">${open ? "▾" : "▸"}</span>过程轨迹 · ${rounds.length} 轮（谁在哪个工位交了什么、说了什么）</button>${open ? `<ol class="timeline inbox-trail">${rounds.map(r => `<li class="round"><span class="t mono">${esc(r.work || "?")} · 第${r.iteration || 1}轮</span>${esc((r.by || "?") + " 交 " + (r.outcome || "?"))}${r.reason ? `<div class="side-note">理由：${esc(r.reason)}</div>` : ""}${r.feedback ? `<div class="side-note">反馈：${esc(r.feedback)}</div>` : ""}${r.receipts ? `<div class="side-note">${r.receipts} 份文档回执</div>` : ""}</li>`).join("")}</ol>` : ""}</div>`;
+			: `<div class="reason trail-box"><button class="trail-toggle" data-act="trail-toggle" data-mission="${esc(i.mission_id)}" aria-expanded="${open}"><span class="chev">${open ? "▾" : "▸"}</span>过程轨迹 · ${rounds.length} 轮（谁在哪个工位交了什么、说了什么）</button>${open ? `<ol class="timeline inbox-trail">${rounds.slice().reverse().map(r => `<li class="round"><span class="t mono">${esc(r.work || "?")} · 第${r.iteration || 1}轮</span>${esc((r.by || "?") + " 交 " + (r.outcome || "?"))}${r.reason ? `<div class="side-note">理由：${esc(r.reason)}</div>` : ""}${r.feedback ? `<div class="side-note">反馈：${esc(r.feedback)}</div>` : ""}${r.receipts ? `<div class="side-note">${r.receipts} 份文档回执</div>` : ""}</li>`).join("")}</ol>` : ""}</div>`;
 		const docs = (i.documents || []).length ? `<div class="card-row doc-row"><span class="k-inline">决策文档</span>${i.documents.map(d => `<button class="btn small" data-act="doc-view" data-mission="${esc(i.mission_id)}" data-path="${esc(d.path)}" title="${esc(d.work)} 工位写入"><span class="mono">${esc(d.path)}</span> · ${esc(d.work)}</button>`).join("")}</div>` : "";
 		return `<article class="card">
 			<h3>${esc(i.name)} <span class="chip user">用户工位 · ${esc(i.at)}</span>${i.origin_work ? `<span class="chip user">来自 ${esc(i.origin_work)}</span>` : ""}</h3>
