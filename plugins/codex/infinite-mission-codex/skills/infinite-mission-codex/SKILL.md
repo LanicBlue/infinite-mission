@@ -78,9 +78,11 @@ silently re-arming.
 
 ## Waiting for more work
 
-For an already-registered identity, after the current work is complete or when
-the live query shows no actionable mission, handle
-`$infinite-mission-codex wait <agentId>` through the bundled adapter.
+For an already-registered identity, handle
+`$infinite-mission-codex wait <agentId>` through the bundled adapter only to
+start a missing watcher or bind it to the current Codex task. After a normal
+wakeup, the watcher continues waiting; do not call `wait` again after each
+mission turn.
 
 The command captures the current `CODEX_THREAD_ID`, starts or updates one
 background watcher for this workspace and agent, and returns immediately. Once
