@@ -11,6 +11,19 @@ export function threadIdFor(memberId, missionId, attempt = 0) {
 }
 
 /**
+ * v1-equivalent turn state off a v2 thread shell row, for the watch/reconcile
+ * paths: null = no meaningful turn ever dispatched (latestRunId null, or a
+ * runless "idle" status), otherwise the last run's status — "failed" where v1
+ * said "error". Terminal v2 statuses completed/failed/interrupted/cancelled
+ * (plus rolled_back) map onto v1's completed/error/interrupted decisions.
+ */
+export function threadRunState(thread) {
+  if (!thread || thread.latestRunId === null || thread.latestRunId === undefined) return null;
+  const status = thread.status ?? "idle";
+  return status === "idle" ? null : status;
+}
+
+/**
  * Whether a thread id belongs to this member's mission: the deterministic
  * base or any of its suffixed variants. Mission ids are fixed-length, so the
  * prefix cannot straddle two missions, and the member id inside it keeps
@@ -397,34 +410,33 @@ export class Delivery {
   /**
    * The mission's most recently updated live thread beyond the three
    * deterministic ids, found by id prefix in the shell snapshot's thread
-   * list. This is how a create-race fallback (random suffix) thread stays
-   * findable — without it every round after its creation would fork yet
-   * another one. The shell lists non-deleted threads only; archived ones are
-   * legitimate followup targets (deliver unarchives). Residual blind spot:
-   * an archived random-suffix thread is absent from the shell and unreachable.
+   * lists (active ∪ archived — v2 exposes both, so an archived
+   * random-suffix fallback thread stays findable). This is how a create-race
+   * fallback thread keeps its identity — without it every round after its
+   * creation would fork yet another one. Deleted threads appear in neither
+   * list, exactly the v1 "404" semantics the probes rely on.
    */
   #findByPrefix(shell, memberId, missionId) {
-    const matches = (shell?.threads ?? [])
+    const matches = [...(shell?.threads ?? []), ...(shell?.archivedThreads ?? [])]
       .filter((thread) => isMissionThreadId(thread.id, memberId, missionId))
       .toSorted((a, b) => String(a.updatedAt ?? "").localeCompare(String(b.updatedAt ?? "")));
     return matches.at(-1) ?? null;
   }
 
   /** Reuse-or-create the T3 project for an im workspace (matched by real path). */
-  async ensureProject(shell, workspacePath) {
-    const existing = (shell.projects ?? []).find((project) =>
+  async ensureProject(projects, workspacePath) {
+    const existing = (projects ?? []).find((project) =>
       this.#sameRoot(project.workspaceRoot, workspacePath),
     );
     if (existing) return existing.id;
     const root = fs.realpathSync(workspacePath);
     const projectId = randomUUID();
-    await this.t3.dispatch({
+    await this.t3.mutateProject({
       type: "project.create",
       commandId: randomUUID(),
       projectId,
       title: path.basename(root),
       workspaceRoot: root,
-      createdAt: new Date().toISOString(),
     });
     return projectId;
   }
@@ -447,9 +459,8 @@ export class Delivery {
    */
   async liveThread(memberId, missionId) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const snapshot = await this.t3.threadDetail(threadIdFor(memberId, missionId, attempt));
-      const thread = snapshot?.thread;
-      if (thread && !thread.deletedAt && !thread.settledAt && thread.settledOverride !== "settled") {
+      const thread = await this.t3.findThread(threadIdFor(memberId, missionId, attempt));
+      if (thread && !thread.settledAt && thread.settledOverride !== "settled") {
         return thread;
       }
     }
@@ -473,10 +484,8 @@ export class Delivery {
   async #resolveTarget(memberId, missionId, shell = null) {
     for (let attempt = 0; attempt < 3; attempt++) {
       const threadId = threadIdFor(memberId, missionId, attempt);
-      const snapshot = await this.t3.threadDetail(threadId);
-      if (snapshot?.thread) {
-        const thread = snapshot.thread;
-        if (thread.deletedAt) continue;
+      const thread = await this.t3.findThread(threadId);
+      if (thread) {
         return { mode: "followup", threadId, thread };
       }
       const reuse = this.#findByPrefix(shell ?? (await this.t3.shell()), memberId, missionId);
@@ -505,10 +514,11 @@ export class Delivery {
     freshContext = null,
     ended = false,
   }) {
-    // One shell fetch serves both the project lookup and the prefix search
-    // in #resolveTarget (the fallback path for deleted deterministic ids).
+    // One shell fetch serves the prefix search in #resolveTarget (the
+    // fallback path for deleted deterministic ids); projects live on their
+    // own API since the v2 orchestration shell stopped carrying them.
     const shell = await this.t3.shell();
-    const projectId = await this.ensureProject(shell, workspacePath);
+    const projectId = await this.ensureProject((await this.t3.projectSnapshot()).projects, workspacePath);
     const target = await this.#resolveTarget(member.id, missionId, shell);
 
     if (target.mode === "create") {
@@ -522,27 +532,32 @@ export class Delivery {
     }
 
     const memberId = typeof member === "string" ? member : member.id;
+    // v2 split turn start into a flat per-thread mode set plus the message
+    // itself. The mode set is unconditional (idempotent) so each turn
+    // restates the member's runtime identity, and the dispatch carries the
+    // model selection per turn — thread creation alone no longer pins either.
     await this.t3.dispatch({
-      type: "thread.turn.start",
+      type: "thread.runtime-mode.set",
       commandId: randomUUID(),
       threadId: target.threadId,
-      message: {
-        messageId: randomUUID(),
-        role: "user",
-        text: ended
-          ? `${resultPreamble(memberId)}\n${brief}${resultTailReminder(memberId, missionId)}`
-          : `${dutyPreamble(member, missionId)}\n${brief}${dutyTailReminder(memberId, missionId)}`,
-        ...(freshContext && !ended
-          ? { context: { version: 1, records: [], freshContext } }
-          : {}),
-        attachments: [],
-      },
-      // Each turn restates the member's selection, so the runtime identity
-      // is carried by the turn itself, not just the thread's creation.
-      modelSelection: modelSelectionOf(member),
       runtimeMode: member.runtimeMode,
-      interactionMode: "default",
-      createdAt: new Date().toISOString(),
+    });
+    await this.t3.dispatch({
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "mcp",
+      commandId: randomUUID(),
+      threadId: target.threadId,
+      messageId: randomUUID(),
+      text: ended
+        ? `${resultPreamble(memberId)}\n${brief}${resultTailReminder(memberId, missionId)}`
+        : `${dutyPreamble(member, missionId)}\n${brief}${dutyTailReminder(memberId, missionId)}`,
+      ...(freshContext && !ended
+        ? { context: { version: 1, records: [], freshContext } }
+        : {}),
+      attachments: [],
+      modelSelection: modelSelectionOf(member),
+      dispatchMode: { type: "start_immediately" },
     });
     return target.threadId;
   }
@@ -550,6 +565,8 @@ export class Delivery {
   async #createThread({ target, projectId, member, station, missionId, brief }) {
     const make = (threadId) => ({
       type: "thread.create",
+      createdBy: "user",
+      creationSource: "mcp",
       commandId: randomUUID(),
       threadId,
       projectId,
@@ -559,7 +576,6 @@ export class Delivery {
       interactionMode: "default",
       branch: null,
       worktreePath: null,
-      createdAt: new Date().toISOString(),
     });
     try {
       await this.t3.dispatch(make(target.threadId));

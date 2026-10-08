@@ -104,7 +104,7 @@ class FakeDelivery {
     this.hasThreadCalls = [];
     this.failDeliver = false;
     this.threadExists = async () => true;
-    this.turnState = "completed"; // latestTurn.state reported by liveThread
+    this.turnState = "completed"; // run status reported by liveThread (v2 shell row)
   }
   async deliver(args) {
     if (this.failDeliver) throw new Error("t3 unreachable");
@@ -122,7 +122,15 @@ class FakeDelivery {
     this.hasThreadCalls.push([memberId, missionId]);
     if (!(await this.threadExists(memberId, missionId))) return null;
     const thread = { id: `im-${missionId}`, settledAt: null, settledOverride: null };
-    if (this.turnState !== null) thread.latestTurn = { state: this.turnState };
+    // v2 shell row: latestRunId null = never dispatched; otherwise status is
+    // the last run's status ("failed" where v1 said "error").
+    if (this.turnState === null) {
+      thread.latestRunId = null;
+      thread.status = "idle";
+    } else {
+      thread.latestRunId = "run-1";
+      thread.status = this.turnState;
+    }
     return thread;
   }
 }
@@ -140,6 +148,23 @@ function makeConfig(overrides = {}) {
   });
   assert.equal(result.ok, true, JSON.stringify(result.errors));
   return result.config;
+}
+
+/** Minimal v2 t3 client for the watcher path: findThread answers a shell row
+ * carrying the given run status (null = never dispatched). */
+function watchT3(status) {
+  return {
+    async findThread(threadId) {
+      return {
+        id: threadId,
+        latestRunId: status === null ? null : "run-1",
+        status: status === null ? "idle" : status,
+        settledAt: null,
+        settledOverride: null,
+      };
+    },
+    async deleteThread() {},
+  };
 }
 
 async function waitFor(predicate, timeoutMs = 2000) {
@@ -815,11 +840,7 @@ test("watcher settles the thread when the turn ends and the mission left the mem
     missions: [],
   });
   const delivery = new FakeDelivery();
-  const fakeT3 = {
-    async threadDetail() {
-      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "completed" }, settledAt: null, settledOverride: null } };
-    },
-  };
+  const fakeT3 = watchT3("completed");
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
   t.after(() => bridge.stop());
   await bridge.reconcile();
@@ -838,11 +859,7 @@ test("watcher leaves the thread active when the mission is still open (duty skip
     missions: ["ms_aaaabbbbccccdddd"],
   });
   const delivery = new FakeDelivery();
-  const fakeT3 = {
-    async threadDetail() {
-      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "completed" }, settledAt: null, settledOverride: null } };
-    },
-  };
+  const fakeT3 = watchT3("completed");
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
   t.after(() => bridge.stop());
   await bridge.reconcile();
@@ -860,11 +877,7 @@ test("watcher keeps watching while the turn is still running", async (t) => {
     missions: [],
   });
   const delivery = new FakeDelivery();
-  const fakeT3 = {
-    async threadDetail() {
-      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "running" }, settledAt: null, settledOverride: null } };
-    },
-  };
+  const fakeT3 = watchT3("running");
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
   t.after(() => bridge.stop());
   await bridge.reconcile();
@@ -1105,9 +1118,7 @@ test("watcher reopens a turn-error thread into a fresh session (delete + sweep r
   const delivery = new FakeDelivery();
   const deleted = [];
   const fakeT3 = {
-    async threadDetail() {
-      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "error" }, settledAt: null, settledOverride: null } };
-    },
+    ...watchT3("failed"),
     async deleteThread(threadId) { deleted.push(threadId); },
   };
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });
@@ -1128,9 +1139,7 @@ test("turn-error reopen is budgeted per (member, mission)", async (t) => {
   const delivery = new FakeDelivery();
   const deleted = [];
   const fakeT3 = {
-    async threadDetail() {
-      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "error" }, settledAt: null, settledOverride: null } };
-    },
+    ...watchT3("failed"),
     async deleteThread(threadId) { deleted.push(threadId); },
   };
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig({ turnErrorReopenMax: 2 }), logger: quiet });
@@ -1152,9 +1161,7 @@ test("turn-error reopen can be disabled (thread left active, legacy behavior)", 
   const delivery = new FakeDelivery();
   const deleted = [];
   const fakeT3 = {
-    async threadDetail() {
-      return { snapshotSequence: 1, thread: { id: "im-ms_aaaabbbbccccdddd", latestTurn: { state: "error" }, settledAt: null, settledOverride: null } };
-    },
+    ...watchT3("failed"),
     async deleteThread(threadId) { deleted.push(threadId); },
   };
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig({ turnErrorReopen: false }), logger: quiet });
@@ -1174,7 +1181,7 @@ test("sweep re-adopts a restart-orphaned errored thread: reopen, then deliver fr
     missions: [{ id: "ms_aaaabbbbccccdddd", station: "build" }],
   });
   const delivery = new FakeDelivery();
-  delivery.turnState = "error";
+  delivery.turnState = "failed";
   const deleted = [];
   const fakeT3 = { async deleteThread(threadId) { deleted.push(threadId); } };
   const bridge = new Bridge({ runner, delivery, t3: fakeT3, config: makeConfig(), logger: quiet });

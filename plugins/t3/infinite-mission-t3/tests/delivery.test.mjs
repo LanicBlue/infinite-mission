@@ -17,12 +17,14 @@ const BRIEF = [
 const MEMBER = { id: "t3-codex", instance: "codex", model: "gpt-5.6-luna", runtimeMode: "full-access" };
 
 class FakeT3 {
-  // threads: the detail map (probe targets); shellThreads: the shell snapshot's
-  // live thread list (what the prefix fallback searches) — kept separate so a
-  // test can model "deleted base, live suffixed thread" (detail 404s deleted
-  // threads on the real server; the shell never lists them).
+  // threads: the findThread map (probe targets — the shell's active ∪
+  // archived lists on the real server); shellThreads: the shell snapshot's
+  // active thread list (what the prefix fallback searches). Kept separate so
+  // a test can model "deleted base, live suffixed thread": deleted rows never
+  // appear in either list, so findThread skips them (v1's detail-404).
   constructor({ projects = [], threads = new Map(), shellThreads = [], failOnce = {} } = {}) {
-    this.shellState = { projects, threads: shellThreads };
+    this.projectState = { projects };
+    this.shellState = { threads: shellThreads, archivedThreads: [] };
     this.threads = threads;
     this.dispatched = [];
     this.failOnce = failOnce; // { "thread.create": 1 } → fail that many times
@@ -30,9 +32,20 @@ class FakeT3 {
   async shell() {
     return this.shellState;
   }
-  async threadDetail(threadId) {
+  async findThread(threadId) {
     const thread = this.threads.get(threadId);
-    return thread ? { snapshotSequence: 1, thread } : null;
+    if (!thread || thread.deletedAt) return null;
+    return thread;
+  }
+  async projectSnapshot() {
+    return this.projectState;
+  }
+  async mutateProject(mutation) {
+    this.dispatched.push(mutation);
+    if (mutation.type === "project.create") {
+      this.projectState.projects.push({ id: mutation.projectId, workspaceRoot: mutation.workspaceRoot });
+    }
+    return { id: mutation.projectId };
   }
   async dispatch(command) {
     const remaining = this.failOnce[command.type] ?? 0;
@@ -41,12 +54,11 @@ class FakeT3 {
       throw new Error(`boom: ${command.type}`);
     }
     this.dispatched.push(command);
-    if (command.type === "project.create") {
-      this.shellState.projects.push({ id: command.projectId, workspaceRoot: command.workspaceRoot });
-    }
     if (command.type === "thread.create") {
       this.threads.set(command.threadId, {
         id: command.threadId,
+        latestRunId: null,
+        status: "idle",
         archivedAt: null,
         deletedAt: null,
         settledAt: null,
@@ -243,8 +255,8 @@ test("ended delivery carries the result preamble; a normal one keeps the duty pr
       brief: BRIEF,
     });
     const turns = t3.dispatched
-      .filter((command) => command.type === "thread.turn.start")
-      .map((command) => command.message.text);
+      .filter((command) => command.type === "message.dispatch")
+      .map((command) => command.text);
     assert.match(turns[0], /----- mission result -----/);
     assert.doesNotMatch(turns[0], /\*\*t3-codex\*\*/);
     // Full-snapshot turn opens with the markdown duty head; follow-ups would not.
@@ -275,8 +287,8 @@ test("every delivered turn ends with the tail reminder: recency anchor after the
       ended: true,
     });
     const turns = t3.dispatched
-      .filter((command) => command.type === "thread.turn.start")
-      .map((command) => command.message.text);
+      .filter((command) => command.type === "message.dispatch")
+      .map((command) => command.text);
     // Duty tail: XML envelope at the very end, ids pre-bound, two-option menu.
     const duty = turns[0];
     assert.ok(duty.trimEnd().endsWith("</im-system-reminder>"), "duty tail must be the last thing in the turn");
@@ -311,20 +323,24 @@ test("first delivery creates the project and thread, then starts the turn", asyn
       brief: BRIEF,
     });
     assert.equal(threadId, "im-t3-codex-ms_aaaabbbbccccdddd");
-    assert.deepEqual(types(t3), ["project.create", "thread.create", "thread.turn.start"]);
+    assert.deepEqual(types(t3), ["project.create", "thread.create", "thread.runtime-mode.set", "message.dispatch"]);
     const project = t3.dispatched[0];
     assert.equal(project.workspaceRoot, fs.realpathSync(dir));
     const thread = t3.dispatched[1];
     assert.equal(thread.title, "im/t3-codex@build: Smoke mission");
     assert.deepEqual(thread.modelSelection, { instanceId: "codex", model: "gpt-5.6-luna" });
     assert.equal(thread.runtimeMode, "full-access");
-    const turn = t3.dispatched[2];
+    const modeSet = t3.dispatched[2];
+    assert.equal(modeSet.threadId, threadId);
+    assert.equal(modeSet.runtimeMode, "full-access");
+    const turn = t3.dispatched[3];
     assert.equal(turn.threadId, threadId);
-    assert.equal(turn.message.role, "user");
-    assert.match(turn.message.text, /^You are the InfiniteMission member \*\*t3-codex\*\*/);
-    assert.match(turn.message.text, new RegExp(BRIEF.split("\n", 1)[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.ok(turn.message.text.indexOf("duty") === -1 || true);
-    assert.deepEqual(turn.message.attachments, []);
+    assert.deepEqual(turn.modelSelection, { instanceId: "codex", model: "gpt-5.6-luna" });
+    assert.equal(turn.createdBy, "user");
+    assert.deepEqual(turn.dispatchMode, { type: "start_immediately" });
+    assert.match(turn.text, /^You are the InfiniteMission member \*\*t3-codex\*\*/);
+    assert.match(turn.text, new RegExp(BRIEF.split("\n", 1)[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.deepEqual(turn.attachments, []);
   } finally {
     cleanup();
   }
@@ -342,7 +358,7 @@ test("existing project with the same real root is reused (no project.create)", a
       missionId: "ms_aaaabbbbccccdddd",
       brief: BRIEF,
     });
-    assert.deepEqual(types(t3), ["thread.create", "thread.turn.start"]);
+    assert.deepEqual(types(t3), ["thread.create", "thread.runtime-mode.set", "message.dispatch"]);
     assert.equal(t3.dispatched[0].projectId, "p-existing");
     assert.equal(threadId, "im-t3-codex-ms_aaaabbbbccccdddd");
   } finally {
@@ -367,7 +383,7 @@ test("follow-up arrival injects into the existing thread without creating", asyn
       missionId: "ms_aaaabbbbccccdddd",
       brief: BRIEF,
     });
-    assert.deepEqual(types(t3), ["thread.turn.start"]);
+    assert.deepEqual(types(t3), ["thread.runtime-mode.set", "message.dispatch"]);
     assert.equal(threadId, "im-t3-codex-ms_aaaabbbbccccdddd");
   } finally {
     cleanup();
@@ -391,7 +407,7 @@ test("archived thread is unarchived before the follow-up turn", async () => {
       missionId: "ms_aaaabbbbccccdddd",
       brief: BRIEF,
     });
-    assert.deepEqual(types(t3), ["thread.unarchive", "thread.turn.start"]);
+    assert.deepEqual(types(t3), ["thread.unarchive", "thread.runtime-mode.set", "message.dispatch"]);
   } finally {
     cleanup();
   }
@@ -414,7 +430,7 @@ test("thread.create failure falls back to a suffixed thread id once", async () =
     const creates = t3.dispatched.filter((c) => c.type === "thread.create");
     assert.equal(creates.length, 1);
     assert.equal(creates[0].threadId, threadId);
-    assert.equal(t3.dispatched.at(-1).type, "thread.turn.start");
+    assert.equal(t3.dispatched.at(-1).type, "message.dispatch");
     assert.equal(t3.dispatched.at(-1).threadId, threadId);
   } finally {
     cleanup();
@@ -482,7 +498,7 @@ test("two members delivering the same mission get separate threads with their ow
     assert.equal(kimiThread, "im-t3-kimi-ms_aaaabbbbccccdddd");
     const creates = t3.dispatched.filter((c) => c.type === "thread.create");
     assert.deepEqual(creates.map((c) => c.modelSelection.instanceId), ["grok", "kimi"]);
-    const turns = t3.dispatched.filter((c) => c.type === "thread.turn.start");
+    const turns = t3.dispatched.filter((c) => c.type === "message.dispatch");
     assert.deepEqual(turns.map((c) => c.modelSelection.instanceId), ["grok", "kimi"]);
     assert.deepEqual(turns.map((c) => c.threadId), [grokThread, kimiThread]);
   } finally {
@@ -510,7 +526,7 @@ test("deleted base + live suffixed thread: the suffix thread is reused, not re-f
       brief: BRIEF,
     });
     assert.equal(threadId, hexId);
-    assert.deepEqual(types(t3), ["thread.turn.start"]); // followup — no create, no fork
+    assert.deepEqual(types(t3), ["thread.runtime-mode.set", "message.dispatch"]); // followup — no create, no fork
     assert.equal(t3.dispatched[0].threadId, hexId);
   } finally {
     cleanup();
@@ -630,21 +646,21 @@ test("lifecycle delivery: freshContext rides message.context; absent means no co
   try {
     await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId, brief: "ROUND BRIEF 1", freshContext: "STABLE BLOCK" });
     await delivery.deliver({ workspacePath: dir, member: MEMBER, station: "build", missionId, brief: "ROUND BRIEF 2" });
-    const turns = t3.dispatched.filter((command) => command.type === "thread.turn.start");
+    const turns = t3.dispatched.filter((command) => command.type === "message.dispatch");
     // The stable block travels as context, never inside the text — T3's
     // reactor decides whether the turn's provider thread is history-less.
-    assert.equal(turns[0].message.context?.freshContext, "STABLE BLOCK");
-    assert.equal(turns[0].message.context?.version, 1);
-    assert.deepEqual(turns[0].message.context?.records, []);
-    assert.ok(!turns[0].message.text.includes("STABLE BLOCK"));
-    assert.match(turns[0].message.text, /ROUND BRIEF 1/);
+    assert.equal(turns[0].context?.freshContext, "STABLE BLOCK");
+    assert.equal(turns[0].context?.version, 1);
+    assert.deepEqual(turns[0].context?.records, []);
+    assert.ok(!turns[0].text.includes("STABLE BLOCK"));
+    assert.match(turns[0].text, /ROUND BRIEF 1/);
     // No stable block supplied → no context field at all (lifecycle off).
-    assert.equal(turns[1].message.context, undefined);
+    assert.equal(turns[1].context, undefined);
     // Composition is constant across rounds: head + brief + tail.
     for (const turn of turns) {
-      assert.match(turn.message.text, /You are the InfiniteMission member \*\*t3-codex\*\*\./);
-      assert.match(turn.message.text, /<im-system-reminder>/);
-      assert.ok(turn.message.text.trimEnd().endsWith("</im-system-reminder>"));
+      assert.match(turn.text, /You are the InfiniteMission member \*\*t3-codex\*\*\./);
+      assert.match(turn.text, /<im-system-reminder>/);
+      assert.ok(turn.text.trimEnd().endsWith("</im-system-reminder>"));
     }
   } finally {
     cleanup();
@@ -665,12 +681,12 @@ test("duty turns keep one composition across rounds, restarts, and session state
     // the composition is stateless — T3 owns the fresh/resumed decision.
     const secondProcess = new Delivery(t3);
     const thread = t3.threads.get(threadIdFor(MEMBER.id, missionId));
-    thread.latestTurn = { state: "error" };
-    thread.session = { status: "error" };
+    thread.latestRunId = "run-1";
+    thread.status = "failed";
     await secondProcess.deliver({ workspacePath: dir, member: MEMBER, station: "verify", missionId, brief: brief("verify", "restart charter") });
     const texts = t3.dispatched
-      .filter((command) => command.type === "thread.turn.start")
-      .map((command) => command.message.text);
+      .filter((command) => command.type === "message.dispatch")
+      .map((command) => command.text);
     assert.equal(texts.length, 3);
     assert.match(texts[0], /build charter/);
     assert.match(texts[1], /verify charter/);

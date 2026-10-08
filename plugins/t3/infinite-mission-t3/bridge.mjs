@@ -9,7 +9,8 @@
 // preamble attached to every delivered brief.
 //
 // T3 side is driven through its public HTTP API only (zero T3 fork):
-// project/thread creation, turn start, and settle via /api/orchestration/*.
+// project/thread creation, message dispatch, and settle via the v2
+// orchestration + projects routes.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -17,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { readConfigFile, readT3ImMembers, defaultConfigPath } from "./lib/config.mjs";
 import { ProcessImRunner } from "./lib/im-cli.mjs";
 import { HttpT3Client } from "./lib/t3-client.mjs";
-import { Delivery, arrivalHeader, briefFromRunView, roundBriefFromView, freshContextFromView } from "./lib/delivery.mjs";
+import { Delivery, arrivalHeader, briefFromRunView, roundBriefFromView, freshContextFromView, threadRunState } from "./lib/delivery.mjs";
 import { parseReceiveOutput } from "./lib/notes.mjs";
 import { sleep } from "./lib/spawn.mjs";
 
@@ -656,22 +657,23 @@ export class Bridge {
       const tag = this.tag(watch.workspace, watch.memberId);
       let state;
       try {
-        const snapshot = await this.t3.threadDetail(watch.threadId);
-        const thread = snapshot?.thread;
+        const thread = await this.t3.findThread(watch.threadId);
         // A thread deleted in the T3 UI (or anywhere else) can never reach a
         // terminal turn state — treat the deletion itself as terminal and let
         // the reconcile sweep redeliver if the mission is still parked.
-        if (!thread || thread.deletedAt) {
+        if (!thread) {
           this.log(tag, `thread ${watch.threadId} vanished — watch dropped for ${watch.missionId}; sweep will redeliver if still parked`);
           continue;
         }
-        state = thread.latestTurn?.state ?? null;
+        state = threadRunState(thread);
       } catch (err) {
         this.log(tag, `watch probe failed for ${watch.threadId}: ${err.message}`);
         stillWatching.push(watch);
         continue;
       }
-      if (state !== "completed" && state !== "error" && state !== "interrupted") {
+      const terminal = state === "completed" || state === "failed" || state === "interrupted"
+        || state === "cancelled" || state === "rolled_back";
+      if (!terminal) {
         stillWatching.push(watch);
         continue;
       }
@@ -689,7 +691,7 @@ export class Bridge {
         } catch (err) {
           this.log(tag, `settle failed for ${watch.missionId}: ${err.message}`);
         }
-      } else if (state === "error" && this.config.turnErrorReopen === true) {
+      } else if (state === "failed" && this.config.turnErrorReopen === true) {
         // A turn that died mid-flight (classically: the member's provider or
         // model was switched while the mission was open, and the thread's
         // accumulated history no longer fits the new runtime). Threads are
@@ -751,8 +753,8 @@ export class Bridge {
    * mission keeps its legacy parked semantics (follow-up round or operator).
    */
   async #reconcileLiveThread(workspace, memberId, station, missionId, thread, tag) {
-    const state = thread.latestTurn?.state ?? null;
-    if (state === "error" && this.config.turnErrorReopen === true) {
+    const state = threadRunState(thread);
+    if (state === "failed" && this.config.turnErrorReopen === true) {
       await this.#reopenTurnError(tag, memberId, missionId, thread.id);
       return;
     }
@@ -764,13 +766,13 @@ export class Bridge {
       await this.#tryDeliver(workspace, memberId, station, missionId, tag);
       return;
     }
-    if (state !== "completed" && state !== "interrupted") {
+    if (state !== "completed" && state !== "interrupted" && state !== "cancelled" && state !== "rolled_back") {
       this.watching.push({ workspace, memberId, missionId, threadId: thread.id });
       this.log(tag, `sweep: re-armed watch on ${thread.id} for ${missionId} (turn ${state}; bridge restarted around it)`);
       return;
     }
-    // Completed/interrupted with the mission still parked: the agent likely
-    // skipped its submit — thread left active for a follow-up round.
+    // Completed/interrupted/cancelled with the mission still parked: the
+    // agent likely skipped its submit — thread left active for a follow-up.
   }
 
   async #flushRetries() {

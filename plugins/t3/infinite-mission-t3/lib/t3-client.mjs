@@ -144,6 +144,9 @@ export class HttpT3Client {
         method,
         headers: {
           authorization: `Bearer ${token}`,
+          // Orchestration v2 endpoints reject requests without the protocol
+          // header (HTTP 400); harmless on the routes that do not read it.
+          "x-t3-orchestration-protocol": "2",
           ...(body !== undefined ? { "content-type": "application/json" } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -164,11 +167,37 @@ export class HttpT3Client {
     return res.json();
   }
 
-  /** @returns the thread detail snapshot, or null when the thread does not exist (404). */
-  async threadDetail(threadId) {
-    const res = await this.#request("GET", `/api/orchestration/threads/${encodeURIComponent(threadId)}`);
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`thread snapshot for ${threadId} failed: HTTP ${res.status}`);
+  /**
+   * Find a thread row by id across the shell snapshot's active and archived
+   * lists. Orchestration v2 replaced the v1 per-thread detail endpoint's
+   * `{thread}` envelope with a `{projection}` shape the bridge has no use
+   * for, and deleted threads never appear in either list — so a null return
+   * covers exactly the v1 404 semantics ("never existed or deleted").
+   * @returns the thread shell row, or null when the thread does not exist.
+   */
+  async findThread(threadId) {
+    const shell = await this.shell();
+    return (
+      (shell.threads ?? []).find((thread) => thread.id === threadId) ??
+      (shell.archivedThreads ?? []).find((thread) => thread.id === threadId) ??
+      null
+    );
+  }
+
+  /** Project list from the projects API (the v2 orchestration shell no longer carries projects). */
+  async projectSnapshot() {
+    const res = await this.#request("GET", "/api/projects");
+    if (!res.ok) throw new Error(`project snapshot failed: HTTP ${res.status}`);
+    return res.json();
+  }
+
+  /** Mutate projects (project.create et al.) — a separate route from orchestration dispatch in v2. */
+  async mutateProject(mutation) {
+    const res = await this.#request("POST", "/api/projects/mutate", mutation);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`mutate ${mutation.type} failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+    }
     return res.json();
   }
 
