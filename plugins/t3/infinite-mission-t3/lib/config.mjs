@@ -90,6 +90,57 @@ export function validateConfig(raw) {
     };
   }
 
+  // Coding-plan 5h-window quota gate (lib/quota.mjs): deliveries to the
+  // listed provider instances are held while the account's window is
+  // exhausted, and a turn failure under exhaustion never spends the
+  // turn-error reopen budget. Disabled by default; unknown quota state
+  // fails open (no gating, bridge behaves exactly as before).
+  const quotaGateRaw = raw.quotaGate ?? {};
+  if (quotaGateRaw === null || typeof quotaGateRaw !== "object" || Array.isArray(quotaGateRaw)) {
+    add("quotaGate", "must be an object");
+  }
+  let quotaGate = null;
+  if (quotaGateRaw && typeof quotaGateRaw === "object" && !Array.isArray(quotaGateRaw)) {
+    const enabled = quotaGateRaw.enabled ?? false;
+    if (typeof enabled !== "boolean") add("quotaGate.enabled", "must be a boolean");
+    let instances = ["zcode"];
+    if (quotaGateRaw.instances !== undefined) {
+      if (!Array.isArray(quotaGateRaw.instances) || quotaGateRaw.instances.length === 0 || !quotaGateRaw.instances.every((v) => typeof v === "string" && v.trim().length > 0)) {
+        add("quotaGate.instances", "must be a non-empty array of provider instance ids (e.g. [\"zcode\"])");
+      } else {
+        instances = quotaGateRaw.instances.map((v) => v.trim());
+      }
+    }
+    let credentialKeys = ["oauth:bigmodel:access_token"];
+    if (quotaGateRaw.credentialKeys !== undefined) {
+      if (!Array.isArray(quotaGateRaw.credentialKeys) || quotaGateRaw.credentialKeys.length === 0 || !quotaGateRaw.credentialKeys.every((v) => typeof v === "string" && v.trim().length > 0)) {
+        add("quotaGate.credentialKeys", "must be a non-empty array of credential-store keys");
+      } else {
+        credentialKeys = quotaGateRaw.credentialKeys.map((v) => v.trim());
+      }
+    }
+    const pollSec = quotaGateRaw.pollSec ?? 120;
+    if (!Number.isInteger(pollSec) || pollSec < 10) {
+      add("quotaGate.pollSec", "must be an integer >= 10 (seconds)");
+    }
+    const thresholdPct = quotaGateRaw.thresholdPct ?? 100;
+    if (typeof thresholdPct !== "number" || !Number.isFinite(thresholdPct) || thresholdPct < 1 || thresholdPct > 100) {
+      add("quotaGate.thresholdPct", "must be a number in [1, 100]");
+    }
+    const bufferSec = quotaGateRaw.bufferSec ?? 60;
+    if (!Number.isInteger(bufferSec) || bufferSec < 0) {
+      add("quotaGate.bufferSec", "must be an integer >= 0 (seconds past the reset moment)");
+    }
+    const credentialsFile =
+      expandTilde(trim(quotaGateRaw.credentialsFile)) ||
+      path.join(t3.home || path.join(os.homedir(), ".t3"), "zcode-home", ".zcode", "v2", "credentials.json");
+    if (!path.isAbsolute(credentialsFile)) {
+      add("quotaGate.credentialsFile", "must be an absolute path (defaults to <t3.home>/zcode-home/.zcode/v2/credentials.json)");
+    }
+    quotaGate = { enabled, instances, credentialKeys, pollSec, thresholdPct, bufferSec, credentialsFile };
+  }
+
+
   let workspaces = null;
   if (raw.workspaces !== undefined && raw.workspaces !== null) {
     if (!Array.isArray(raw.workspaces)) {
@@ -154,7 +205,7 @@ export function validateConfig(raw) {
 
   return {
     ok: true,
-    config: { imBin, receiveTimeoutSec, rescanSec, maxDeliverAttempts, turnErrorReopen, turnErrorReopenMax, lifecycleDelivery, t3, workspaces, members },
+    config: { imBin, receiveTimeoutSec, rescanSec, maxDeliverAttempts, turnErrorReopen, turnErrorReopenMax, quotaGate, lifecycleDelivery, t3, workspaces, members },
   };
 }
 

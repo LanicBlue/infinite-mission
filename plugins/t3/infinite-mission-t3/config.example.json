@@ -32,6 +32,21 @@
       "model": "claude-sonnet-5",
       "runtimeMode": "full-access",
       "enabled": false
+    },
+    {
+      "id": "t3-build",
+      "instance": "zcode",
+      "model": "account:bigmodel-individual-coding-plan/GLM-5.3",
+      "runtimeMode": "full-access"
     }
-  ]
+  ],
+  "quotaGate": {
+    "enabled": false,
+    "instances": [
+      "zcode"
+    ],
+    "pollSec": 120,
+    "thresholdPct": 100,
+    "bufferSec": 60
+  }
 }

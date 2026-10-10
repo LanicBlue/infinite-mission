@@ -1229,3 +1229,155 @@ test("sweep re-delivers a live thread whose turn never landed", async (t) => {
   assert.equal(delivery.deliverCalls.length, 1, "round re-injected into the live thread");
   assert.equal(bridge.watching.length, 1, "re-delivery registers its own watch");
 });
+
+// --- quota gate (coding-plan 5h window; lib/quota.mjs) ------------------------
+
+const arrivedFor = (memberId, missionId, station = "build") =>
+  [
+    `[station ${station}] mission arrived`,
+    `  → Run: im mission show ${missionId} --for ${memberId} (then im missions ${memberId})`,
+  ].join("\n");
+
+function scriptedQuota(initial) {
+  return {
+    value: initial,
+    async exhausted() {
+      return this.value;
+    },
+    lastSnapshot() {
+      return null;
+    },
+  };
+}
+
+const gated = () => ({ gated: true, pct: 100, resetAt: Date.now() + 3_600_000 });
+const open = (pct = 30) => ({ gated: false, pct, resetAt: Date.now() + 3_600_000 });
+
+function zcodeConfig(overrides = {}) {
+  return makeConfig({
+    members: [{ id: "t3-build", instance: "zcode", model: "glm-5.3" }],
+    quotaGate: { enabled: true },
+    ...overrides,
+  });
+}
+
+test("quota gate holds delivery for gated instances until the window resets", async (t) => {
+  const mission = "ms_aaaabbbbccccdd01";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-build", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: arrivedFor("t3-build", mission) }],
+    missionShow: () => ({ ok: true, text: `[mission ${mission}] Held — active` }),
+    missions: [mission],
+  });
+  const delivery = new FakeDelivery();
+  delivery.threadExists = async () => false; // nothing was ever delivered
+  const lines = [];
+  const logger = (tag, message) => lines.push(`${tag}: ${message}`);
+  const quota = scriptedQuota(gated());
+  const bridge = new Bridge({ runner, delivery, t3: {}, quota, config: zcodeConfig(), logger });
+  t.after(() => bridge.stop());
+  await bridge.reconcile(); // the sweep holds and logs within the cycle
+  assert.ok(await waitFor(() => lines.some((l) => l.includes("delivery held"))), "the hold is logged");
+  await bridge.reconcile(); // arrival + sweep hold again — log must not repeat
+  assert.equal(delivery.deliverCalls.length, 0);
+  assert.equal(runner.calls.missionShow.length, 0, "a held delivery skips `mission show` entirely");
+  assert.equal(lines.filter((l) => l.includes("delivery held")).length, 1, "one deferral line per mission per episode");
+  quota.value = open();
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 1, "the sweep delivers once the gate opens");
+});
+
+test("quota gate ignores members on other instances", async (t) => {
+  const mission = "ms_aaaabbbbccccdd02";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-build-ui", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: arrivedFor("t3-build-ui", mission) }],
+    missionShow: () => ({ ok: true, text: `[mission ${mission}] Other provider — active` }),
+  });
+  const delivery = new FakeDelivery();
+  const quota = scriptedQuota(gated());
+  const bridge = new Bridge({
+    runner,
+    delivery,
+    quota,
+    config: makeConfig({ members: [{ id: "t3-build-ui", instance: "cursor", model: "grok" }], quotaGate: { enabled: true } }),
+    logger: quiet,
+  });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1), "cursor member delivers despite the exhausted window");
+});
+
+test("unknown quota state fails open", async (t) => {
+  const mission = "ms_aaaabbbbccccdd03";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-build", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: arrivedFor("t3-build", mission) }],
+    missionShow: () => ({ ok: true, text: `[mission ${mission}] Probe down — active` }),
+  });
+  const delivery = new FakeDelivery();
+  const quota = scriptedQuota({ gated: false, reason: "fetch: network down" });
+  const bridge = new Bridge({ runner, delivery, quota, config: zcodeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1), "a broken probe may never stall missions");
+});
+
+test("a quota hold does not consume the retry queue's attempt budget", async (t) => {
+  const mission = "ms_aaaabbbbccccdd04";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-build", status: "active (1s ago)" }],
+    missionShow: () => ({ ok: true, text: `[mission ${mission}] Retry hold — active` }),
+  });
+  const delivery = new FakeDelivery();
+  const quota = scriptedQuota(gated());
+  const bridge = new Bridge({ runner, delivery, quota, config: zcodeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  bridge.retryQueue.push({ workspace: WS, memberId: "t3-build", station: "build", missionId: mission, attempts: 5 });
+  await bridge.reconcile();
+  assert.equal(delivery.deliverCalls.length, 0);
+  assert.equal(runner.calls.missionShow.length, 0);
+  assert.equal(bridge.retryQueue.length, 1);
+  assert.equal(bridge.retryQueue[0].attempts, 5, "the hold is not a delivery failure");
+});
+
+test("turn error under quota exhaustion deletes the thread without spending the reopen budget", async (t) => {
+  const mission = "ms_aaaabbbbccccdd05";
+  const runner = new ScriptedRunner({
+    roster: [{ id: "t3-build", status: "active (1s ago)" }],
+    receiveScript: [{ code: 0, stdout: arrivedFor("t3-build", mission) }],
+    missionShow: () => ({ ok: true, text: `[mission ${mission}] 1308 — active` }),
+    missions: [mission], // still open — the submitter never landed
+  });
+  const delivery = new FakeDelivery();
+  delivery.turnState = "failed";
+  delivery.threadExists = async () => delivery.deliverCalls.length > 0; // thread exists only once delivered
+  const deleted = [];
+  // A freshly delivered thread runs first; the test advances it to "failed".
+  let turnStatus = "running";
+  const fakeT3 = {
+    async findThread(threadId) {
+      return { id: threadId, latestRunId: "run-1", status: turnStatus, settledAt: null, settledOverride: null };
+    },
+    async deleteThread(threadId) {
+      deleted.push(threadId);
+    },
+  };
+  const quota = scriptedQuota(open());
+  const bridge = new Bridge({ runner, delivery, t3: fakeT3, quota, config: zcodeConfig(), logger: quiet });
+  t.after(() => bridge.stop());
+  await bridge.reconcile();
+  assert.ok(await waitFor(() => delivery.deliverCalls.length === 1));
+  await bridge.reconcile(); // watcher sees "running" — nothing spent
+  assert.equal(deleted.length, 0, "a running turn spends nothing");
+
+  turnStatus = "failed";
+  quota.value = gated();
+  await bridge.reconcile(); // failed turn + exhausted window: thread deleted, budget untouched
+  assert.ok(deleted.length >= 1, "the errored thread is deleted for a fresh redelivery");
+  assert.equal(bridge.reopenCounts.size, 0, "quota-caused failures never spend the reopen budget");
+
+  quota.value = open();
+  await bridge.reconcile(); // same still-failed thread, window healthy again
+  assert.equal(bridge.reopenCounts.get(`t3-build\0${mission}`), 1, "the budgeted reopen resumes once the gate opens");
+});

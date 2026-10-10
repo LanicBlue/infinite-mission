@@ -19,6 +19,7 @@ import { readConfigFile, readT3ImMembers, defaultConfigPath } from "./lib/config
 import { ProcessImRunner } from "./lib/im-cli.mjs";
 import { HttpT3Client } from "./lib/t3-client.mjs";
 import { Delivery, arrivalHeader, briefFromRunView, roundBriefFromView, freshContextFromView, threadRunState } from "./lib/delivery.mjs";
+import { QuotaGate, formatResetMs } from "./lib/quota.mjs";
 import { parseReceiveOutput } from "./lib/notes.mjs";
 import { sleep } from "./lib/spawn.mjs";
 
@@ -37,10 +38,11 @@ function teeLogger(ring, limit = 300) {
 }
 
 export class Bridge {
-  constructor({ runner, delivery, t3 = null, config, configPath = null, logger = log }) {
+  constructor({ runner, delivery, t3 = null, quota = null, config, configPath = null, logger = log }) {
     this.runner = runner;
     this.delivery = delivery;
     this.t3 = t3 ?? delivery?.t3 ?? null;
+    this.quota = quota;
     this.config = config;
     this.configPath = configPath;
     this.log = logger;
@@ -78,6 +80,9 @@ export class Bridge {
     // running — the receive loop, the sweep, and the retry queue can all
     // trigger the same mission concurrently; the first one wins.
     this.inflight = new Set();
+    // missions currently held by the quota gate — deferral logs once per
+    // mission per exhaustion episode, not once per reconcile tick.
+    this.gateLogged = new Set();
     this.reconciling = false;
     this.timer = null;
   }
@@ -182,6 +187,38 @@ export class Bridge {
       this.log("bridge", `im workspaces failed: ${err.message}`);
       return [];
     }
+  }
+
+  /** Gate verdict for the member's provider, or null when it cannot gate. */
+  async #quotaVerdict(member) {
+    if (!this.quota || this.config.quotaGate?.enabled !== true) return null;
+    if (!this.config.quotaGate.instances.includes(member.instance)) return null;
+    const verdict = await this.quota.exhausted();
+    return verdict.gated ? verdict : null;
+  }
+
+  /**
+   * Quota-gate verdict for one delivery attempt: non-null means the member's
+   * provider sits on an exhausted coding-plan 5h window and this delivery is
+   * held (the reconcile tick retries every pass, so the tick IS the timer).
+   * Any gate problem — disabled, other instance, probe failure — fails open
+   * and returns null. Deferral logs once per mission per exhaustion episode.
+   */
+  async #gateHolds(workspace, memberId, station, missionId, member, tag) {
+    const verdict = await this.#quotaVerdict(member);
+    const key = `${workspace}\0${memberId}\0${missionId}`;
+    if (!verdict) {
+      this.gateLogged.delete(key);
+      return null;
+    }
+    if (!this.gateLogged.has(key)) {
+      this.gateLogged.add(key);
+      this.log(
+        tag,
+        `delivery held for ${missionId}@${station} — coding-plan 5h window at ${verdict.pct}% (resets ${formatResetMs(verdict.resetAt)}); the gate retries on every reconcile tick`,
+      );
+    }
+    return verdict;
   }
 
   async reconcile() {
@@ -502,6 +539,10 @@ export class Bridge {
         this.log(tag, `delivery skipped for ${missionId}@${station}: member ${memberId} is not enabled in the member table`);
         return;
       }
+      // Held before `mission show` — a gated delivery skips the subprocess
+      // entirely; the arrival note was consumed, so the sweep re-triggers it
+      // on every tick until the gate opens.
+      if (await this.#gateHolds(workspace, memberId, station, missionId, member, tag)) return;
       let show;
       try {
         show = await this.runner.missionShow(workspace, missionId, memberId);
@@ -720,6 +761,27 @@ export class Bridge {
    * the sweep's re-adoption of restart-orphaned threads.
    */
   async #reopenTurnError(tag, memberId, missionId, threadId) {
+    // An exhausted coding-plan 5h window is an account condition, not a
+    // member-config error — never spend the reopen budget on it. Delete the
+    // thread (threads are disposable scratch) and let the delivery gate time
+    // the fresh attempt: the sweep redelivers as soon as the window resets.
+    const member = this.#lookupMember(memberId);
+    if (member) {
+      const hold = await this.#quotaVerdict(member);
+      if (hold) {
+        try {
+          await this.t3.deleteThread(threadId);
+          this.log(
+            tag,
+            `turn error on ${missionId} with the 5h window exhausted (${hold.pct}%, resets ${formatResetMs(hold.resetAt)}) — thread deleted without spending the reopen budget; the gate redelivers after the reset`,
+          );
+          return true;
+        } catch (err) {
+          this.log(tag, `quota-path reopen failed (${err.message}) — thread left active`);
+          return false;
+        }
+      }
+    }
     const key = `${memberId}\0${missionId}`;
     const attempt = (this.reopenCounts.get(key) ?? 0) + 1;
     if (attempt > this.config.turnErrorReopenMax) {
@@ -786,6 +848,21 @@ export class Bridge {
         this.retryQueue.push(item);
         continue;
       }
+      // The member definition is re-resolved per attempt, so a retry picks up
+      // config edits made since the failure (or drops out when the member
+      // left the table — the sweep owns it again then).
+      const member = this.#lookupMember(item.memberId);
+      if (!member) {
+        this.log(this.tag(item.workspace, item.memberId), `retry dropped: member ${item.memberId} is not enabled in the member table`);
+        continue;
+      }
+      // A quota hold is not a delivery failure: check it BEFORE spending the
+      // attempt (a multi-hour window must never drive the item into parking)
+      // and requeue untouched for the next reconcile.
+      if (await this.#gateHolds(item.workspace, item.memberId, item.station, item.missionId, member, this.tag(item.workspace, item.memberId))) {
+        this.retryQueue.push(item);
+        continue;
+      }
       item.attempts += 1;
       if (item.attempts > this.config.maxDeliverAttempts) {
         // Park instead of dropping: a dropped item is a mission stranded at
@@ -797,14 +874,6 @@ export class Bridge {
           this.tag(item.workspace, item.memberId),
           `parking ${item.missionId}@${item.station} after ${this.config.maxDeliverAttempts} attempt(s) — stays queued for later reconciles`,
         );
-        continue;
-      }
-      // The member definition is re-resolved per attempt, so a retry picks up
-      // config edits made since the failure (or drops out when the member
-      // left the table — the sweep owns it again then).
-      const member = this.#lookupMember(item.memberId);
-      if (!member) {
-        this.log(this.tag(item.workspace, item.memberId), `retry dropped: member ${item.memberId} is not enabled in the member table`);
         continue;
       }
       try {
@@ -854,6 +923,7 @@ export class Bridge {
       }),
       watching: this.watching.map((watch) => ({ missionId: watch.missionId, threadId: watch.threadId })),
       retryQueue: this.retryQueue.map((item) => ({ missionId: item.missionId, attempts: item.attempts })),
+      quota: this.quota?.lastSnapshot?.() ?? null,
       muted: [...this.muted].map((key) => key.replace("\0", "/")),
     };
   }
@@ -882,7 +952,17 @@ async function main() {
   const delivery = new Delivery(t3);
   const ring = [];
   const logger = teeLogger(ring);
-  const bridge = new Bridge({ runner, delivery, t3, config, configPath, logger });
+  const quota = config.quotaGate?.enabled
+    ? new QuotaGate({
+        credentialsFile: config.quotaGate.credentialsFile,
+        credentialKeys: config.quotaGate.credentialKeys,
+        pollSec: config.quotaGate.pollSec,
+        thresholdPct: config.quotaGate.thresholdPct,
+        bufferSec: config.quotaGate.bufferSec,
+        logger,
+      })
+    : null;
+  const bridge = new Bridge({ runner, delivery, t3, quota, config, configPath, logger });
 
 
   let shuttingDown = false;
@@ -904,6 +984,13 @@ async function main() {
   const workspaceList =
     config.workspaces !== null ? config.workspaces.join(", ") : "(from `im workspaces` registry)";
   log("bridge", `started — members: ${memberList} [${memberSource}]; workspaces: ${workspaceList}; config: ${configPath}`);
+  if (quota) {
+    const gate = config.quotaGate;
+    log(
+      "bridge",
+      `quota gate enabled — instances [${gate.instances.join(", ")}]; window threshold ${gate.thresholdPct}%, buffer +${gate.bufferSec}s, poll ${gate.pollSec}s; credentials ${gate.credentialsFile}`,
+    );
+  }
 }
 
 const isEntry =

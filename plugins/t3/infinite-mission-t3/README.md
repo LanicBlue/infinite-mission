@@ -89,6 +89,26 @@ tool path (im is a local CLI over SQLite).
   (default 2) reopens before parking; a parked mission needs the member
   config fixed and its thread deleted in T3 (the sweep heals from there).
   `interrupted` turns are never reopened — a human stopped them.
+- **Coding-plan 5h quota gate** (`quotaGate`, default off) — GLM coding-plan
+  accounts share one 5h token window per account. While it is exhausted,
+  delivering to the gated provider instances (`instances`, default
+  `["zcode"]`) only starts a turn that dies on 429/1308, so the bridge holds
+  those deliveries instead and retries on every reconcile tick until the
+  window resets — the tick is the timer, there is no other scheduler. A turn
+  that fails *while* the window is exhausted deletes its thread through the
+  same gate WITHOUT spending the turn-error reopen budget (an account
+  condition is not a member-config error); once the window resets, the sweep
+  redelivers into a fresh session and the budgeted reopen path resumes for
+  real errors. State comes from the account quota monitor endpoint
+  (`open.bigmodel.cn/api/monitor/usage/quota/limit`, the 5h `TOKENS_LIMIT`
+  window), queried with a zcode credential-store token decrypted by the
+  CLI's own `enc:v1` scheme (`credentialsFile`, default the T3 shadow home's
+  `zcode-home/.zcode/v2/credentials.json`). `pollSec` (120) caches the
+  probe, `thresholdPct` (100) is the exhaustion line, `bufferSec` (60) pads
+  the reset moment. **Fail-open by contract**: any fetch, file, or decrypt
+  problem reads as unknown and the bridge behaves exactly as if the gate
+  were off — a broken probe may never stall missions. Quota holds never
+  consume the retry queue's attempt budget either.
 - **Restart orphans are re-adopted by the sweep** — a bridge restart loses
   the in-memory watchers of live threads. Whenever the reconcile sweep
   skips over a live thread ("already delivered"), it inspects the turn:
