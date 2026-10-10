@@ -990,6 +990,9 @@ async function main() {
       "bridge",
       `quota gate enabled — instances [${gate.instances.join(", ")}]; window threshold ${gate.thresholdPct}%, buffer +${gate.bufferSec}s, poll ${gate.pollSec}s; credentials ${gate.credentialsFile}`,
     );
+    // Probe once now: the startup verdict line proves the live chain
+    // (credentials file → decrypt → endpoint). Pull-only afterwards.
+    quota.exhausted().catch(() => {});
   }
 }
 
